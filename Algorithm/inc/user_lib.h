@@ -2,7 +2,14 @@
 #define USER_LIB_H
 //#include "struct_typedef.h"
 #include <stdint.h>
-typedef __packed struct
+/* __packed is a Keil AC5 keyword; on GCC the attribute goes after `struct`. */
+#ifdef __CC_ARM
+#define USER_LIB_PACKED __packed struct
+#else
+#define USER_LIB_PACKED struct __attribute__((packed))
+#endif
+
+typedef USER_LIB_PACKED
 {
     float input;        //输入数据
     float out;          //输出数据
@@ -11,7 +18,7 @@ typedef __packed struct
     float frame_period; //时间间隔
 } ramp_function_source_t;
 
-typedef __packed struct
+typedef USER_LIB_PACKED
 {
     float input;        //输入数据
     float out;          //滤波输出的数据

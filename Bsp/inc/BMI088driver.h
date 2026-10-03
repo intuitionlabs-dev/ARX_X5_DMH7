@@ -46,7 +46,14 @@
 #define BMI088_GYRO_125_SEN 0.000066579027251980956150958662738366f
 
 
-typedef __packed struct BMI088_RAW_DATA
+/* __packed is a Keil AC5 keyword; on GCC the attribute goes after `struct`. */
+#ifdef __CC_ARM
+#define BMI088_PACKED __packed struct
+#else
+#define BMI088_PACKED struct __attribute__((packed))
+#endif
+
+typedef BMI088_PACKED BMI088_RAW_DATA
 {
     uint8_t status;
     int16_t accel[3];
