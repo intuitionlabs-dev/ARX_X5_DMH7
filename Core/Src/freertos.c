@@ -31,6 +31,7 @@
 #include "can_loopback_test.h"
 #include "cmd.h"
 #include "gimbal_arm.h"
+#include "hal_move_plan.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -170,6 +171,7 @@ void MX_FREERTOS_Init(void) {
   /* creation of CanLoopbackTask */
   CanLoopbackTaskHandle = osThreadNew(StartCanLoopbackTask, NULL, &CanLoopbackTask_attributes);
 #endif
+  HAL_Moveplan_Thread_Create();
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */

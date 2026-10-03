@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "FreeRTOS.h"
+#include "bsp_buzzer.h"
 #include "cmsis_os2.h"
 #include "adc.h"
 #include "dma.h"
@@ -252,6 +253,7 @@ int main(void)
    * These must not go into a task: BSP_CAN_Init() binds can_devices[].device and
    * starts the FDCANs, and the task loops dereference the globals created here. */
   BSP_CAN_Init();
+  BSP_Buzzer_Init();
   DMmotor_Driver_Init();
   Monitor_Init();
   /* CAN1->CAN2 自机通信测试：登记 RX 滤波器+回调（同样需要在 BSP_CAN_Init 之后）。 */

@@ -83,7 +83,12 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     libs/dm_motor/dm_mit_control.c
     libs/fps/bsp_supervise.c
     libs/monitor/monitor.c
+    libs/move_plan/curves/cubic_spline.c
+    libs/move_plan/curves/linear_spline.c
+    libs/move_plan/curves/quintic_spline.c
     libs/move_plan/hal_move_plan.c
+    libs/move_plan/move_plan/move_plan.c
+    libs/move_plan/move_plan/plan_group.c
     libs/rc/rc.c
 
     # NOTE: Core/Src/freertos.c and the FreeRTOS kernel (cmsis_os2, port, heap_4)
@@ -106,6 +111,11 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/fps
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/monitor
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/move_plan
+    # 源工程是把 lib/ 下每个子目录都塞进 include path 的
+    # （见其 hal_lib/CMakeLists.txt 的 file(GLOB LIB_DIRS lib/*)），本工程是一个个手写，
+    # 所以这两个子目录要显式加：move_plan.h 里 include 的是 "cubic_spline.h" 这种裸文件名。
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/move_plan/curves
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/move_plan/move_plan
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/rc
 )
 
@@ -119,8 +129,14 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
 # 都调不到。--undefined 强制把它当成 GC 根保留下来（函数上的 __attribute__((used))
 # 在 GCC 10 上不生成 SHF_GNU_RETAIN，拦不住 --gc-sections，所以只能从链接器这边来)。
 # 等有真实调用方之后这行可以删。
+#
+# Move_Plan_Temp_Create() 同理：hal_move_plan.c 接上以后 Move_Plan_Update() 是活的，
+# 但没有业务代码造轨迹，这个函数只会被同样没人调的 Plan_Group_Temp_Calc_And_Run()
+# 引用，照样会被 --gc-sections 删掉，烧进板子后连 JLink 都调不到（没法验证规划器算得对不对）。
+# 等有真实调用方之后这行也可以删。
 target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
     -Wl,--undefined=Gimbal_Set_Control
+    -Wl,--undefined=Move_Plan_Temp_Create
 )
 
 # Remove wrong libob.a library dependency when using cpp files
