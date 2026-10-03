@@ -1,7 +1,6 @@
 #include "bsp_supervise.h"
 #include "main.h" // HAL_GetTick()
 
-#if _RT_DEBUG_FRAMERATE
 void FrameRateStatistics(FPS_t *FPS) {
     FPS->count++;
     FPS->now = HAL_GetTick(); // NOLINT(bugprone-narrowing-conversions)
@@ -12,6 +11,3 @@ void FrameRateStatistics(FPS_t *FPS) {
         FPS->last = FPS->now;
     }
 }
-#else
-void FrameRateStatistics(FPS_t *FPS) {}
-#endif

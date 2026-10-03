@@ -29,6 +29,7 @@
 #include "DM_motor.h"
 #include "monitor.h"
 #include "can_loopback_test.h"
+#include "cmd.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -95,6 +96,18 @@ const osThreadAttr_t MotorTask_attributes = {
   .stack_size = sizeof(MotorTaskBuffer),
   .priority = (osPriority_t) osPriorityHigh,
 };
+/* Definitions for CmdTask */
+osThreadId_t CmdTaskHandle;
+uint32_t CmdTaskBuffer[ 4096 ];
+osStaticThreadDef_t CmdTaskControlBlock;
+const osThreadAttr_t CmdTask_attributes = {
+  .name = "CmdTask",
+  .cb_mem = &CmdTaskControlBlock,
+  .cb_size = sizeof(CmdTaskControlBlock),
+  .stack_mem = &CmdTaskBuffer[0],
+  .stack_size = sizeof(CmdTaskBuffer),
+  .priority = (osPriority_t) osPriorityHigh,
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -106,6 +119,7 @@ void StartCanLoopbackTask(void *argument);
 void StartDefaultTask(void *argument);
 void StartMonitorTask(void *argument);
 void StartMotorTask(void *argument);
+void StartCmdTask(void *argument);
 
 extern void MX_USB_DEVICE_Init(void);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
@@ -145,6 +159,9 @@ void MX_FREERTOS_Init(void) {
 
   /* creation of MotorTask */
   MotorTaskHandle = osThreadNew(StartMotorTask, NULL, &MotorTask_attributes);
+
+  /* creation of CmdTask */
+  CmdTaskHandle = osThreadNew(StartCmdTask, NULL, &CmdTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -224,6 +241,27 @@ void StartMotorTask(void *argument)
     osDelayUntil(tick);
   }
   /* USER CODE END StartMotorTask */
+}
+
+/* USER CODE BEGIN Header_StartCmdTask */
+/**
+* @brief Function implementing the CmdTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartCmdTask */
+void StartCmdTask(void *argument)
+{
+  /* USER CODE BEGIN StartCmdTask */
+  /* Infinite loop */
+  uint32_t tick = osKernelGetTickCount();
+  for(;;)
+  {
+    Cmd_Loop();
+    tick += 2U;
+    osDelayUntil(tick);
+  }
+  /* USER CODE END StartCmdTask */
 }
 
 /* Private application code --------------------------------------------------*/

@@ -19,7 +19,7 @@
  * ======================================================= */
 
 /* CAN1 -> CAN2 自机通信(回环)测试，见 App/test/can_loopback_test.c */
-#define TEST_CAN_LOOPBACK_ENABLE 1
+#define TEST_CAN_LOOPBACK_ENABLE 0
 
 /* 以后新增测试，照抄下面这两行(宏名和文件名自己改)：
  * #define TEST_XXX_ENABLE 1

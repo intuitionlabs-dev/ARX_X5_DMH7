@@ -59,7 +59,7 @@ void DMmotor_RxCallBack(uint8_t can_id, uint32_t identifier, uint8_t *data, uint
     for (size_t i = 0; i < dm_motor_list->cv_len; i++) {
         DM_motor *obj = *(DM_motor **)cvector_val_at(dm_motor_list, i);
         if (obj->config.can_rx_id == identifier) {
-            DMmotor_FeedbackData_Update(obj, data);
+            DMmotor_FeedbackData_Update(obj, data); 
         }
     }
 }

@@ -39,6 +39,7 @@
 #include "DM_motor.h"
 #include "monitor.h"
 #include "can_loopback_test.h"
+#include "cmd.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -254,6 +255,8 @@ int main(void)
   Monitor_Init();
   /* CAN1->CAN2 自机通信测试：登记 RX 滤波器+回调（同样需要在 BSP_CAN_Init 之后）。 */
   CanLoopbackTest_Init();
+  /* CMD 线程的电机对象，必须在 BSP_CAN_Init() 和 DMmotor_Driver_Init() 之后 */
+  Cmd_Init();
 //    OSPI_W25Qxx_Init();     // ��ʼ��OSPI��W25Q64
 //    
 //    OSPI_W25Qxx_Test();     // Flash��д����
