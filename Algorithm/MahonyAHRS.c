@@ -35,7 +35,9 @@ volatile float integralFBx = 0.0f,  integralFBy = 0.0f, integralFBz = 0.0f;	// i
 //---------------------------------------------------------------------------------------------------
 // Function declarations
 
-float invSqrt(float x);
+/* static: keeps this file self-contained; libs/common/common.c already
+ * defines a global invSqrt with the same implementation. */
+static float invSqrt(float x);
 
 //====================================================================================================
 // Functions
@@ -217,7 +219,7 @@ void MahonyAHRSupdateIMU(float q[4], float gx, float gy, float gz, float ax, flo
 // Fast inverse square-root
 // See: http://en.wikipedia.org/wiki/Fast_inverse_square_root
 
-float invSqrt(float x) {
+static float invSqrt(float x) {
 	float halfx = 0.5f * x;
 	float y = x;
 	long i = *(long*)&y;

@@ -18,6 +18,8 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "FreeRTOS.h"
+#include "cmsis_os2.h"
 #include "adc.h"
 #include "dma.h"
 #include "fdcan.h"
@@ -33,6 +35,9 @@
 #include "vofa.h"
 #include "w25q64.h"
 #include <stdio.h>
+#include "bsp_can.h"
+#include "DM_motor.h"
+#include "monitor.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -63,6 +68,7 @@ uint8_t  W25Qxx_ReadBuffer[W25Qxx_NumByteToTest];		//	���������
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
+void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -222,7 +228,6 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_ADC1_Init();
-  MX_USB_DEVICE_Init();
   MX_TIM12_Init();
   MX_SPI1_Init();
   MX_SPI6_Init();
@@ -240,10 +245,25 @@ int main(void)
   MX_TIM2_Init();
   MX_OCTOSPI2_Init();
   /* USER CODE BEGIN 2 */
+  /* libs/ init -- runs before osKernelStart(), so single-threaded (no malloc race).
+   * These must not go into a task: BSP_CAN_Init() binds can_devices[].device and
+   * starts the FDCANs, and the task loops dereference the globals created here. */
+  BSP_CAN_Init();
+  DMmotor_Driver_Init();
+  Monitor_Init();
 //    OSPI_W25Qxx_Init();     // ��ʼ��OSPI��W25Q64
 //    
 //    OSPI_W25Qxx_Test();     // Flash��д����
   /* USER CODE END 2 */
+
+  /* Init scheduler */
+  osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
+  MX_FREERTOS_Init();
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */

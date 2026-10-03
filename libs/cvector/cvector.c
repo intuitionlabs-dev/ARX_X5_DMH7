@@ -4,11 +4,11 @@
 #pragma GCC diagnostic ignored "-Wpointer-arith"
 // size: 数组成员的大小
 cvector* cvector_create(const size_t size) {
-    cvector* cv = (cvector*)RT_MALLOC(sizeof(cvector));
+    cvector* cv = (cvector*)malloc(sizeof(cvector));
 
     if (!cv) return NULL;
 
-    cv->cv_pdata = RT_MALLOC(MIN_LEN * size);
+    cv->cv_pdata = malloc(MIN_LEN * size);
 
     if (!cv->cv_pdata) {
         free(cv);

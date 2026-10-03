@@ -177,7 +177,6 @@ void DMA1_Stream0_IRQHandler(void)
   /* USER CODE BEGIN DMA1_Stream0_IRQn 0 */
 
   /* USER CODE END DMA1_Stream0_IRQn 0 */
-  HAL_DMA_IRQHandler(&hdma_adc1);
   /* USER CODE BEGIN DMA1_Stream0_IRQn 1 */
 
   /* USER CODE END DMA1_Stream0_IRQn 1 */
@@ -289,7 +288,6 @@ void OTG_HS_IRQHandler(void)
   /* USER CODE BEGIN OTG_HS_IRQn 0 */
 
   /* USER CODE END OTG_HS_IRQn 0 */
-  HAL_PCD_IRQHandler(&hpcd_USB_OTG_HS);
   /* USER CODE BEGIN OTG_HS_IRQn 1 */
 
   /* USER CODE END OTG_HS_IRQn 1 */
@@ -359,7 +357,6 @@ void TIM23_IRQHandler(void)
   /* USER CODE BEGIN TIM23_IRQn 0 */
 
   /* USER CODE END TIM23_IRQn 0 */
-  HAL_TIM_IRQHandler(&htim23);
   /* USER CODE BEGIN TIM23_IRQn 1 */
 
   /* USER CODE END TIM23_IRQn 1 */

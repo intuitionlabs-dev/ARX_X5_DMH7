@@ -145,7 +145,7 @@ void controller_calc(controller* obj) {
 
 // 务必确保传入的config结构体已经memset置零!!!
 controller* create_controller(controller_config* _config) {
-    controller* obj = RT_MALLOC(sizeof(controller));
+    controller* obj = malloc(sizeof(controller));
     memset(obj, 0, sizeof(controller));
     obj->config = *_config;
     if (obj->config.control_type == PID_MODEL) {

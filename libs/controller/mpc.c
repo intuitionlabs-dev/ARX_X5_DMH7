@@ -489,7 +489,7 @@ static uint8_t mpc_hildreth_solve(Mpc* obj) {
  * @note   使用动态内存分配，务必确保传入的 config 已 memset 置零
  */
 Mpc* Create_Mpc(Mpc_config* config) {
-    Mpc* obj = (Mpc*)RT_MALLOC(sizeof(Mpc));
+    Mpc* obj = (Mpc*)malloc(sizeof(Mpc));
     if (!obj) return NULL;
     memset(obj, 0, sizeof(Mpc));
     obj->config = *config;

@@ -5,7 +5,7 @@
 #include "string.h"
 
 Basic_controller_t* Create_Basic_Controller(const Basic_controller_config_t* config) {
-    Basic_controller_t* obj = (Basic_controller_t*)RT_MALLOC(sizeof(Basic_controller_t));
+    Basic_controller_t* obj = (Basic_controller_t*)malloc(sizeof(Basic_controller_t));
     memset(obj, 0, sizeof(Basic_controller_t));
     obj->config = *config;
     return obj;

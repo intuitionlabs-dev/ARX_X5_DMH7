@@ -1,7 +1,7 @@
 #include "DM_motor.h"
-#if _HAL_DMMOTOR_ENABLE 
-#include "bsp_log.h"
 #include "common.h"
+#include "main.h"   // HAL_GetTick()
+#include <stdlib.h> // malloc()
 // CAN_ID == DM_motor_config.can_tx_id，即上位机中的 CAN ID
 // MST_ID == DM_motor_config.can_rx_id，即上位机中的 Master ID
 // 一般而言，CAN ID 和 Master ID 设置为同样值
@@ -51,7 +51,7 @@ void DMmotor_FeedbackData_Update(DM_motor *obj, uint8_t *data)
     FrameRateStatistics(&obj->motor_fps);
 }
 
-void DMmotor_RxCallBack(uint8_t can_id, uint32_t identifier, uint8_t *data, basic_data_t len) {
+void DMmotor_RxCallBack(uint8_t can_id, uint32_t identifier, uint8_t *data, uint32_t len) {
     (void)len;
     // DEBUG_ASSERT(len == 8);
     (void)can_id;
@@ -104,15 +104,17 @@ DM_motor* DMmotor_Create(DM_motor_config* config , control_dm_func func)
 {
     static uint8_t registry[DEVICE_CAN_CNT];
     if (config->bsp_can_index >= DEVICE_CAN_CNT) {// CAN索引超出范围
-        printf_log("bsp_can_index out of range in %s", __func__);
+        /* TODO: 接入本工程日志后恢复
+        printf_log("bsp_can_index out of range in %s", __func__); */
         return NULL;
     }
     // CAN ID 超出范围则警告
-    if(config->can_tx_id < DM_CAN_ID_MIN || config->can_tx_id > DM_CAN_ID_MAX) 
-        printf_log("can_tx_id out of range in %s\n", __func__);
+    if(config->can_tx_id < DM_CAN_ID_MIN || config->can_tx_id > DM_CAN_ID_MAX) {
+        /* TODO: 接入本工程日志后恢复
+        printf_log("can_tx_id out of range in %s\n", __func__); */
+    }
 
-
-    DM_motor *obj = (DM_motor *)RT_MALLOC(sizeof(DM_motor));
+    DM_motor *obj = (DM_motor *)malloc(sizeof(DM_motor));
     if (!registry[config->bsp_can_index]) {
         registry[config->bsp_can_index] = 1;
         BSP_CAN_RegisterRxCallback(config->bsp_can_index, DMmotor_RxCallBack);
@@ -135,12 +137,12 @@ DM_motor* DMmotor_Create(DM_motor_config* config , control_dm_func func)
 void DMmotor_Calc_Send(void) {
     
     // 每0.3s发送一次使能信号,防止电机不成功启动
-    static basic_data_t enable_time = 0;
-    if (BSP_sys_time_ms() - enable_time > 300) {
+    static uint32_t enable_time = 0;
+    if (HAL_GetTick() - enable_time > 300) {
         for (size_t i = 0; i < dm_motor_list->cv_len; i++) {
             DM_motor *obj = *(DM_motor **)cvector_val_at(dm_motor_list, i);
-            DMmotor_Enable(obj); 
-            enable_time = BSP_sys_time_ms();
+            DMmotor_Enable(obj);
+            enable_time = HAL_GetTick();
             // obj->update = 0;
             // uint8_t cnt = 0;
             // while (obj->update != 1 && cnt < 50)
@@ -281,9 +283,3 @@ void DMmotor_Calc_Send(void) {
         }
     }
 }
-
-#else
-void DMmotor_Driver_Init(void){}
-void DMmotor_Calc_Send(void){}
-
-#endif

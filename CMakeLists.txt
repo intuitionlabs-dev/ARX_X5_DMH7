@@ -45,17 +45,15 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Application
-    App/fun_test_task.c
-    App/imu_task.c
-    App/key_task.c
-    App/lcd_task.c
+    # App/ is currently empty -- list your app sources here.
 
     # Board support
     Bsp/BMI088driver.c
     Bsp/BMI088Middleware.c
     Bsp/bsp_buzzer.c
     Bsp/bsp_user_key.c
-    Bsp/can_bsp.c
+    # Bsp/can_bsp.c is intentionally NOT built: libs/can/bsp_can.c replaces it,
+    # and both define HAL_FDCAN_RxFifo0Callback (duplicate symbol if both link).
     Bsp/lcd.c
     Bsp/w25q64.c
     Bsp/ws2812.c
@@ -67,20 +65,25 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Debug / telemetry
     vofa+/vofa.c
 
-    # RTOS glue
-    Core/Src/freertos.c
+    # libs/ (ported from the upstream intuition library)
+    libs/can/bsp_can.c
+    libs/common/common.c
+    libs/controller/adrc.c
+    libs/controller/basic_controller.c
+    libs/controller/controller.c
+    libs/controller/lqr.c
+    libs/controller/mpc.c
+    libs/controller/mrac.c
+    libs/controller/pid.c
+    libs/controller/smc.c
+    libs/cvector/cvector.c
+    libs/dm_motor/DM_motor.c
+    libs/fps/bsp_supervise.c
+    libs/monitor/monitor.c
+    libs/move_plan/hal_move_plan.c
 
-    # FreeRTOS kernel
-    Middlewares/Third_Party/FreeRTOS/Source/croutine.c
-    Middlewares/Third_Party/FreeRTOS/Source/event_groups.c
-    Middlewares/Third_Party/FreeRTOS/Source/list.c
-    Middlewares/Third_Party/FreeRTOS/Source/queue.c
-    Middlewares/Third_Party/FreeRTOS/Source/stream_buffer.c
-    Middlewares/Third_Party/FreeRTOS/Source/tasks.c
-    Middlewares/Third_Party/FreeRTOS/Source/timers.c
-    Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS/cmsis_os.c
-    Middlewares/Third_Party/FreeRTOS/Source/portable/MemMang/heap_4.c
-    Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1/port.c
+    # NOTE: Core/Src/freertos.c and the FreeRTOS kernel (cmsis_os2, port, heap_4)
+    # are added by cmake/stm32cubemx/CMakeLists.txt, which CubeMX regenerates.
 )
 
 # Add include paths
@@ -89,9 +92,15 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Bsp/inc
     ${CMAKE_CURRENT_SOURCE_DIR}/Algorithm/inc
     ${CMAKE_CURRENT_SOURCE_DIR}/vofa+
-    ${CMAKE_CURRENT_SOURCE_DIR}/Middlewares/Third_Party/FreeRTOS/Source/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS
-    ${CMAKE_CURRENT_SOURCE_DIR}/Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1
+
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/can
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/common
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/controller
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/cvector
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/dm_motor
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/fps
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/monitor
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/move_plan
 )
 
 # Add project symbols (macros)

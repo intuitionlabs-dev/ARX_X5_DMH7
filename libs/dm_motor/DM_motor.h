@@ -1,14 +1,10 @@
 #pragma once
 #include "cvector.h"
 #include "bsp_can.h"
-#include "bsp_log.h"
-#include "bsp_time.h"
-#include "bsp_delay.h"
 #include "monitor.h"
 #include "math.h"
-#include "board_def.h"
 #include "controller.h"
-#include "bsp_supervise.h"    
+#include "bsp_supervise.h"
 
 #pragma pack(1)
 struct dm_motor_t;

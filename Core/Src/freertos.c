@@ -21,14 +21,17 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "main.h"
-#include "cmsis_os.h"
+#include "FreeRTOS.h"
+#include "cmsis_os2.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "DM_motor.h"
+#include "monitor.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
+typedef StaticTask_t osStaticThreadDef_t;
 /* USER CODE BEGIN PTD */
 
 /* USER CODE END PTD */
@@ -47,65 +50,49 @@
 /* USER CODE BEGIN Variables */
 
 /* USER CODE END Variables */
-osThreadId defaultTaskHandle;
-osThreadId KeyTaskHandle;
-uint32_t KeyTaskBuffer[ 128 ];
-osStaticThreadDef_t KeyTaskControlBlock;
-osThreadId LcdTaskHandle;
-uint32_t LcdTaskBuffer[ 256 ];
-osStaticThreadDef_t LcdTaskControlBlock;
-osThreadId ImuTaskHandle;
-uint32_t ImuTaskBuffer[ 1024 ];
-osStaticThreadDef_t ImuTaskControlBlock;
-osThreadId FunTestHandle;
-uint32_t FunTestBuffer[ 128 ];
-osStaticThreadDef_t FunTestControlBlock;
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for MonitorTask */
+osThreadId_t MonitorTaskHandle;
+uint32_t MonitorTaskBuffer[ 128 ];
+osStaticThreadDef_t MonitorTaskControlBlock;
+const osThreadAttr_t MonitorTask_attributes = {
+  .name = "MonitorTask",
+  .cb_mem = &MonitorTaskControlBlock,
+  .cb_size = sizeof(MonitorTaskControlBlock),
+  .stack_mem = &MonitorTaskBuffer[0],
+  .stack_size = sizeof(MonitorTaskBuffer),
+  .priority = (osPriority_t) osPriorityRealtime,
+};
+/* Definitions for MotorTask */
+osThreadId_t MotorTaskHandle;
+uint32_t MotorTaskBuffer[ 1024 ];
+osStaticThreadDef_t MotorTaskControlBlock;
+const osThreadAttr_t MotorTask_attributes = {
+  .name = "MotorTask",
+  .cb_mem = &MotorTaskControlBlock,
+  .cb_size = sizeof(MotorTaskControlBlock),
+  .stack_mem = &MotorTaskBuffer[0],
+  .stack_size = sizeof(MotorTaskBuffer),
+  .priority = (osPriority_t) osPriorityHigh,
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
 
 /* USER CODE END FunctionPrototypes */
 
-void StartDefaultTask(void const * argument);
-void KeyTask_Entry(void const * argument);
-void LcdTask_Entry(void const * argument);
-void ImuTask_Entry(void const * argument);
-void FunTest_Entry(void const * argument);
+void StartDefaultTask(void *argument);
+void StartMonitorTask(void *argument);
+void StartMotorTask(void *argument);
 
 extern void MX_USB_DEVICE_Init(void);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
-
-/* GetIdleTaskMemory prototype (linked to static allocation support) */
-void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, uint32_t *pulIdleTaskStackSize );
-
-/* GetTimerTaskMemory prototype (linked to static allocation support) */
-void vApplicationGetTimerTaskMemory( StaticTask_t **ppxTimerTaskTCBBuffer, StackType_t **ppxTimerTaskStackBuffer, uint32_t *pulTimerTaskStackSize );
-
-/* USER CODE BEGIN GET_IDLE_TASK_MEMORY */
-static StaticTask_t xIdleTaskTCBBuffer;
-static StackType_t xIdleStack[configMINIMAL_STACK_SIZE];
-
-void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, uint32_t *pulIdleTaskStackSize )
-{
-  *ppxIdleTaskTCBBuffer = &xIdleTaskTCBBuffer;
-  *ppxIdleTaskStackBuffer = &xIdleStack[0];
-  *pulIdleTaskStackSize = configMINIMAL_STACK_SIZE;
-  /* place for user code */
-}
-/* USER CODE END GET_IDLE_TASK_MEMORY */
-
-/* USER CODE BEGIN GET_TIMER_TASK_MEMORY */
-static StaticTask_t xTimerTaskTCBBuffer;
-static StackType_t xTimerStack[configTIMER_TASK_STACK_DEPTH];
-
-void vApplicationGetTimerTaskMemory( StaticTask_t **ppxTimerTaskTCBBuffer, StackType_t **ppxTimerTaskStackBuffer, uint32_t *pulTimerTaskStackSize )
-{
-  *ppxTimerTaskTCBBuffer = &xTimerTaskTCBBuffer;
-  *ppxTimerTaskStackBuffer = &xTimerStack[0];
-  *pulTimerTaskStackSize = configTIMER_TASK_STACK_DEPTH;
-  /* place for user code */
-}
-/* USER CODE END GET_TIMER_TASK_MEMORY */
 
 /**
   * @brief  FreeRTOS initialization
@@ -134,29 +121,22 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* definition and creation of defaultTask */
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
-  defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+  /* creation of defaultTask */
+  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-  /* definition and creation of KeyTask */
-  osThreadStaticDef(KeyTask, KeyTask_Entry, osPriorityRealtime, 0, 128, KeyTaskBuffer, &KeyTaskControlBlock);
-  KeyTaskHandle = osThreadCreate(osThread(KeyTask), NULL);
+  /* creation of MonitorTask */
+  MonitorTaskHandle = osThreadNew(StartMonitorTask, NULL, &MonitorTask_attributes);
 
-  /* definition and creation of LcdTask */
-  osThreadStaticDef(LcdTask, LcdTask_Entry, osPriorityNormal, 0, 256, LcdTaskBuffer, &LcdTaskControlBlock);
-  LcdTaskHandle = osThreadCreate(osThread(LcdTask), NULL);
-
-  /* definition and creation of ImuTask */
-  osThreadStaticDef(ImuTask, ImuTask_Entry, osPriorityHigh, 0, 1024, ImuTaskBuffer, &ImuTaskControlBlock);
-  ImuTaskHandle = osThreadCreate(osThread(ImuTask), NULL);
-
-  /* definition and creation of FunTest */
-  osThreadStaticDef(FunTest, FunTest_Entry, osPriorityBelowNormal, 0, 128, FunTestBuffer, &FunTestControlBlock);
-  FunTestHandle = osThreadCreate(osThread(FunTest), NULL);
+  /* creation of MotorTask */
+  MotorTaskHandle = osThreadNew(StartMotorTask, NULL, &MotorTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
 
 }
 
@@ -167,7 +147,7 @@ void MX_FREERTOS_Init(void) {
   * @retval None
   */
 /* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void const * argument)
+void StartDefaultTask(void *argument)
 {
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
@@ -180,79 +160,48 @@ void StartDefaultTask(void const * argument)
   /* USER CODE END StartDefaultTask */
 }
 
-/* USER CODE BEGIN Header_KeyTask_Entry */
+/* USER CODE BEGIN Header_StartMonitorTask */
 /**
-* @brief Function implementing the KeyTask thread.
+* @brief Function implementing the MonitorTask thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_KeyTask_Entry */
-__weak void KeyTask_Entry(void const * argument)
+/* USER CODE END Header_StartMonitorTask */
+void StartMonitorTask(void *argument)
 {
-  /* USER CODE BEGIN KeyTask_Entry */
+  /* USER CODE BEGIN StartMonitorTask */
   /* Infinite loop */
   for(;;)
   {
+    Monitor_Loop();
     osDelay(1);
   }
-  /* USER CODE END KeyTask_Entry */
+  /* USER CODE END StartMonitorTask */
 }
 
-/* USER CODE BEGIN Header_LcdTask_Entry */
+/* USER CODE BEGIN Header_StartMotorTask */
 /**
-* @brief Function implementing the LcdTask thread.
+* @brief Function implementing the MotorTask thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_LcdTask_Entry */
-__weak void LcdTask_Entry(void const * argument)
+/* USER CODE END Header_StartMotorTask */
+void StartMotorTask(void *argument)
 {
-  /* USER CODE BEGIN LcdTask_Entry */
+  /* USER CODE BEGIN StartMotorTask */
+  /* BSP_CAN_Init() / DMmotor_Driver_Init() / Monitor_Init() live in
+   * main.c USER CODE BEGIN 2, before the scheduler starts. */
   /* Infinite loop */
   for(;;)
   {
+    DMmotor_Calc_Send();
     osDelay(1);
   }
-  /* USER CODE END LcdTask_Entry */
-}
-
-/* USER CODE BEGIN Header_ImuTask_Entry */
-/**
-* @brief Function implementing the ImuTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_ImuTask_Entry */
-__weak void ImuTask_Entry(void const * argument)
-{
-  /* USER CODE BEGIN ImuTask_Entry */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END ImuTask_Entry */
-}
-
-/* USER CODE BEGIN Header_FunTest_Entry */
-/**
-* @brief Function implementing the FunTest thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_FunTest_Entry */
-__weak void FunTest_Entry(void const * argument)
-{
-  /* USER CODE BEGIN FunTest_Entry */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END FunTest_Entry */
+  /* USER CODE END StartMotorTask */
 }
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
 
 /* USER CODE END Application */
+
