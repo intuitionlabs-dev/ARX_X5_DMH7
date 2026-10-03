@@ -30,6 +30,7 @@
 #include "monitor.h"
 #include "can_loopback_test.h"
 #include "cmd.h"
+#include "gimbal_arm.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -256,6 +257,12 @@ void StartMotorTask(void *argument)
 void StartCmdTask(void *argument)
 {
   /* USER CODE BEGIN StartCmdTask */
+  /* 六轴机械臂云台：建 7 个达妙电机 + 控制器。
+   * 必须在任务里建、不能放 main() 的 USER CODE 2 —— Gimbal_Create() 栈上要
+   * ~4 KB(joint_controller_config[ARM_MOTOR_NUM])，主栈 _Min_Stack_Size 只有 2 KB；
+   * 本任务栈是 CmdTaskBuffer(16 KB)。依赖的 BSP_CAN_Init()/DMmotor_Driver_Init()
+   * 在 main.c 里、调度器启动前就跑完了。失败(内存不够)时是 NULL，Cmd_Loop() 判空跳过。 */
+  gimbal = Gimbal_Create();
   /* Infinite loop */
   uint32_t tick = osKernelGetTickCount();
   for(;;)

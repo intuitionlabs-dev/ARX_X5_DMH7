@@ -46,6 +46,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Application
     App/cmd.c
+    App/gimbal_arm.c
     App/test/can_loopback_test.c
 
     # Board support
@@ -79,6 +80,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     libs/controller/smc.c
     libs/cvector/cvector.c
     libs/dm_motor/DM_motor.c
+    libs/dm_motor/dm_mit_control.c
     libs/fps/bsp_supervise.c
     libs/monitor/monitor.c
     libs/move_plan/hal_move_plan.c
@@ -110,6 +112,15 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
+)
+
+# 机械臂的指令入口 Gimbal_Set_Control() 目前工程里还没有调用方（遥控器 -> 关节角
+# 的映射没做），-ffunction-sections + -Wl,--gc-sections 会把它整个删掉，连 JLink
+# 都调不到。--undefined 强制把它当成 GC 根保留下来（函数上的 __attribute__((used))
+# 在 GCC 10 上不生成 SHF_GNU_RETAIN，拦不住 --gc-sections，所以只能从链接器这边来)。
+# 等有真实调用方之后这行可以删。
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+    -Wl,--undefined=Gimbal_Set_Control
 )
 
 # Remove wrong libob.a library dependency when using cpp files
