@@ -1,0 +1,24 @@
+/build/
+build_*
+install
+*pyc
+config/config.yaml
+/.vscode/*.log
+nul.d
+null.d
+*.jdebug
+*.user
+/.vscode/
+/.idea/
+# *.cmake
+*.json
+*.o
+/cmake-build-debug/
+/cmake-build-debug-event-trace/
+.cache
+.DS_Store
+deps_dot
+# *.dot*
+*.srctrl*
+dot_test
+scripts/temp

@@ -1,0 +1,70 @@
+
+---
+#如果想禁用某一段格式化，可以在该段代码前后添加以下注释
+# clang-format off
+# clang-format on
+
+BasedOnStyle: Google
+# 空格和缩进
+IndentWidth:     2               # 每个缩进级别使用的空格数。
+UseTab:          Never            # 总是使用空格，而不是使用 Tab。
+TabWidth:        2                # Tab 键等价于多少个空格。
+
+AlignAfterOpenBracket: DontAlign  # 不对齐开括号后的参数，使用固定缩进
+AlignArrayOfStructures: None  # 对齐数组结构
+AlignOperands: DontAlign  # 不对齐多行表达式中的操作符
+AllowShortBlocksOnASingleLine: Empty  # 允许空块放在同一行。
+AllowShortCaseExpressionOnASingleLine: false  # 不允许在同一行中放置简短的 case 表达式。
+AllowAllArgumentsOnNextLine: true  # 允许所有参数放在下一行。
+AllowShortCaseLabelsOnASingleLine: false  # 不允许在同一行中放置简短的 case 标签。
+BreakBeforeBraces: Custom
+BraceWrapping:
+    AfterControlStatement: Never
+    AfterFunction: false
+    AfterEnum: false
+    AfterStruct: false
+    AfterUnion: false
+    BeforeElse: false
+    BeforeWhile: false
+    IndentBraces: false
+    SplitEmptyFunction: true
+BreakBeforeBinaryOperators: NonAssignment  # 在非赋值二元运算符之前换行。
+BreakBeforeTernaryOperators: true # 三元运算符之前换行。
+BreakFunctionDefinitionParameters: false  # 不强制换行函数定义参数。
+ColumnLimit:     90 # 别名定义行的最大列数。
+ContinuationIndentWidth: 4  # 续行缩进宽度。
+AlignEscapedNewlines: DontAlign  # 不对齐转义换行符
+BinPackParameters: BinPack  # 紧密打包函数参数
+BinPackArguments: true  # 紧密打包函数参数
+FixNamespaceComments: true  # 自动修复命名空间注释。
+IncludeBlocks: Merge  # 合并包含块。
+IndentCaseBlocks: true  # 缩进 case 块。
+IndentCaseLabels: false  # 不缩进 case 标签。
+IndentGotoLabels: false  # 不缩进 goto 标签。
+IndentPPDirectives: BeforeHash  # 在预处理指令前缩进。
+IndentWrappedFunctionNames: false  # 不额外缩进包装的函数名
+AlignConsecutiveAssignments: None  # 不对齐连续赋值
+AlignConsecutiveDeclarations: None  # 不对齐连续声明
+PPIndentWidth:   -1  # 预处理指令缩进宽度。
+PenaltyBreakAssignment: 2  # 赋值语句换行的惩罚。
+PenaltyBreakBeforeFirstCallParameter: 1000  # 第一个函数调用参数前换行的惩罚。
+PenaltyBreakOpenParenthesis: 1000  # 打开括号前换行的惩罚。
+PenaltyBreakBeforeMemberAccess: 1000  # 成员访问前换行的惩罚。
+PenaltyExcessCharacter: 5  # 超过列限制的惩罚。
+PenaltyReturnTypeOnItsOwnLine: 60  # 返回类型单独一行的惩罚。
+PointerAlignment: Left  # 指针对齐方式。
+QualifierAlignment: Leave  # 保持限定符的原始对齐方式。
+ReflowComments: Never  # 不自动格式化注释。
+RemoveEmptyLinesInUnwrappedLines: true
+RemoveParentheses: Leave
+SeparateDefinitionBlocks: Leave
+SortIncludes: CaseInsensitive  # 对包含文件进行排序，忽略大小写
+SpaceAfterCStyleCast: false  # 在 C 风格强制转换后不添加空格。
+SpaceAfterLogicalNot: false  # 在逻辑非运算符后不添加空格。
+SpaceAroundPointerQualifiers: Default  # 指针限定符周围使用默认空格规则。
+SpaceBeforeAssignmentOperators: true  # 在赋值运算符前添加空格。
+SpaceBeforeCaseColon: false  # 在 case 标签的冒号前不添加空格
+SpaceBeforeParens: ControlStatements  # 在控制语句的括号前添加空格。
+SpaceBeforeSquareBrackets: false  # 在方括号前不添加空格。
+SpacesInParentheses: false  # 在括号内不添加空格。
+SpacesInSquareBrackets: false  # 在方括号内不添加空格。

@@ -1,0 +1,88 @@
+CompileFlags:
+    Add: #-ferror-limit=100
+      [
+        # "--query-driver=/home/xy/envs/gcc-arm-none-eabi-10.3-2021.10/bin/arm-none-eabi-gcc,/home/xy/envs/gcc-arm-none-eabi-10.3-2021.10/bin/arm-none-eabi-g++"
+        # --target=arm-none-eabi,
+        # -isystem,
+        # --sysroot=/home/xy/envs/gcc-arm-none-eabi-10.3-2021.10
+        # -std=c++14,
+        # -Wno-documentation,
+        # -Wno-missing-prototypes,
+        # -ferror-limit=0,
+      ]
+    # Compiler: arm-none-eabi-gcc
+# 在后台进行索引
+Index:
+  Background: Build
+
+Diagnostics:
+  # 多余的引用头文件报错
+  UnusedIncludes: Strict
+  # MissingIncludes: Strict # clangd17 后支持
+  # 禁用配置文件的自动包含,确保作用域清晰
+  Suppress: 
+    - "missing-includes:config.h"
+    - "missing-includes:bsp_config.h" 
+    - "missing-includes:hal_config.h"
+    - "missing-includes:cube_config.h"
+    - "missing-includes:libs_config.h"
+    - "missing-includes:global_config.h"
+  ClangTidy:
+    Add:
+    [
+        performance-*,
+        bugprone-*,
+        modernize-*,
+        clang-analyzer-*,
+        readability-identifier*,
+        # readability-delete-null-pointer,
+    ]
+    Remove:
+    [
+      modernize-avoid-c-arrays,
+      bugprone-easily-swappable-parameters,
+      modernize-macro-to-enum,
+      bugprone-narrowing-conversions,
+      readability-identifier-length,
+      modernize-use-trailing-return-type,
+    ]
+    
+    CheckOptions:
+      readability-identifier-naming.EnumCase: Leading_upper_snake_case
+      readability-identifier-naming.EnumSuffix: _e
+      readability-identifier-naming.EnumConstantCase: lower_case
+      readability-identifier-naming.EnumConstantHungarianPrefix: off
+      
+      readability-identifier-naming.StructCase: Leading_upper_snake_case
+      readability-identifier-naming.StructSuffix: _t
+      readability-identifier-naming.FieldCase: lower_case
+
+      readability-identifier-naming.TypedefCase: Leading_upper_snake_case
+      readability-identifier-naming.TypeAliasCase: Leading_upper_snake_case
+
+      # static function
+      readability-identifier-naming.FunctionCase: lower_case
+      readability-identifier-length.MinimumParameterNameLength : 0
+      # normal function
+      readability-identifier-naming.GlobalFunctionCase: Camel_Snake_Case
+      
+      readability-identifier-naming.VariableCase: lower_case
+      readability-identifier-naming.StaticVariableCase: lower_case
+
+      readability-identifier-naming.ClassCase: CamelCase
+      readability-identifier-naming.NamespaceCase: CamelCase
+      
+      readability-identifier-naming.MacroCase: UPPER_CASE
+      readability-identifier-naming.ConstexprVariableCase: UPPER_CASE
+      readability-identifier-naming.GlobalConstantCase: UPPER_CASE
+      readability-identifier-naming.ConstCase: UPPER_CASE
+
+# 镶嵌提示
+InlayHints:
+  Designators: Yes
+  Enabled: Yes
+  ParameterNames: Yes
+  DeducedTypes: Yes
+
+Hover:
+  ShowAKA: No
