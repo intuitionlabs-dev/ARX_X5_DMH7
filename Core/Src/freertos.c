@@ -27,6 +27,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "DM_motor.h"
+#include "ENCOS_motor.h"
 #include "monitor.h"
 #include "can_loopback_test.h"
 #include "cmd.h"
@@ -243,6 +244,7 @@ void StartMotorTask(void *argument)
   for(;;)
   {
     DMmotor_Calc_Send();
+    ENCOSmotor_Calc_Send();
     tick += 1U;
     osDelayUntil(tick);
   }

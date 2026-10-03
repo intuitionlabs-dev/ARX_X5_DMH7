@@ -81,6 +81,9 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     libs/cvector/cvector.c
     libs/dm_motor/DM_motor.c
     libs/dm_motor/dm_mit_control.c
+    libs/encos_motor/ENCOS_motor.c
+    libs/encos_motor/encos_mixed_control.c
+    libs/encos_motor/encos_protocol.c
     libs/fast_math/fast_cos_f32.c
     # 源工程还有个 fast_matrix.c（fast_mat_* 那套矩阵运算），只有 robotics/ 那个
     # C++ 矩阵封装在用，本工程没移植那个框架，所以这个文件没有拿过来。
@@ -112,6 +115,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/controller
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/cvector
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/dm_motor
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/encos_motor
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/fast_math
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/fps
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/monitor

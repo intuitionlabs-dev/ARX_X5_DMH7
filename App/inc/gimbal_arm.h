@@ -1,6 +1,6 @@
 #pragma once
 
-/* 六轴机械臂 + 夹爪(7 个达妙电机)。
+/* 六轴机械臂 + 夹爪(7 个电机)：j1~j3 是 ENCOS，j4~j6 和夹爪是达妙。
  *
  * 从 ec_code/engineer-wheel-leg-v-1/APP/gimbal/ 搬过来的，和当前框架的适配：
  *
@@ -13,6 +13,11 @@
  *   - **动力学(arm_serial_link)**：Joint_Feedforward_Calc() 整个注释掉了，所以
  *     tau_comp[] 恒为 0。位置/速度/摩擦前馈不受影响。
  *   - **打印**：本工程 printf 是坏的(__io_putchar 没定义)，PRINT_ANGLE 关掉了。
+ *   - **j1~j3 的电机驱动**：从达妙换成 ENCOS(ENCOS V1.20EAP，就是 ARX X5 的
+ *     MotorType4)。配置散在 gimbal_arm.c 的 Gimbal_Create() 里，参数来源见那里。
+ *     注意 ENCOS 的 `enable` 只是标志位，真正的启停帧由 ENCOSmotor_Calc_Send()
+ *     在 MotorTask 里发；别在这里调 ENCOSmotor_Enable()/Disable()，理由见
+ *     Gimbal_Update() 里的注释。
  *
  * 板级标定量(电机方向、减速比、零点、前馈系数)在 App/inc/gimbal_arm_def.h。
  *
@@ -21,7 +26,8 @@
  *                               // 它栈上要 ~4 KB(kjoint_controller_config[7])，
  *                               // 而主栈 _Min_Stack_Size 只有 2 KB。
  *                               // 现在挂在 StartCmdTask 进循环之前。
- *                               // 还要在 BSP_CAN_Init()/DMmotor_Driver_Init() 之后。
+ *                               // 还要在 BSP_CAN_Init()/DMmotor_Driver_Init()/
+ *                               // ENCOSmotor_Driver_Init() 之后。
  *   Cmd_Loop() 里调 Gimbal_Update(gimbal);   // CmdTask 500 Hz / 2 ms
  */
 
@@ -34,23 +40,32 @@
 /* BSP 层 */
 /* HAL 层 */
 #include "DM_motor.h"
+#include "ENCOS_motor.h"
 
 /* 多久没收到新指令就把 arm_mode 打回 arm_stop(ms)。
  * 和 CmdTask 的周期(2 ms)比足够宽，正常丢几帧也不会误停。 */
 #define ARM_CMD_TIMEOUT_MS 100U
 
+/* 前三个关节是 ENCOS，后面 j4~j6 和夹爪还是达妙。
+ * 两个驱动的电机类型不一样，数组下标也就分开算。 */
+#define ARM_ENCOS_JOINT_NUM 3
+
 typedef struct Gimbal_t {
     /* 外设 */
-    DM_motor* joint1;   // 8006
-    DM_motor* joint2;   // 8009
-    DM_motor* joint3;   // 4340p
+    ENCOS_motor* joint1;  // ENCOS(力位混合控制)
+    ENCOS_motor* joint2;  // ENCOS
+    ENCOS_motor* joint3;  // ENCOS
     DM_motor* joint4;   // 4310
     DM_motor* joint5;   // 4310
     DM_motor* joint6;   // DM2325
     DM_motor* gripper;  // 4310
 
     PID_Config pid_cfgs[ARM_MOTOR_NUM][2];  // pid参数 //位置环0和速度环1参数
-    float pid_mit_kpkd[ARM_MOTOR_NUM][2];   // mit控制的kp和kd参数。
+    float pid_mit_kpkd[ARM_MOTOR_NUM][2];   // 达妙 MIT 的 kp/kd —— 只用 j4/j5/j6/gripper 那几行
+    /* ENCOS 内置的是"力位混合控制"(kp/kd 和 位置/速度/力矩 同帧下发)，和达妙的 MIT
+     * 不是一回事，所以单独一组，别和上面的 pid_mit_kpkd 混用。值见 gimbal_arm.c 的
+     * pid_init()，来源是 ARX X5 SDK 的 joint_parameters.position_kp/kd。 */
+    float encos_kpkd[ARM_ENCOS_JOINT_NUM][2];  // [kp, kd]
 
     /* 初始化量 */
     float motor_pos_init[ARM_JOINT_NUM];  // 电机初始角度，与motor_controller->fdb_position是同等地位，deg,公式:motor_angle = MOTOR_DIR*(motor_controller->fdb_position - motor_pos_init) + motor_angle_init

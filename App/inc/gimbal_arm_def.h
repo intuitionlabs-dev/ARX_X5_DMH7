@@ -15,23 +15,20 @@
 #include "robot_def.h"
 
 // 电机正方向在运动学坐标系中的方向
-CONSTEXPR int8_t MOTOR_DIR[ARM_JOINT_NUM] = {-1, 1, 1, -1, 1, 1};
+CONSTEXPR int8_t MOTOR_DIR[ARM_JOINT_NUM] = {1, 1, 1, 1, 1, 1};
 
 /* motor_angle_init */
 // 用于校准零点的位置下关节的运动学角度，deg
 CONSTEXPR float JOINT_ANGLE_INIT[ARM_JOINT_NUM] = {
     0,
-    169.5 - 9.76,
-    /* -155.74 */ -150.94,
     0,
-    128.5,
+    0,
+    0,
+    0,
     0,
 };
 // 减速比
-CONSTEXPR float MOTOR_REDUCTION[ARM_JOINT_NUM] = {1, 1, 1, 1, 1, 29.0 / 23.0};
-// j6 是 DM2325，反馈角是电机侧的，要除以它才是减速箱侧
-CONSTEXPR float REDUCTION_DM2325 = 25;
-
+CONSTEXPR float MOTOR_REDUCTION[ARM_JOINT_NUM] = {1, 1, 1, 1, 1, 1};
 /* motor_pos_init */
 // 公式：pos_init = controller.fdb_position - MOTOR_DIR * MOTOR_REDUCTION * JOINT_ANGLE_INIT
 #define get_pos_init(fdb_pos, dir, reduction, angle_init) \
@@ -46,18 +43,20 @@ CONSTEXPR float REDUCTION_DM2325 = 25;
 #define speed_to_vel(speed, dir, reduction) ((speed) / (reduction) * (dir))
 
 // 初始化位置下电机在 controller 里的 fdb_position
-CONSTEXPR float JOINT1_POS_INIT = get_pos_init(0, MOTOR_DIR[JOINT1],
-    MOTOR_REDUCTION[JOINT1], JOINT_ANGLE_INIT[JOINT1]);
-CONSTEXPR float JOINT2_POS_INIT = get_pos_init(17.462759, MOTOR_DIR[JOINT2],
-    MOTOR_REDUCTION[JOINT2], JOINT_ANGLE_INIT[JOINT2]);
-CONSTEXPR float JOINT3_POS_INIT = get_pos_init(-1.02172804, MOTOR_DIR[JOINT3],
-    MOTOR_REDUCTION[JOINT3], JOINT_ANGLE_INIT[JOINT3]);
+CONSTEXPR float JOINT1_POS_INIT =
+    get_pos_init(0, MOTOR_DIR[JOINT1], MOTOR_REDUCTION[JOINT1], JOINT_ANGLE_INIT[JOINT1]);
+CONSTEXPR float JOINT2_POS_INIT =
+    get_pos_init(0, MOTOR_DIR[JOINT2], MOTOR_REDUCTION[JOINT2], JOINT_ANGLE_INIT[JOINT2]);
+CONSTEXPR float JOINT3_POS_INIT =
+    get_pos_init(0, MOTOR_DIR[JOINT3], MOTOR_REDUCTION[JOINT3], JOINT_ANGLE_INIT[JOINT3]);
 CONSTEXPR float JOINT4_POS_INIT =
     get_pos_init(0, MOTOR_DIR[JOINT4], MOTOR_REDUCTION[JOINT4], JOINT_ANGLE_INIT[JOINT4]);
 // j4 由于存在多圈问题，故每次上电都重新设置为当前 fdb_position
-CONSTEXPR float JOINT5_POS_INIT = get_pos_init(137.434921, MOTOR_DIR[JOINT5],
-    MOTOR_REDUCTION[JOINT5], JOINT_ANGLE_INIT[JOINT5]);
+CONSTEXPR float JOINT5_POS_INIT =
+    get_pos_init(0, MOTOR_DIR[JOINT5], MOTOR_REDUCTION[JOINT5], JOINT_ANGLE_INIT[JOINT5]);
 // j6 和 gripper 电机掉电不保存零点，motor_pos_init 在初始化时设置为当前 fdb_position
+CONSTEXPR float JOINT6_POS_INIT =
+    get_pos_init(0, MOTOR_DIR[JOINT6], MOTOR_REDUCTION[JOINT6], JOINT_ANGLE_INIT[JOINT6]);
 
 // 达妙电机 ref_torque 会在驱动里做映射，只用考虑传动比
 CONSTEXPR float MG6010E_TORQUE_CONSTANT = 0.16f;  // Nm/A
@@ -72,15 +71,14 @@ CONSTEXPR float JOINT_TORQUE_TRANS[ARM_JOINT_NUM] = {
 };
 // 关节电机转矩转换系数修正系数
 CONSTEXPR float JOINT_TORQUE_TRANS_COEF[ARM_JOINT_NUM] = {
-    1, 1.3, 1, 1, 1,
-    0,  // FIXME: 需要修复 j6 的力矩计算
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
 };
 // 粘性摩擦系数 b (N·m·s/rad)
-CONSTEXPR float JOINT_DAMPING[ARM_JOINT_NUM] = {0.176148877, 0, 0, 0, 0, 0};
+CONSTEXPR float JOINT_DAMPING[ARM_JOINT_NUM] = {0, 0, 0, 0, 0, 0};
 // 速度前馈系数，仅用于 controller.speed_comp 的计算
 CONSTEXPR float JOINT_SPEEDCOMP_COEF[ARM_JOINT_NUM] = {1, 1, 1, 1, 1, 1};
-
-// 夹爪 TODO:
-CONSTEXPR float GRIPPER_C_POS_REL_POS = /* -157.714127 */ 0.697631299;  // 张开时的 controller.ref_position
-CONSTEXPR float GRIPPER_C_POS_GRIP_POS = 60 + 8;  // 恒定位置抓取时的 controller.ref_position
-CONSTEXPR float GRIPPER_C_F_GRIP_TORQUE = 1.2;    // 恒定力矩抓取时的力矩

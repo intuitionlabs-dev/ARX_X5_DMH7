@@ -1,10 +1,9 @@
 #include "gimbal_arm.h"
-
 #include <stdlib.h> /* malloc()，源文件漏了这个 */
 #include <string.h>
-
 #include "common.h"
-#include "dm_mit_control.h" /* DM_Mit_Control() */
+#include "dm_mit_control.h"      /* DM_Mit_Control() */
+#include "encos_mixed_control.h" /* ENCOS_Mixed_Control() */
 #include "gimbal_arm_def.h"
 #include "main.h" /* HAL_GetTick()，判指令超时用 */
 #include "temperature_protect.h"
@@ -24,13 +23,13 @@
  * 本来各自 printf_log 一句，本工程 printf 是坏的，所以只留空壳 —— 函数保留、传给了
  * lost_callback_，在调试器里给对应的那个挂断点就能知道是哪台电机掉线。
  * 接入日志后把 (void)motor; 换成 printf_log 即可。 */
-void Joint1_Motor_Lost(void* motor) { (void)motor; }   /* joint1 ENCOS lost */
-void Joint2_Motor_Lost(void* motor) { (void)motor; }   /* joint2 ENCOS lost */
-void Joint3_Motor_Lost(void* motor) { (void)motor; }   /* joint3 ENCOS lost */
-void Joint4_Motor_Lost(void* motor) { (void)motor; }   /* joint4 DM4310 lost */
-void Joint5_Motor_Lost(void* motor) { (void)motor; }   /* joint5 DM4310 lost */
-void Joint6_Motor_Lost(void* motor) { (void)motor; }   /* joint6 DM4310 lost */
-void Gripper_Motor_Lost(void* motor) { (void)motor; }  /* gripper DM4310 lost */
+void Joint1_Motor_Lost(void* motor) { (void)motor; }  /* joint1 ENCOS lost */
+void Joint2_Motor_Lost(void* motor) { (void)motor; }  /* joint2 ENCOS lost */
+void Joint3_Motor_Lost(void* motor) { (void)motor; }  /* joint3 ENCOS lost */
+void Joint4_Motor_Lost(void* motor) { (void)motor; }  /* joint4 DM4310 lost */
+void Joint5_Motor_Lost(void* motor) { (void)motor; }  /* joint5 DM4310 lost */
+void Joint6_Motor_Lost(void* motor) { (void)motor; }  /* joint6 DM4310 lost */
+void Gripper_Motor_Lost(void* motor) { (void)motor; } /* gripper DM4310 lost */
 /* 反馈计算函数 */
 //float Joint1_Pos_Fdb_Calc(void* arg);
 // float Joint6_Pos_Fdb_Calc(void* arg);
@@ -42,23 +41,39 @@ void Gripper_Motor_Lost(void* motor) { (void)motor; }  /* gripper DM4310 lost */
 
 /* 主函数 */
 // NOLINTBEGIN
-static void Motor_Lost_Handle(Gimbal* obj);       // 电机掉线处理
-static uint8_t Arm_Auto_Init(Gimbal* obj);        // 初次上电自动初始化
-static void Get_Motor_Fdb(Gimbal* obj);           // 电机反馈
+static void Motor_Lost_Handle(Gimbal* obj);  // 电机掉线处理
+static uint8_t Arm_Auto_Init(Gimbal* obj);   // 初次上电自动初始化
+static void Get_Motor_Fdb(Gimbal* obj);      // 电机反馈
 // static void Joint_Feedforward_Calc(Gimbal* obj);  // 动力学前馈计算(未接入，见下文)
-static void Set_Motor_ref(Gimbal* obj);           // 电机控制
+static void Set_Motor_ref(Gimbal* obj);  // 电机控制
 // NOLINTEND
 /* 辅助函数 */
-static void pid_init(Gimbal* obj);        // 初始化pid参数
-static void set_pid_normal(Gimbal* obj);  // 给pid赋值
-static void set_pid_zero(Gimbal* obj);    // 给pid置0
+static void pid_init(Gimbal* obj);                            // 初始化pid参数
+static void set_pid_normal(Gimbal* obj);                      // 给pid赋值
+static void set_pid_zero(Gimbal* obj);                        // 给pid置0
+static uint8_t encos_joint_init(Gimbal* obj, uint8_t joint);  // j1~j3 建完之后的公共收尾+判空
 static float lowpass_filter(float current_speed, float a, uint8_t index);  // 低通滤波器
 // 低通滤波后堵转检测
 static uint8_t stalling_detect(controller* controller, float speed_diff, float pos_step,
     uint16_t stall_time, uint8_t index, float a);
-static float gripper_comp_calc(float ref_pos);  // 夹爪力矩前馈计算
 /* 私有常量 */
 static PID_Config zero_config;
+
+/* j1~j3 的 ENCOS(V1.20EAP，就是 ARX X5 的 MotorType4)协议量程。数字取自
+ * libs/gravity_compensation/sdk_parameters/parameters.json 里 motor_protocols 的
+ * Type4 那组常量(驱动打 kd 用 9 bit，和 SDK 的 packed_bits[3]=9 对得上)。
+ *
+ * **这组数必须和电机里存的量程一致**，否则解码出来的位置/速度全是错的 ——
+ * ENCOSmotor_Create() 只校验"格式合法"，不校验"和电机一致"。上电后拿
+ * ENCOSmotor_Query(obj, 23..28) 把六项读回来对一遍。 */
+static const ENCOS_Ranges ENCOS_JOINT_RANGES = {
+    .kp = {0.0f, 500.0f},         // Type4 kp_min/kp_max
+    .kd = {0.0f, 50.0f},          // Type4 kd_max
+    .position = {-12.5f, 12.5f},  // Type4 position_min/max
+    .speed = {-18.0f, 18.0f},     // Type4 velocity_min/max
+    .torque = {-30.0f, 30.0f},    // Type4 effort_min/max
+    .current = {-30.0f, 30.0f},   // 见上面「必须和电机一致」那段，实测核对
+};
 
 /* 私有变量 */
 static controller* motor_controller_list[ARM_MOTOR_NUM];  // 电机控制器数组，便于缩减代码冗余
@@ -75,6 +90,26 @@ float g_ref_speed;
 float g_speed_comp;
 float g_output;
 float g_ouput_comp;
+
+/* j1~j3 建好之后的公共收尾：回填 arg、把 kp/kd 从 encos_kpkd 抄进电机、登记
+ * controller/monitor。返回 0 表示电机没建起来。
+ *
+ * 为什么要判空：ENCOSmotor_Create() 的入参校验比 DMmotor_Create() 严得多(量程必须
+ * 合法、tx_id 必须等于 rx_id、同一总线同一个 rx_id 不能建两次……)，配置写错就是
+ * 返回 NULL，而原来达妙那种 `obj->jointN->config.arg = ...` 的写法会直接空指针。
+ * 达妙那几行是历史遗留，这里新写的就不跟着犯了。 */
+static uint8_t encos_joint_init(Gimbal* obj, uint8_t joint) {
+    ENCOS_motor* motor = joint == JOINT1 ? obj->joint1
+        : joint == JOINT2                ? obj->joint2
+                                         : obj->joint3;
+    if (motor == NULL) return 0;
+    motor->config.arg = motor;
+    motor->kp = obj->encos_kpkd[joint][0];
+    motor->kd = obj->encos_kpkd[joint][1];
+    motor_controller_list[joint] = motor->motor_controller;
+    motor_monitor_list[joint] = motor->monitor;
+    return 1;
+}
 
 Gimbal* Gimbal_Create(void) {
     /* 创建实例 */
@@ -94,86 +129,68 @@ Gimbal* Gimbal_Create(void) {
         joint_controller_config[i].speed_pid_config = obj->pid_cfgs[i][1];
     }
     {
-        // Joint1 dm8006
-        DM_motor_config joint1_motor_config = {
+        // Joint1 ENCOS V1.20EAP(原 dm8006 的位置)。CAN id 用 SDK 那套：j1 = 1
+        ENCOS_motor_config joint1_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT1],
-            .bsp_can_index = 2,  // CAN3
+            .bsp_can_index = 2,  // CAN3，接线没动
             .can_tx_id = 0x01,
-            .can_rx_id = 0x01,
+            .can_rx_id = 0x01,  // ENCOS 要求收发同 id，否则 Create 直接返回 NULL
             .lost_callback_ = Joint1_Motor_Lost,
-            .control_mode = dm_mit,
-            // 以下三个参量需要和于上位机调参软件中给定的参数一致，否则会出现反馈数据与实际不符的情况
-            // 设置为3.1415，可令电机转动一圈的编码器值为65535。若为6.28，则电机转动一圈的编码器值为32767，不利于机器人复活重启
-            .max_position = 3.14159f,
-            .max_speed = 45,
-            .max_torque = 20,
-            .max_kp = 500,
-            .max_kd = 5,
+            .output_mode = encos_output_normal,
+            .ranges = ENCOS_JOINT_RANGES,
+            .torque_constant = 0.0f,  // SDK 没给 Kt -> fdb_torque 恒为 NAN(本工程没人用)
+            .position_offset = 0.0f,  // SDK: motor_type4_position.offset = 0.0
+            .feedback_timeout_ms = 100,  // SDK: Type4 timeout_us = 100000
+            .stop_mode = encos_soft_stop,
             .pos_fdb_calc = NULL,
             .speed_fdb_calc = NULL,
             .arg = NULL,   // 速度或位置环的反馈计算函数的对象
             .fre_rel = 1,  //1000Hz
         };
-        obj->joint1 = DMmotor_Create(&joint1_motor_config, DM_Mit_Control);
-        obj->joint1->config.arg = obj->joint1;
-        obj->joint1->kp = obj->pid_mit_kpkd[JOINT1][0];
-        obj->joint1->kd = obj->pid_mit_kpkd[JOINT1][1];
-        motor_controller_list[JOINT1] = obj->joint1->motor_controller;
-        motor_monitor_list[JOINT1] = obj->joint1->monitor;
+        obj->joint1 = ENCOSmotor_Create(&joint1_motor_config, ENCOS_Mixed_Control);
+        if (!encos_joint_init(obj, JOINT1)) return NULL;
 
-        // Joint2 DM8009
-        DM_motor_config joint2_motor_config = {
+        // Joint2 ENCOS V1.20EAP(原 dm8009 的位置)。CAN id 用 SDK 那套：j2 = 2
+        ENCOS_motor_config joint2_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT2],
-            .bsp_can_index = 0,  // CAN1
+            .bsp_can_index = 0,  // CAN1，接线没动
             .can_tx_id = 0x02,
-            .can_rx_id = 0x02,
+            .can_rx_id = 0x02,  // ENCOS 要求收发同 id，否则 Create 直接返回 NULL
             .lost_callback_ = Joint2_Motor_Lost,
-            .control_mode = dm_mit,
-            // 以下三个参量需要和于上位机调参软件中给定的参数一致，否则会出现反馈数据与实际不符的情况
-            // 设置为3.1415，可令电机转动一圈的编码器值为65535。若为6.28，则电机转动一圈的编码器值为32767，不利于机器人复活重启
-            .max_position = 3.14159f,
-            .max_speed = 45,
-            .max_torque = 40,
-            .max_kp = 500,
-            .max_kd = 5,
+            .output_mode = encos_output_normal,
+            .ranges = ENCOS_JOINT_RANGES,
+            .torque_constant = 0.0f,  // SDK 没给 Kt -> fdb_torque 恒为 NAN(本工程没人用)
+            .position_offset = 0.0f,  // SDK: motor_type4_position.offset = 0.0
+            .feedback_timeout_ms = 100,  // SDK: Type4 timeout_us = 100000
+            .stop_mode = encos_soft_stop,
             .pos_fdb_calc = NULL,
-            .speed_fdb_calc = /* Joint2_Speed_Fdb_Calc */NULL,
+            .speed_fdb_calc = /* Joint2_Speed_Fdb_Calc */ NULL,
             .arg = NULL,   // 速度或位置环的反馈计算函数的对象
             .fre_rel = 1,  //1000Hz
         };
-        obj->joint2 = DMmotor_Create(&joint2_motor_config, DM_Mit_Control);
-        obj->joint2->config.arg = obj->joint2;
-        obj->joint2->kp = obj->pid_mit_kpkd[JOINT2][0];
-        obj->joint2->kd = obj->pid_mit_kpkd[JOINT2][1];
-        motor_controller_list[JOINT2] = obj->joint2->motor_controller;
-        motor_monitor_list[JOINT2] = obj->joint2->monitor;
+        obj->joint2 = ENCOSmotor_Create(&joint2_motor_config, ENCOS_Mixed_Control);
+        if (!encos_joint_init(obj, JOINT2)) return NULL;
 
-        // Joint3 DM4340p
-        DM_motor_config joint3_motor_config = {
+        // Joint3 ENCOS V1.20EAP(原 dm4340p 的位置)。CAN id 用 SDK 那套：j3 = 4
+        ENCOS_motor_config joint3_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT3],
-            .bsp_can_index = 0,  // CAN1
-            .can_tx_id = 0x03,
-            .can_rx_id = 0x03,
+            .bsp_can_index = 0,  // CAN1，接线没动
+            .can_tx_id = 0x04,
+            .can_rx_id = 0x04,  // ENCOS 要求收发同 id，否则 Create 直接返回 NULL
             .lost_callback_ = Joint3_Motor_Lost,
-            .control_mode = dm_mit,
-            // 以下三个参量需要和于上位机调参软件中给定的参数一致，否则会出现反馈数据与实际不符的情况
-            // 设置为3.1415，可令电机转动一圈的编码器值为65535。若为6.28，则电机转动一圈的编码器值为32767，不利于机器人复活重启
-            .max_position = 3.14159f,
-            .max_speed = 10,
-            .max_torque = 40,
-            .max_kp = 500,  // 出厂默认
-            .max_kd = 5,
+            .output_mode = encos_output_normal,
+            .ranges = ENCOS_JOINT_RANGES,
+            .torque_constant = 0.0f,  // SDK 没给 Kt -> fdb_torque 恒为 NAN(本工程没人用)
+            .position_offset = 0.0f,  // SDK: motor_type4_position.offset = 0.0
+            .feedback_timeout_ms = 100,  // SDK: Type4 timeout_us = 100000
+            .stop_mode = encos_soft_stop,
             .pos_fdb_calc = NULL,
-            .speed_fdb_calc = /* Joint3_Speed_Fdb_Calc */NULL,
+            .speed_fdb_calc = /* Joint3_Speed_Fdb_Calc */ NULL,
             .arg = NULL,   // 速度或位置环的反馈计算函数的对象
             .fre_rel = 1,  //1000Hz
         };
-        obj->joint3 = DMmotor_Create(&joint3_motor_config, DM_Mit_Control);
-        obj->joint3->config.arg = obj->joint3;
-        obj->joint3->kp = obj->pid_mit_kpkd[JOINT3][0];
-        obj->joint3->kd = obj->pid_mit_kpkd[JOINT3][1];
-        motor_controller_list[JOINT3] = obj->joint3->motor_controller;
-        motor_monitor_list[JOINT3] = obj->joint3->monitor;
+        obj->joint3 = ENCOSmotor_Create(&joint3_motor_config, ENCOS_Mixed_Control);
+        if (!encos_joint_init(obj, JOINT3)) return NULL;
 
         // Joint4 DM4310
         DM_motor_config joint4_motor_config = {
@@ -239,7 +256,7 @@ Gimbal* Gimbal_Create(void) {
             .max_kp = 500,
             .max_kd = 5,
             .pos_fdb_calc =
-                /* Joint6_Pos_Fdb_Calc */NULL,  
+                /* Joint6_Pos_Fdb_Calc */ NULL,
             .speed_fdb_calc = NULL,
             .arg = NULL,
             .fre_rel = 2,  //500Hz
@@ -302,10 +319,8 @@ Gimbal* Gimbal_Create(void) {
  *
  * used：本工程里还没有调用方(遥控器→关节角的映射没做)，不写这个属性会被
  * --gc-sections 整个删掉，连 JLink 都调不到。等有真实调用方了可以去掉。 */
-__attribute__((used))
-void Gimbal_Set_Control(Gimbal* obj, Arm_control_data* data) {
-    if (obj == NULL || data == NULL)
-        return;
+__attribute__((used)) void Gimbal_Set_Control(Gimbal* obj, Arm_control_data* data) {
+    if (obj == NULL || data == NULL) return;
     memcpy(&obj->arm_control_data, data, sizeof(Arm_control_data));
     obj->last_cmd_ms = HAL_GetTick();
 }
@@ -358,21 +373,28 @@ void Gimbal_Update(Gimbal* obj) {
     set_pid_normal(obj);
 #endif
 
-    /* 电机状态 */
+    /* 电机状态。
+     * j1~j3 是 ENCOS：**只改 enable 标志位，不调 ENCOSmotor_Enable()/Disable()**。
+     *   - Enable() 会 reset_controller()(清 PID 积分/D 状态)，这个函数每拍都跑，
+     *     每拍调一次等于把控制器废掉；
+     *   - Disable() 会当场发一帧停止帧，和 MotorTask 里的 ENCOSmotor_Calc_Send()
+     *     抢 CAN 总线(驱动要求所有 API 由调用者串行化)。
+     * 真正的启停帧由 Calc_Send() 自己发：它看到 enable != encos_enable 或反馈不新鲜
+     * 就发停止帧，和达妙那边的行为一致。 */
     if (obj->arm_mode == arm_stop) {
         // 各电机失能
-        obj->joint1->enable = dm_stop;
-        obj->joint2->enable = dm_stop;
-        obj->joint3->enable = dm_stop;
+        obj->joint1->enable = encos_stop;
+        obj->joint2->enable = encos_stop;
+        obj->joint3->enable = encos_stop;
         obj->joint4->enable = dm_stop;
         obj->joint5->enable = dm_stop;
         obj->joint6->enable = dm_stop;
         obj->gripper->enable = dm_stop;
     } else {
         // 各电机使能
-        obj->joint1->enable = dm_enable;
-        obj->joint2->enable = dm_enable;
-        obj->joint3->enable = dm_enable;
+        obj->joint1->enable = encos_enable;
+        obj->joint2->enable = encos_enable;
+        obj->joint3->enable = encos_enable;
         obj->joint4->enable = dm_enable;
         obj->joint5->enable = dm_enable;
         obj->joint6->enable = dm_enable;
@@ -424,20 +446,16 @@ static uint8_t Arm_Auto_Init(Gimbal* obj) {
         }
     }
 
-    // j1-j5电机具有绝对值编码器
+    // j1-j7电机具有绝对值编码器
     obj->motor_pos_init[JOINT1] = JOINT1_POS_INIT;
     obj->motor_pos_init[JOINT2] = JOINT2_POS_INIT;
     obj->motor_pos_init[JOINT3] = JOINT3_POS_INIT;
     obj->motor_pos_init[JOINT4] = JOINT4_POS_INIT;
     obj->motor_pos_init[JOINT5] = JOINT5_POS_INIT;
-    // j6和gripper电机掉电不保存零点
-    obj->motor_pos_init[JOINT6] = get_pos_init(obj->joint6->motor_controller->fdb_position,
-        MOTOR_DIR[JOINT6], MOTOR_REDUCTION[JOINT6], JOINT_ANGLE_INIT[JOINT6]);
+    obj->motor_pos_init[JOINT6] = JOINT6_POS_INIT;
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         obj->arm_feedback_data.motor_inited[i] = 1;  // 关节电机初始化完成
     }
-    // 夹爪默认初始化未完成
-    obj->arm_feedback_data.motor_inited[GRIPPER] = 0;
 
     return 1;  // 初始化完成
 }
@@ -510,6 +528,14 @@ static void Set_Motor_ref(Gimbal* obj) {
     // TODO:
 }
 
+/* 电机温度 float -> uint8_t(℃) 的转换，专门给 ENCOS 用。
+ * arm_feedback_data.motor_temp[] 是 uint8_t，达妙的 t_rotor 本来就是 uint8_t；而 ENCOS
+ * 的 t_rotor 是 **float，且收到第一帧反馈之前是 NAN**，NAN 转无符号是未定义行为。
+ * 没数据(或解出来是负数)就当 0 —— "没读到"和"0℃"在这里没有区别，反正只是回传量。 */
+static uint8_t Motor_Temp_U8(float t) {
+    return (isfinite(t) && t > 0.0f) ? (uint8_t)t : 0;
+}
+
 static void Get_Motor_Fdb(Gimbal* obj) {
     // TODO: 添加关节速度反馈，并考虑对反馈进行滤波
     /* 关节角 */
@@ -520,9 +546,9 @@ static void Get_Motor_Fdb(Gimbal* obj) {
     }
 
     /* 电机温度 */
-    obj->arm_feedback_data.motor_temp[JOINT1] = obj->joint1->t_rotor;
-    obj->arm_feedback_data.motor_temp[JOINT2] = obj->joint2->t_rotor;
-    obj->arm_feedback_data.motor_temp[JOINT3] = obj->joint3->t_rotor;
+    obj->arm_feedback_data.motor_temp[JOINT1] = Motor_Temp_U8(obj->joint1->t_rotor);
+    obj->arm_feedback_data.motor_temp[JOINT2] = Motor_Temp_U8(obj->joint2->t_rotor);
+    obj->arm_feedback_data.motor_temp[JOINT3] = Motor_Temp_U8(obj->joint3->t_rotor);
     obj->arm_feedback_data.motor_temp[JOINT4] = obj->joint4->t_rotor;
     obj->arm_feedback_data.motor_temp[JOINT5] = obj->joint5->t_rotor;
     obj->arm_feedback_data.motor_temp[JOINT6] = obj->joint6->t_rotor;
@@ -591,29 +617,32 @@ MAYBE_UNUSED static uint8_t stalling_detect(controller* con, float speed_diff,
 
 // PID参数初始化
 static void pid_init(Gimbal* obj) {
-    //joint1
+    //joint1 (ENCOS)
     PID_SetConfig_Pos(&obj->pid_cfgs[0][0], 8, 0.015, 20, 200, 600);
     obj->pid_cfgs[0][0].Irange = 1;
     PID_SetConfig_Pos(&obj->pid_cfgs[0][1], 0, 0, 0, 0, 8);
     obj->pid_cfgs[0][1].Irange = 0;
-    obj->pid_mit_kpkd[JOINT1][0] = 60;
-    obj->pid_mit_kpkd[JOINT1][1] = 3;
+    /* ENCOS 内置的是力位混合控制(kp/kd 和 位置/速度/力矩 同帧下发)，不是达妙的 MIT，
+     * 所以走单独的 encos_kpkd。值取自 ARX X5 SDK 的 joint_parameters.position_kp/kd
+     * (libs/gravity_compensation/sdk_parameters/parameters.json)。 */
+    obj->encos_kpkd[JOINT1][0] = 150;
+    obj->encos_kpkd[JOINT1][1] = 1;
 
-    //joint2
+    //joint2 (ENCOS)
     PID_SetConfig_Pos(&obj->pid_cfgs[1][0], 30, 0.1, 5, 150, 1500);
     obj->pid_cfgs[1][0].Irange = 1;
     PID_SetConfig_Pos(&obj->pid_cfgs[1][1], 0.1, 0, 0, 0, 20);
     obj->pid_cfgs[1][1].Irange = 0;
-    obj->pid_mit_kpkd[JOINT2][0] = 180;
-    obj->pid_mit_kpkd[JOINT2][1] = 5;
+    obj->encos_kpkd[JOINT2][0] = 150;
+    obj->encos_kpkd[JOINT2][1] = 1;
 
-    //joint3
+    //joint3 (ENCOS)
     PID_SetConfig_Pos(&obj->pid_cfgs[2][0], 50, 0.2, 1, 150, 1500);
     obj->pid_cfgs[2][0].Irange = 1.5;
     PID_SetConfig_Pos(&obj->pid_cfgs[2][1], 0.2, 0, 0, 0, 14);
     obj->pid_cfgs[2][1].Irange = 0;
-    obj->pid_mit_kpkd[JOINT3][0] = 120;
-    obj->pid_mit_kpkd[JOINT3][1] = 5;
+    obj->encos_kpkd[JOINT3][0] = 150;
+    obj->encos_kpkd[JOINT3][1] = 1;
 
     //joint4
     PID_SetConfig_Pos(&obj->pid_cfgs[3][0], 11, 0.3, 1, 400, 700);
@@ -651,18 +680,18 @@ static void pid_init(Gimbal* obj) {
 MAYBE_UNUSED static void set_pid_normal(Gimbal* obj) {
     obj->joint1->motor_controller->pid_pos_data.config = obj->pid_cfgs[JOINT1][0];
     obj->joint1->motor_controller->pid_speed_data.config = obj->pid_cfgs[JOINT1][1];
-    obj->joint1->kp = obj->pid_mit_kpkd[JOINT1][0];
-    obj->joint1->kd = obj->pid_mit_kpkd[JOINT1][1];
+    obj->joint1->kp = obj->encos_kpkd[JOINT1][0];
+    obj->joint1->kd = obj->encos_kpkd[JOINT1][1];
 
     obj->joint2->motor_controller->pid_pos_data.config = obj->pid_cfgs[JOINT2][0];
     obj->joint2->motor_controller->pid_speed_data.config = obj->pid_cfgs[JOINT2][1];
-    obj->joint2->kp = obj->pid_mit_kpkd[JOINT2][0];
-    obj->joint2->kd = obj->pid_mit_kpkd[JOINT2][1];
+    obj->joint2->kp = obj->encos_kpkd[JOINT2][0];
+    obj->joint2->kd = obj->encos_kpkd[JOINT2][1];
 
     obj->joint3->motor_controller->pid_pos_data.config = obj->pid_cfgs[JOINT3][0];
     obj->joint3->motor_controller->pid_speed_data.config = obj->pid_cfgs[JOINT3][1];
-    obj->joint3->kp = obj->pid_mit_kpkd[JOINT3][0];
-    obj->joint3->kd = obj->pid_mit_kpkd[JOINT3][1];
+    obj->joint3->kp = obj->encos_kpkd[JOINT3][0];
+    obj->joint3->kd = obj->encos_kpkd[JOINT3][1];
 
     obj->joint4->motor_controller->pid_pos_data.config = obj->pid_cfgs[JOINT4][0];
     obj->joint4->motor_controller->pid_speed_data.config = obj->pid_cfgs[JOINT4][1];
@@ -746,10 +775,12 @@ MAYBE_UNUSED static void set_pid_zero(Gimbal* obj) {
     // obj->gripper->motor_controller->pid_speed_data.config = zero_config;
 }
 
-float Joint6_Pos_Fdb_Calc(void* arg) {
-    DM_motor* motor = (DM_motor*)arg;
-    return motor->real_fdb_position * RAD2DEG / REDUCTION_DM2325;
-}
+
+/* 【注意】Joint2_Speed_Fdb_Calc()/Joint3_Speed_Fdb_Calc() 是达妙时代留下的，里面把
+ * void* 强转成 DM_motor*，而现在 j2/j3 已经是 ENCOS_motor 了 —— 这两个函数目前没有
+ * 调用方(上面 config 里的 .speed_fdb_calc 是写死的 NULL，函数名被注释掉了)，所以
+ * 先留着不删，但**要启用之前必须先改成 ENCOS_motor***，否则读到的是错位的字段。
+ * ENCOS 的 fdb_speed 也是 rad/s，单位换算(RAD2DEG)那部分可以照抄。 */
 
 float j2_a = 0.9;
 float cur_speed_j2;
@@ -770,11 +801,4 @@ float Joint3_Speed_Fdb_Calc(void* arg) {
     cur_speed_j3 = motor->fdb_speed * RAD2DEG;
     filt_speed_j3 = lowpass_filter(cur_speed_j3, j3_a, JOINT3);  // 对速度反馈进行低通滤波
     return filt_speed_j3;
-}
-
-static float gripper_comp_calc(float ref_pos) {
-    /* torque = 0.0002*pos^2 - 0.0062*pos - 0.7882
-        R^2 = 0.9708
-    */
-    return fclip(0.0002 * ref_pos * ref_pos - 0.0062 * ref_pos - 0.7882, -1, 0);
 }
