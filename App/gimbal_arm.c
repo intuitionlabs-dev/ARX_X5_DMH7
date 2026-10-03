@@ -340,7 +340,6 @@ void Gimbal_Update(Gimbal* obj) {
     /* 电机掉线相关处理 */
     Motor_Lost_Handle(obj);  // 放在最前面
 
-    static uint8_t to_syn_ref_flag = 0;  // 是否需要发送同步目标值的标志，1为需要，0为不需要
     // 首次上电自动初始化
     {
         static uint8_t first_init_flag = 0;
@@ -349,20 +348,11 @@ void Gimbal_Update(Gimbal* obj) {
             first_init_flag = Arm_Auto_Init(obj);
             if (!first_init_flag)
                 obj->arm_mode = arm_stop;  // 自动初始化未成功则停机
-            else
-                to_syn_ref_flag = 1;  // 自动初始化成功，设置需要发送同步目标值的标志
         }
     }
 
     /* 获取电机反馈 */
     Get_Motor_Fdb(obj);
-
-    /* 判断是否同步(源工程通过 service 让各模块把目标值对齐，本工程未接入) */
-    if (to_syn_ref_flag) {
-        // 发送同步目标值
-        to_syn_ref_flag = 0;
-        // Send_Request(ARM_SYN_REF_SERVICE, obj->arm_feedback_data.joint_angle, NULL, NULL);
-    }
 
     /* 动力学前馈计算加载(arm_serial_link 未移植，整块注释掉，tau_comp[] 恒 0) */
     // Joint_Feedforward_Calc(obj);
@@ -403,21 +393,6 @@ void Gimbal_Update(Gimbal* obj) {
 
     /* 电机控制 */
     Set_Motor_ref(obj);
-
-#ifdef PRINT_ANGLE
-    static uint16_t print_cnt = 0;
-    if (print_cnt < 100) {  // 每0.2秒打印一次
-        print_cnt++;
-    } else {
-        print_cnt = 0;
-        Print_Float(obj->arm_feedback_data.joint_angle[JOINT1]);
-        for (int i = 1; i < ARM_JOINT_NUM; i++) {
-            printf_log(",");
-            Print_Float(obj->arm_feedback_data.joint_angle[i]);
-        }
-        printf_log("\n");
-    }
-#endif
 
     // DEBUG:拷贝控制器数据
     g_fdb_pos = obj->gripper->motor_controller->fdb_position;
@@ -617,64 +592,20 @@ MAYBE_UNUSED static uint8_t stalling_detect(controller* con, float speed_diff,
 
 // PID参数初始化
 static void pid_init(Gimbal* obj) {
-    //joint1 (ENCOS)
-    PID_SetConfig_Pos(&obj->pid_cfgs[0][0], 8, 0.015, 20, 200, 600);
-    obj->pid_cfgs[0][0].Irange = 1;
-    PID_SetConfig_Pos(&obj->pid_cfgs[0][1], 0, 0, 0, 0, 8);
-    obj->pid_cfgs[0][1].Irange = 0;
-    /* ENCOS 内置的是力位混合控制(kp/kd 和 位置/速度/力矩 同帧下发)，不是达妙的 MIT，
-     * 所以走单独的 encos_kpkd。值取自 ARX X5 SDK 的 joint_parameters.position_kp/kd
-     * (libs/gravity_compensation/sdk_parameters/parameters.json)。 */
-    obj->encos_kpkd[JOINT1][0] = 150;
-    obj->encos_kpkd[JOINT1][1] = 1;
-
-    //joint2 (ENCOS)
-    PID_SetConfig_Pos(&obj->pid_cfgs[1][0], 30, 0.1, 5, 150, 1500);
-    obj->pid_cfgs[1][0].Irange = 1;
-    PID_SetConfig_Pos(&obj->pid_cfgs[1][1], 0.1, 0, 0, 0, 20);
-    obj->pid_cfgs[1][1].Irange = 0;
-    obj->encos_kpkd[JOINT2][0] = 150;
-    obj->encos_kpkd[JOINT2][1] = 1;
-
-    //joint3 (ENCOS)
-    PID_SetConfig_Pos(&obj->pid_cfgs[2][0], 50, 0.2, 1, 150, 1500);
-    obj->pid_cfgs[2][0].Irange = 1.5;
-    PID_SetConfig_Pos(&obj->pid_cfgs[2][1], 0.2, 0, 0, 0, 14);
-    obj->pid_cfgs[2][1].Irange = 0;
-    obj->encos_kpkd[JOINT3][0] = 150;
-    obj->encos_kpkd[JOINT3][1] = 1;
-
-    //joint4
-    PID_SetConfig_Pos(&obj->pid_cfgs[3][0], 11, 0.3, 1, 400, 700);
-    obj->pid_cfgs[3][0].Irange = 2;
-    PID_SetConfig_Pos(&obj->pid_cfgs[3][1], 0, 0, 0, 0, 4);
-    obj->pid_cfgs[3][1].Irange = 0;
-    obj->pid_mit_kpkd[JOINT4][0] = 0;
-    obj->pid_mit_kpkd[JOINT4][1] = 1.1;
-
-    //joint5
-    PID_SetConfig_Pos(&obj->pid_cfgs[4][0], 15, 0.02, 2, 50, 700);
-    obj->pid_cfgs[4][0].Irange = 1;
-    PID_SetConfig_Pos(&obj->pid_cfgs[4][1], 0, 0, 0, 0, 4);
-    obj->pid_cfgs[4][1].Irange = 0;
-    obj->pid_mit_kpkd[JOINT5][0] = 50;
-    obj->pid_mit_kpkd[JOINT5][1] = 1.5;
-
-    //joint6
-    PID_SetConfig_Pos(&obj->pid_cfgs[5][0], 18, 0.01, 0, 100, 800);
-    obj->pid_cfgs[5][0].Irange = 0;
-    PID_SetConfig_Pos(&obj->pid_cfgs[5][1], 0, 0, 0, 0, 5);
-    obj->pid_cfgs[5][1].Irange = 0;
-    obj->pid_mit_kpkd[JOINT6][0] = 0;  //kp必须为0，因为mit用到的位置没有多圈
-    obj->pid_mit_kpkd[JOINT6][1] = 2;
-
-    //gripper
-    PID_SetConfig_Pos(&obj->pid_cfgs[6][0], 15, 1, 0, 0, 1400);
-    obj->pid_cfgs[6][0].Irange = 0;
-    PID_SetConfig_Pos(&obj->pid_cfgs[6][1], 0, 0, 0, 0, 2);
-    obj->pid_cfgs[6][1].Irange = 0;
-    obj->pid_mit_kpkd[GRIPPER][0] = 3;
-    obj->pid_mit_kpkd[GRIPPER][1] = 0.3;
+    /* 【调试开关】所有 PID 参数一律置零（按用户要求）。
+     *   pid_cfgs[7][2]     位置环/速度环：KP/KI/KD/outputMax 全 0 -> 控制器输出恒 0
+     *   encos_kpkd[3][2]   ENCOS 力位混合控制的 kp/kd 全 0
+     *   pid_mit_kpkd[7][2] 达妙 MIT 的 kp/kd 全 0
+     * 效果：电机彻底松掉 —— 使能后重力下会掉，位置力矩只剩 Set_Motor_ref() 的前馈，
+     * 适合手动拖动、验反馈。
+     *
+     * 安全性：PID_POSITION == 0、D_AHEAD_UNUSED == 0，全 0 的 PID_Config 仍落在位置式
+     * 分支，PID_Calc() 走 else 算出 0，不会除零/出 NaN。
+     * Gimbal_Create() 在调本函数前已经 memset(obj, 0, sizeof(Gimbal))，本来也就是 0；
+     * 显式再清一遍是为了不依赖那个调用顺序。 */
+    memset(obj->pid_cfgs, 0, sizeof(obj->pid_cfgs));
+    memset(obj->encos_kpkd, 0, sizeof(obj->encos_kpkd));
+    memset(obj->pid_mit_kpkd, 0, sizeof(obj->pid_mit_kpkd));
 }
 
 MAYBE_UNUSED static void set_pid_normal(Gimbal* obj) {
