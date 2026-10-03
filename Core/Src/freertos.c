@@ -49,6 +49,7 @@ typedef StaticTask_t osStaticThreadDef_t;
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
+#if TEST_CAN_LOOPBACK_ENABLE
 /* Definitions for CanLoopbackTask */
 osThreadId_t CanLoopbackTaskHandle;
 uint32_t CanLoopbackTaskBuffer[ 512 ];
@@ -61,6 +62,7 @@ const osThreadAttr_t CanLoopbackTask_attributes = {
   .stack_size = sizeof(CanLoopbackTaskBuffer),
   .priority = (osPriority_t) osPriorityLow,
 };
+#endif
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -96,7 +98,9 @@ const osThreadAttr_t MotorTask_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
+#if TEST_CAN_LOOPBACK_ENABLE
 void StartCanLoopbackTask(void *argument);
+#endif
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -144,8 +148,10 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
+#if TEST_CAN_LOOPBACK_ENABLE
   /* creation of CanLoopbackTask */
   CanLoopbackTaskHandle = osThreadNew(StartCanLoopbackTask, NULL, &CanLoopbackTask_attributes);
+#endif
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -222,6 +228,8 @@ void StartMotorTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+#if TEST_CAN_LOOPBACK_ENABLE
+
 /* CanLoopbackTest_Init() 在 main.c 的 USER CODE BEGIN 2 里调用，在调度器启动前。 */
 void StartCanLoopbackTask(void *argument)
 {
@@ -234,5 +242,7 @@ void StartCanLoopbackTask(void *argument)
     osDelayUntil(tick);
   }
 }
+#endif
+
 /* USER CODE END Application */
 

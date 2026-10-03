@@ -45,7 +45,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Application
-    App/can_loopback_test.c
+    App/test/can_loopback_test.c
 
     # Board support
     Bsp/BMI088driver.c
@@ -89,6 +89,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/App/inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/test
     ${CMAKE_CURRENT_SOURCE_DIR}/Bsp/inc
     ${CMAKE_CURRENT_SOURCE_DIR}/Algorithm/inc
     ${CMAKE_CURRENT_SOURCE_DIR}/vofa+

@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include "test_config.h"
+
 /* CAN1 -> CAN2 自机通信(回环)测试
  *
  * 拓扑:本板 FDCAN1(索引 0) 发，FDCAN2(索引 1) 收。
@@ -29,6 +31,8 @@
 #define CAN_LB_ID        0x123u /* 测试帧使用的标准帧 ID */
 #define CAN_LB_PERIOD_MS 100u   /* 发送周期, ms */
 
+#if TEST_CAN_LOOPBACK_ENABLE
+
 /* ---- 收发统计 ---------------------------------------------------------- */
 extern volatile uint32_t can_lb_tx_cnt;     /* 已发出帧数 */
 extern volatile uint32_t can_lb_rx_cnt;     /* 已正确收到的帧数 */
@@ -46,3 +50,10 @@ extern volatile uint8_t  can_lb_warn[2];    /* 1 = 错误计数已到 96 的警�
 
 void CanLoopbackTest_Init(void);
 void CanLoopbackTest_Loop(void);
+#else
+/* 该测试已关闭：接口退化成空函数，main.c / freertos.c 的调用点不用加 #if。
+ * 观测变量 can_lb_* 此时不存在，调试器里读不到。 */
+static inline void CanLoopbackTest_Init(void) {}
+static inline void CanLoopbackTest_Loop(void) {}
+
+#endif /* TEST_CAN_LOOPBACK_ENABLE */

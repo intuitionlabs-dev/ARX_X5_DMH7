@@ -3,6 +3,10 @@
 #include "bsp_can.h"
 #include "fdcan.h" /* hfdcan1/2/3，用来读错误计数器 */
 #include "main.h"  /* HAL_GetTick() */
+#include "test_config.h" /* 测试例程开关 */
+
+#if TEST_CAN_LOOPBACK_ENABLE
+
 
 /* BSP_CAN_Send/AddFilter 都用 can_id 直接索引 can_devices[]，越界会踩内存。
  * 这里在编译期挡一道：改了 CAN_LB_*_CAN 又超出实例数会直接编不过。 */
@@ -123,3 +127,5 @@ void CanLoopbackTest_Loop(void) {
     BSP_CAN_Send(CAN_LB_TX_CAN, CAN_LB_ID, data, 8);
     can_lb_tx_cnt++;
 }
+
+#endif /* TEST_CAN_LOOPBACK_ENABLE */
