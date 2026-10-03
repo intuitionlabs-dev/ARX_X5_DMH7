@@ -15,7 +15,8 @@
  * 用法:
  *   CanLoopbackTest_Init();   // 调度器启动前调用(main.c 的 USER CODE BEGIN 2,
  *                             // 紧跟 BSP_CAN_Init() 之后)
- *   循环体里: CanLoopbackTest_Loop();  osDelay(1);
+ *   循环体里: CanLoopbackTest_Loop();  tick += 1;  osDelayUntil(tick);
+ *             (uint32_t tick = osKernelGetTickCount(); 在循环外初始化一次)
  *
  * 结果不走串口，全部记在下面的全局变量里，直接用调试器(JLink/gdb)读地址。
  * 正常时 can_lb_tx_cnt 和 can_lb_rx_cnt 同步增长，bad/lost 恒为 0，

@@ -167,9 +167,11 @@ void StartDefaultTask(void *argument)
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN StartDefaultTask */
   /* Infinite loop */
+  uint32_t tick = osKernelGetTickCount();
   for(;;)
   {
-    osDelay(1);
+    tick += 1U;
+    osDelayUntil(tick);
   }
   /* USER CODE END StartDefaultTask */
 }
@@ -185,10 +187,12 @@ void StartMonitorTask(void *argument)
 {
   /* USER CODE BEGIN StartMonitorTask */
   /* Infinite loop */
+  uint32_t tick = osKernelGetTickCount();
   for(;;)
   {
     Monitor_Loop();
-    osDelay(1);
+    tick += 1U;
+    osDelayUntil(tick);
   }
   /* USER CODE END StartMonitorTask */
 }
@@ -206,10 +210,12 @@ void StartMotorTask(void *argument)
   /* BSP_CAN_Init() / DMmotor_Driver_Init() / Monitor_Init() live in
    * main.c USER CODE BEGIN 2, before the scheduler starts. */
   /* Infinite loop */
+  uint32_t tick = osKernelGetTickCount();
   for(;;)
   {
     DMmotor_Calc_Send();
-    osDelay(1);
+    tick += 1U;
+    osDelayUntil(tick);
   }
   /* USER CODE END StartMotorTask */
 }
@@ -220,10 +226,12 @@ void StartMotorTask(void *argument)
 void StartCanLoopbackTask(void *argument)
 {
   (void)argument;
+  uint32_t tick = osKernelGetTickCount();
   for(;;)
   {
     CanLoopbackTest_Loop();
-    osDelay(1);
+    tick += 1U;
+    osDelayUntil(tick);
   }
 }
 /* USER CODE END Application */

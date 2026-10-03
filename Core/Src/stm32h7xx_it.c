@@ -294,7 +294,7 @@ void OTG_HS_IRQHandler(void)
    * CubeMX 不知道这个向量被用上了，于是生成个空体。后果和 TIM23 那个坑一样，
    * 而且更致命：OTG_HS_IRQn(77) 是优先级 5，TIM23_IRQn(161) 是 15，USB 标志没人清
    * → 反复触发 → 把 TIM23 和 SysTick 一起饿死 → uwTick 和 FreeRTOS tick 都停住，
-   * 所有 osDelay 永不超时、HAL_GetTick() 冻死。补上这一句。
+   * 所有 osDelay/osDelayUntil 永不超时、HAL_GetTick() 冻死。补上这一句。
    * 注意：若哪次 CubeMX 重新生成时开始自己输出这个调用，要把这里删掉，否则会重复处理。 */
   HAL_PCD_IRQHandler(&hpcd_USB_OTG_HS);
 
