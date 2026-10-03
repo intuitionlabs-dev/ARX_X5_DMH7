@@ -28,6 +28,7 @@
 /* USER CODE BEGIN Includes */
 #include "DM_motor.h"
 #include "monitor.h"
+#include "can_loopback_test.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -48,13 +49,24 @@ typedef StaticTask_t osStaticThreadDef_t;
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+/* Definitions for CanLoopbackTask */
+osThreadId_t CanLoopbackTaskHandle;
+uint32_t CanLoopbackTaskBuffer[ 512 ];
+osStaticThreadDef_t CanLoopbackTaskControlBlock;
+const osThreadAttr_t CanLoopbackTask_attributes = {
+  .name = "CanLoopbackTask",
+  .cb_mem = &CanLoopbackTaskControlBlock,
+  .cb_size = sizeof(CanLoopbackTaskControlBlock),
+  .stack_mem = &CanLoopbackTaskBuffer[0],
+  .stack_size = sizeof(CanLoopbackTaskBuffer),
+  .priority = (osPriority_t) osPriorityLow,
+};
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for MonitorTask */
@@ -84,7 +96,7 @@ const osThreadAttr_t MotorTask_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-
+void StartCanLoopbackTask(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -132,6 +144,8 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
+  /* creation of CanLoopbackTask */
+  CanLoopbackTaskHandle = osThreadNew(StartCanLoopbackTask, NULL, &CanLoopbackTask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -202,6 +216,15 @@ void StartMotorTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
-
+/* CanLoopbackTest_Init() 在 main.c 的 USER CODE BEGIN 2 里调用，在调度器启动前。 */
+void StartCanLoopbackTask(void *argument)
+{
+  (void)argument;
+  for(;;)
+  {
+    CanLoopbackTest_Loop();
+    osDelay(1);
+  }
+}
 /* USER CODE END Application */
 

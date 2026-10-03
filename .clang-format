@@ -6,9 +6,9 @@
 
 BasedOnStyle: Google
 # 空格和缩进
-IndentWidth:     2               # 每个缩进级别使用的空格数。
+IndentWidth:     4               # 每个缩进级别使用的空格数。
 UseTab:          Never            # 总是使用空格，而不是使用 Tab。
-TabWidth:        2                # Tab 键等价于多少个空格。
+TabWidth:        4                # Tab 键等价于多少个空格。
 
 AlignAfterOpenBracket: DontAlign  # 不对齐开括号后的参数，使用固定缩进
 AlignArrayOfStructures: None  # 对齐数组结构

@@ -22,6 +22,9 @@
 #include "stm32h7xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+/* CubeMX 把 HAL 时基设成了 TIM23(SYS 的 Timebase Source)，其句柄 htim23 定义在
+ * stm32h7xx_hal_timebase_tim.c 里、没有配套头文件，所以这里手动声明。 */
+extern TIM_HandleTypeDef htim23;
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -286,6 +289,14 @@ void USART3_IRQHandler(void)
 void OTG_HS_IRQHandler(void)
 {
   /* USER CODE BEGIN OTG_HS_IRQn 0 */
+  /* CubeMX 生成的这个函数也是空的。USB 中断的使能在 USB_DEVICE/Target/usbd_conf.c
+   * 的 HAL_PCD_MspInit() 里(HAL_NVIC_EnableIRQ(OTG_HS_IRQn))，那是 USER CODE 区，
+   * CubeMX 不知道这个向量被用上了，于是生成个空体。后果和 TIM23 那个坑一样，
+   * 而且更致命：OTG_HS_IRQn(77) 是优先级 5，TIM23_IRQn(161) 是 15，USB 标志没人清
+   * → 反复触发 → 把 TIM23 和 SysTick 一起饿死 → uwTick 和 FreeRTOS tick 都停住，
+   * 所有 osDelay 永不超时、HAL_GetTick() 冻死。补上这一句。
+   * 注意：若哪次 CubeMX 重新生成时开始自己输出这个调用，要把这里删掉，否则会重复处理。 */
+  HAL_PCD_IRQHandler(&hpcd_USB_OTG_HS);
 
   /* USER CODE END OTG_HS_IRQn 0 */
   /* USER CODE BEGIN OTG_HS_IRQn 1 */
@@ -355,6 +366,16 @@ void FDCAN3_IT1_IRQHandler(void)
 void TIM23_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM23_IRQn 0 */
+  /* CubeMX 生成的本函数是空的，没有调用 HAL_TIM_IRQHandler(&htim23)，后果两条：
+   *  1. TIM23 的 UIF 标志永远不清 → 中断线一直拉高、中断反复触发，CPU 全耗在异常
+   *     进进出出上，FreeRTOS 一个任务都跑不起来（所有任务内变量恒为初值）；
+   *  2. HAL_TIM_IRQHandler() 是 HAL_TIM_PeriodElapsedCallback() 的唯一调用者，而
+   *     main.c 里那个回调(htim->Instance == TIM23 时调 HAL_IncTick())正靠它触发，
+   *     所以 uwTick 永远不涨、HAL_GetTick() 恒为 0。
+   * 补上这一句。改之前可自查：arm-none-eabi-nm 在 ELF 里查不到 HAL_IncTick 和
+   * HAL_TIM_IRQHandler 两个符号，就说明整条链被 --gc-sections 当死代码丢掉了。
+   * 注意：若哪次 CubeMX 重新生成时开始自己输出这个调用，要把这里删掉，否则 tick 会翻倍。 */
+  HAL_TIM_IRQHandler(&htim23);
 
   /* USER CODE END TIM23_IRQn 0 */
   /* USER CODE BEGIN TIM23_IRQn 1 */

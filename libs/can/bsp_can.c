@@ -284,13 +284,21 @@ static const uint8_t DL_CTO_BYTES[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24
 static void bsp_can_fifo_msg_callback(FDCAN_HandleTypeDef *hfdcan, uint32_t fifo, uint32_t RxFifo0ITs) {
     for (int i = 0; i < DEVICE_CAN_CNT; ++i) {
         if (hfdcan == can_devices[i].device) {
-            uint8_t bsp_can_rxbuf[8];
+            /* 必须 >= 64 字节：HAL_FDCAN_GetRxMessage() 是按 DLCtoBytes[DataLength] 拷的，
+             * DLC 最大 15 对应 64 字节。本工程三路都是 classic CAN、元素也配的 8 字节，
+             * 正常最多 8 字节；但只要对端发一帧 FD 帧且 ID 命中滤波器，8 字节的栈缓冲
+             * 就会被拷爆(在中断里，栈是 MSP)。留够 64。 */
+            uint8_t bsp_can_rxbuf[64];
             FDCAN_RxHeaderTypeDef rxconf;
             HAL_FDCAN_GetRxMessage(hfdcan, fifo, &rxconf, bsp_can_rxbuf); /* 提取FIFO0中接收到的数据 */
                                                                           /* 更新RXFIFO的状态（了解FIFO是否有剩余报文） */
             for (size_t j = 0; j < can_devices[i].call_backs->cv_len; ++j) {
                 can_rx_callback funcnow = *(can_rx_callback *)cvector_val_at(can_devices[i].call_backs, j);
-                funcnow(i, rxconf.Identifier, bsp_can_rxbuf, DL_CTO_BYTES[rxconf.DataLength >> 16]);
+                /* 本工程的 HAL(见 stm32h7xx_hal_fdcan.c:3084)在 HAL_FDCAN_GetRxMessage()
+                 * 里已经把 DLC 右移过了(掩码 0x000F0000)，rxconf.DataLength 就是 0~15 的
+                 * 裸 DLC 值(FDCAN_DLC_BYTES_8 == 8)。这里再 >>16 会恒得 0，导致所有回调
+                 * 收到的 len 都是 0、一个字节都拷不出去。直接拿它当表下标。 */
+                funcnow(i, rxconf.Identifier, bsp_can_rxbuf, DL_CTO_BYTES[rxconf.DataLength & 0x0FU]);
             }
         }
     }
