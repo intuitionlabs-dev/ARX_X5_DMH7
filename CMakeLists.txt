@@ -82,6 +82,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     libs/fps/bsp_supervise.c
     libs/monitor/monitor.c
     libs/move_plan/hal_move_plan.c
+    libs/rc/rc.c
 
     # NOTE: Core/Src/freertos.c and the FreeRTOS kernel (cmsis_os2, port, heap_4)
     # are added by cmake/stm32cubemx/CMakeLists.txt, which CubeMX regenerates.
@@ -103,6 +104,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/fps
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/monitor
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/move_plan
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/rc
 )
 
 # Add project symbols (macros)

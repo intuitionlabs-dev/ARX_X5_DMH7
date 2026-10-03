@@ -1,5 +1,8 @@
 #include "cmd.h"
-#include "main.h" /* HAL_GetTick() */
+
+#include "rc.h" /* Rc_Loop()：遥控器驱动的服务，Cmd_Loop() 里带跑一遍 */
+
+#include <string.h> /* memset()，还有 NULL */
 
 /* ================== 电机参数：先给默认，按实际电机/接线填 ==================
  *
@@ -57,9 +60,12 @@ void Cmd_Init(void) {
 }
 
 void Cmd_Loop(void) {
+    /* 遥控器输入先在这里服务：换算成 µs/频率、判丢信号、推逻辑层、喂看门狗。
+     * 驱动本体在 libs/rc/ 里。 */
+    Rc_Loop();
+
     cmd_motor->enable = dm_stop;
     if (cmd_motor == NULL) {
         return;
     }
-
 }

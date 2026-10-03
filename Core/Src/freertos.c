@@ -214,7 +214,10 @@ void StartMonitorTask(void *argument)
   for(;;)
   {
     Monitor_Loop();
-    tick += 1U;
+    /* 100 Hz：count 一次减 1 就是 10 ms。
+     * 这个频率和每个 monitor 注册时给的 count 是绑死的 —— 改这里必须同步改所有
+     * Monitor_Register 的 count，否则所有掉线判定的时间一起变(见 monitor.h)。 */
+    tick += 10U;
     osDelayUntil(tick);
   }
   /* USER CODE END StartMonitorTask */

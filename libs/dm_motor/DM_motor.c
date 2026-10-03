@@ -124,7 +124,10 @@ DM_motor* DMmotor_Create(DM_motor_config* config , control_dm_func func)
     obj->motor_controller = create_controller(&obj->config.motor_controller_config);
     obj->control_calc = func;
     BSP_CAN_AddFilter(obj->config.bsp_can_index, obj->config.can_rx_id);
-    obj->monitor = Monitor_Register(obj->config.lost_callback_, 20, obj);
+    /* count 的单位是 Monitor_Loop() 的周期(现 10 ms)：2 -> 连续 20 ms 收不到反馈
+     * 就算掉线(1 kHz 时代写的是 20，周期 10 ms 时正好是 2，时间没变)。
+     * Monitor_Loop() 的频率改了这里要跟着改。 */
+    obj->monitor = Monitor_Register(obj->config.lost_callback_, 2, obj);
     obj->check_motor_inplace = DMMotor_Check_InPlace;
     if(config->fre_rel == 0) {
         obj->config.fre_rel = 1;  // 默认相对频率为1

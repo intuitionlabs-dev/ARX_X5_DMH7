@@ -40,6 +40,7 @@
 #include "monitor.h"
 #include "can_loopback_test.h"
 #include "cmd.h"
+#include "rc.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -257,6 +258,8 @@ int main(void)
   CanLoopbackTest_Init();
   /* CMD 线程的电机对象，必须在 BSP_CAN_Init() 和 DMmotor_Driver_Init() 之后 */
   Cmd_Init();
+  /* 遥控器 PWM 输入捕获(TIM1/TIM2)，必须在 MX_TIM1_Init()/MX_TIM2_Init() 之后 */
+  Rc_Init();
 //    OSPI_W25Qxx_Init();     // ��ʼ��OSPI��W25Q64
 //    
 //    OSPI_W25Qxx_Test();     // Flash��д����
@@ -369,6 +372,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
+  /* 遥控器输入捕获的计数器回绕计数：Rc_Init() 里开了 TIM1/TIM2 的更新中断，
+     每个定时器每 65.536 ms 进一次。其他定时器的事件这里不管。 */
+  Rc_CountWrap(htim);
 
   /* USER CODE END Callback 1 */
 }
