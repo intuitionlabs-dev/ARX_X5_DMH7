@@ -61,7 +61,8 @@ typedef struct encos_motor_config_t {
 
 typedef struct encos_motor_t {
     ENCOS_motor_config config;
-    ENCOS_enable enable;
+    ENCOS_enable enable; /* 应用唯一要写的使能入口：encos_enable / encos_stop */
+    uint8_t enable_cleared; /* 驱动私有：本次使能是否已清过环(见 Calc_Send 的 ⓪)。应用别写 */
     uint8_t update; /* set to 1 after accepted reply; caller may clear */
     uint8_t rx_data[8], rx_len, errcode;
     ENCOS_Feedback feedback; /* latest typed reply including raw query payload */
@@ -92,8 +93,11 @@ typedef struct encos_motor_t {
 void ENCOSmotor_Driver_Init(void);
 ENCOS_motor *ENCOSmotor_Create(ENCOS_motor_config *config, control_encos_func func);
 void ENCOSmotor_Calc_Send(void);
-/* Enable is a LOCAL state change, requires fresh position/speed and no reported error. */
-ENCOS_Result ENCOSmotor_Enable(ENCOS_motor *obj);
+/* **使能没有接口给应用调**：应用只写 obj->enable = encos_enable / encos_stop。
+ * 驱动在自己的发送拍上(ENCOSmotor_Calc_Send 的 ⓪)抓 stop->enable 的边沿，清一次
+ * 控制器状态，再按反馈是否新鲜决定这一拍发控制帧还是停止帧 —— 所以应用层不用、
+ * 也拿不到 ENCOSmotor_Enable()，别自己判"反馈新鲜了没"再决定要不要使能。
+ * (原 ENCOSmotor_Enable() 于 2026-10-05 合并进 Calc_Send，不再对外。) */
 /* Disable means software STOP, not physical power-stage disable. Sends stop frame now. */
 ENCOS_Result ENCOSmotor_Disable(ENCOS_motor *obj);
 /* Stop all motors on this CAN bus before zeroing. Bus TX pauses >500ms afterward. */

@@ -11,8 +11,9 @@
  * Cmd_Init()，机械臂云台接进来之后那段逻辑删掉了 —— 电机对象现在由 gimbal_arm.c 的
  * Gimbal_Create() 统一建，见 App/inc/gimbal_arm.h。
  *
- * 遥控器的输入逻辑不在这里：本层目前只是"服务"遥控器驱动，把摇杆值用起来那部分
- * (摇杆 → 关节角)按用户要求先不做，见 App/gimbal_cmd.c 的 Remote_Mode_Update()。
+ * 遥控器的输入逻辑不在这里：本层只是"服务"遥控器驱动(下面那个 Rc_Loop())，把摇杆值
+ * 用起来那部分(摇杆 → 关节角)按用户要求先不做，见 App/gimbal_cmd.c 的
+ * Remote_Mode_Update()。
  *
  * 挂载方式：
  *   gimbal = Gimbal_Create();          // freertos.c 的 StartCmdTask 里、进循环之前。
@@ -21,6 +22,13 @@
  *                                      // 也必须在任务里而不是 main()（主栈只有 2 KB）。
  *   gimbal_cmd = Gimbal_Cmd_Create();  // 紧跟其后(它要读全局 gimbal)
  *   StartCmdTask 的循环里调 Cmd_Loop();
+ *
+ * 遥控器(rc)挂在 cmd 下，靠的就是下面那个 include：**谁 include 本头，谁就能直接访问
+ * 全局 rc**(rc.rx / rc.ry / rc.lx / rc.sw_a / rc.link_ok / rc.monitor…)，不用再自己去
+ * include libs/rc/rc.h。rc 本体是 libs/rc/rc.c 里的全局(rc_t rc;)，初始化时机没变
+ * (Rc_Init() 在 Core/Src/main.c 的 USER CODE 2 里调)。
  */
+
+#include "rc.h" /* 遥控器挂到 cmd 下：include 本头即可访问全局 rc(见上面那段) */
 
 void Cmd_Loop(void);

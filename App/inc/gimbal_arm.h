@@ -17,8 +17,9 @@
  *   - **打印**：本工程 printf 是坏的(__io_putchar 没定义)，PRINT_ANGLE 关掉了。
  *   - **j1~j3 的电机驱动**：从达妙换成 ENCOS(ENCOS V1.20EAP，就是 ARX X5 的
  *     MotorType4)。配置散在 gimbal_arm.c 的 Gimbal_Create() 里，参数来源见那里。
- *     注意 ENCOS 的 `enable` 只是标志位，真正的启停帧由 ENCOSmotor_Calc_Send()
- *     在 MotorTask 里发；别在这里调 ENCOSmotor_Enable()/Disable()，理由见
+ *     注意 ENCOS 的 `enable` 只是标志位（驱动**没有** Enable 接口，见
+ *     libs/encos_motor/ENCOS_motor.h），真正的启停帧由 ENCOSmotor_Calc_Send()
+ *     在 MotorTask 里发；别在这里调 ENCOSmotor_Disable()，理由见
  *     Gimbal_Update() 里的注释。
  *
  * 板级标定量(电机方向、减速比、零点、前馈系数)在 App/inc/gimbal_arm_def.h。

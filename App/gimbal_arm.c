@@ -393,11 +393,11 @@ void Gimbal_Update(Gimbal* obj) {
 #endif
 
     /* 电机状态。
-     * j1~j3 是 ENCOS：**只改 enable 标志位，不调 ENCOSmotor_Enable()/Disable()**。
-     *   - Enable() 会 reset_controller()(清 PID 积分/D 状态)，这个函数每拍都跑，
-     *     每拍调一次等于把控制器废掉；
-     *   - Disable() 会当场发一帧停止帧，和 MotorTask 里的 ENCOSmotor_Calc_Send()
-     *     抢 CAN 总线(驱动要求所有 API 由调用者串行化)。
+     * j1~j3 是 ENCOS：**只改 enable 标志位，不调 ENCOSmotor_Disable()**。
+     *   - 使能根本没有接口可调(原来的 ENCOSmotor_Enable() 已并进 Calc_Send 的 ⓪，
+     *     由驱动自己抓 stop->enable 的边沿清环)；
+     *   - Disable() 会 reset_controller() 并当场发一帧停止帧，和 MotorTask 里的
+     *     ENCOSmotor_Calc_Send() 抢 CAN 总线(驱动要求所有 API 由调用者串行化)。
      * 真正的启停帧由 Calc_Send() 自己发：它看到 enable != encos_enable 或反馈不新鲜
      * 就发停止帧，和达妙那边的行为一致。 */
     if (obj->arm_mode == arm_stop) {

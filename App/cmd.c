@@ -7,7 +7,8 @@
 
 void Cmd_Loop(void) {
     /* 遥控器输入先在这里服务：换算成 µs/频率、判丢信号、推逻辑层、喂看门狗。
-     * 驱动本体在 libs/rc/ 里。
+     * 驱动本体在 libs/rc/ 里；rc 挂在 cmd 下(见 App/inc/cmd.h 的转发 include)，
+     * 要读遥控器直接访问全局 rc 即可。
      * 注意现在只是"服务"它 —— 值还没人用：遥控器→关节角的映射(输入逻辑)按用户要求
      * 先不做，见 App/gimbal_cmd.c 的 Remote_Mode_Update()。 */
     Rc_Loop();

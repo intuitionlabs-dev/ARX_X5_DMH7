@@ -228,15 +228,9 @@ ENCOS_motor *ENCOSmotor_Create(ENCOS_motor_config *config, control_encos_func fu
   BSP_CAN_AddFilter(config->bsp_can_index, config->can_rx_id);
   return obj;
 }
-ENCOS_Result ENCOSmotor_Enable(ENCOS_motor *obj) {
-  if (!obj)
-    return ENCOS_INVALID;
-  if (bus_busy(obj->config.bsp_can_index) || !motion_ready(obj))
-    return ENCOS_BUSY;
-  reset_controller(obj);
-  obj->enable = encos_enable;
-  return ENCOS_OK; /* next Calc_Send sends the actual control command */
-}
+/* 使能原来是这里的 ENCOSmotor_Enable()，2026-10-05 把它删了：应用层只写
+ * obj->enable，跳变处理搬进 ENCOSmotor_Calc_Send() 的 ⓪（理由见那里）。
+ * 注意 reset_controller() 现在是 Calc_Send 的 ⓪ 和 ENCOSmotor_Disable() 两处调。 */
 ENCOS_Result ENCOSmotor_Disable(ENCOS_motor *obj) {
   if (!obj)
     return ENCOS_INVALID;
@@ -311,6 +305,21 @@ void ENCOSmotor_Calc_Send(void) {
     if (!BSP_CAN_TxGroupMatch(obj->config.tx_group))
       continue;
 
+    /* ---- ⓪ 使能边沿在驱动内部落地 ------------------------------------------
+     * 应用只写 obj->enable，没有 ENCOSmotor_Enable() 可调，所以 stop -> enable
+     * 这个跳变得由驱动自己抓：抓到就清一次控制器状态（原来在 Enable() 里做），
+     * 清完紧接着 ① 就算，第一帧不会带着上面 stop 期间攒下的积分发出去。
+     * 用"锁存"而不是"和上一拍比"：下面 ② 可能因为反馈不新鲜把 enable 打回
+     * stop，比较法会在下一拍把环再清一次。清环**不能**挪进 ① 每拍都跑，
+     * 否则 stop 期间算出来的积分/微分下一拍就被抹掉，"stop 时也算"就白算了。 */
+    if (obj->enable == encos_enable) {
+      if (!obj->enable_cleared) {
+        reset_controller(obj);
+        obj->enable_cleared = 1;
+      }
+    } else
+      obj->enable_cleared = 0;
+
     /* ---- ① 只要轮到自己这一组，就无条件算一遍 controller --------------------
      * **和使能状态无关**：stop 时也照算，对齐 DMmotor_Calc_Send 里那句
      * "即使 stop 也应该更新 motor_controller"。发什么由下面的 ② 决定，
@@ -340,8 +349,8 @@ void ENCOSmotor_Calc_Send(void) {
     /* ---- ② 算完之后的行为由状态决定 ----------------------------------------
      * 没使能(或反馈不新鲜/有错误码/正在设零) -> 这一拍发停止帧；否则发混控控制帧。
      * 注意这里**不再**每拍调 reset_controller()：那样 ① 刚算出来的积分/微分下一拍
-     * 就被抹掉，"stop 时也算"就白算了。清环只发生在 ENCOSmotor_Enable() 和
-     * ENCOSmotor_Disable() 里(后者也是下面两条故障路径的收尾)。 */
+     * 就被抹掉，"stop 时也算"就白算了。清环只发生在上面 ⓪ 的使能边沿里，
+     * 以及 ENCOSmotor_Disable()(后者也是下面两条故障路径的收尾)。 */
     if (obj->enable != encos_enable || !motion_ready(obj)) {
       obj->enable = encos_stop;
       obj->last_result = send_stop(obj);

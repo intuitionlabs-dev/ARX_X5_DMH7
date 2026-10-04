@@ -3,6 +3,7 @@
 #include <string.h>         /* memcpy / memset */
 #include "common.h"         /* fclip */
 #include "gimbal_cmd_def.h" /* JOINT_ANGLE_MIN/MAX(角度软限位) */
+#include "rc.h"
 
 /* ===================== 相对于源工程砍掉了什么 =====================
  *
@@ -100,16 +101,14 @@ Gimbal_cmd* Gimbal_Cmd_Create(void) {
 void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
     if (obj == NULL || obj->gimbal == NULL) return;
 
-    /* ---- 模式判定 ----
-     * 源工程这里有一大坨：底盘 socket 掉线 → stop；机械臂反馈订阅为空 → stop；
-     * 图传在线用图传键鼠、否则 DT7，两个都不在线 → stop。本工程这三样东西都不存在。
-     *
-     * 遥控器的输入逻辑按用户要求**先不做**，所以命令侧现在恒为 arm_stop —— 目标跟随
-     * 反馈、机械臂不动。但下面 switch 的形状保留着：将来接输入时只需要在这里改 mode
-     * 的来源、在 Remote_Mode_Update() 里写摇杆→关节的映射，骨架不用动。
-     *
-     * 电机掉线的停机**不在这里**，理由见文件头的对照表。 */
+    /* ---- 模式判定 ----*/
     obj->mode = arm_stop;
+    if (is_Offline(rc.monitor))
+        obj->mode = arm_stop;
+    else if (rc.sw_a == 1)
+        obj->mode = arm_run;
+    else
+        obj->mode = arm_stop;
     /* 控制类型：源工程有 关节 / 笛卡尔 / 自定义腕点 三种(靠遥控器或图传切)，本工程
      * 只剩下关节空间这一种(见 gimbal_cmd.h 的 Arm_ctrl_type)。 */
     obj->ctrl_type = arm_ctrl_joint;
