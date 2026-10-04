@@ -16,7 +16,7 @@
 */
 
 // 使pid不输出，只使用前馈，便于调试
-#define JOINT_ONLY_COMP
+// #define JOINT_ONLY_COMP
 // 打印关节角
 // #define PRINT_ANGLE   /* 本工程 printf 是坏的(__io_putchar 没定义)，别开 */
 
@@ -428,22 +428,16 @@ void Gimbal_Update(Gimbal* obj) {
     Set_Motor_ref(obj);
 
     // DEBUG:拷贝控制器数据
-    g_fdb_pos = obj->joint1->motor_controller->fdb_position;
-    g_fdb_speed = obj->joint1->motor_controller->fdb_speed;
-    g_ref_pos = obj->joint1->motor_controller->ref_position;
-    g_ref_speed = obj->joint1->motor_controller->ref_speed;
-    g_speed_comp = obj->joint1->motor_controller->speed_comp;
-    g_output = obj->joint1->motor_controller->output;
-    g_ouput_comp = obj->joint1->motor_controller->output_comp;
+    g_fdb_pos = obj->joint2->motor_controller->fdb_position;
+    g_fdb_speed = obj->joint2->motor_controller->fdb_speed;
+    g_ref_pos = obj->joint2->motor_controller->ref_position;
+    g_ref_speed = obj->joint2->motor_controller->ref_speed;
+    g_speed_comp = obj->joint2->motor_controller->speed_comp;
+    g_output = obj->joint2->motor_controller->output;
+    g_ouput_comp = obj->joint2->motor_controller->output_comp;
 
     /* 杂项 */
     obj->arm_feedback_data.mode = obj->arm_mode;
-
-    /* 反馈数据(pub_sub 未接入：数据就留在 obj->arm_feedback_data 里) */
-    // publish_data arm_feedback;
-    // arm_feedback.data = (uint8_t*)(&(obj->arm_feedback_data));
-    // arm_feedback.len = sizeof(Arm_feedback_data);
-    // obj->arm_feedback_pub->publish(obj->arm_feedback_pub, arm_feedback);
 }
 
 static uint8_t Arm_Auto_Init(Gimbal* obj) {
@@ -671,17 +665,17 @@ static void pid_init(Gimbal* obj) {
     obj->encos_kpkd[JOINT1][0] = 0;
     obj->encos_kpkd[JOINT1][1] = 35;
     
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][0], 6, 0.08, 50, 200, 1000);
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][0], 4, 0, 100, 200, 1000);
     obj->pid_cfgs[JOINT2][0].Irange = 1;
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][1], 0.0f, 0.0f, 0.0f, 0.0f, 12);
     obj->encos_kpkd[JOINT2][0] = 0;
-    obj->encos_kpkd[JOINT2][1] = 35;
+    obj->encos_kpkd[JOINT2][1] = 50;
     
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][0], 6, 0.08, 50, 200, 1000);
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][0], 4, 0, 100, 200, 1000);
     obj->pid_cfgs[JOINT3][0].Irange = 1;
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][1], 0.0f, 0.0f, 0.0f, 0.0f, 12);
     obj->encos_kpkd[JOINT3][0] = 0;
-    obj->encos_kpkd[JOINT3][1] = 35;
+    obj->encos_kpkd[JOINT3][1] = 50;
 
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT4][0], 6, 0.08, 50, 200, 1000);
     obj->pid_cfgs[JOINT4][0].Irange = 0;
