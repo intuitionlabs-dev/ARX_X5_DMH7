@@ -317,6 +317,14 @@ void HAL_FDCAN_RxFifo1Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo1ITs)
 // 注册新的接收过滤器
 void BSP_CAN_AddFilter(uint8_t can_id, uint16_t filter) {
     // uint32_t filter_index = can_devices[can_id].filter_cnt++;
+    /* 已经登记过的 ID 直接返回：一条总线上多台电机用同一个接收 ID 是常见情形
+     * (达妙四台的反馈帧仲裁ID 都是 MST_ID=0)，重复占槽位没有任何作用 */
+    for (size_t filter_index = 0; filter_index < FILTER_MAX_CNT;
+         ++filter_index) {
+        if (can_devices[can_id].filters[filter_index] == filter) {
+            return;
+        }
+    }
     for (size_t filter_index = 0; filter_index < FILTER_MAX_CNT;
          ++filter_index) {
         if (can_devices[can_id].filters[filter_index] == ID_NOTSET) {

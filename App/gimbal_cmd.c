@@ -1,8 +1,6 @@
 #include "gimbal_cmd.h"
-
-#include <stdlib.h> /* malloc */
-#include <string.h> /* memcpy / memset */
-
+#include <stdlib.h>         /* malloc */
+#include <string.h>         /* memcpy / memset */
 #include "common.h"         /* fclip */
 #include "gimbal_cmd_def.h" /* JOINT_ANGLE_MIN/MAX(角度软限位) */
 
@@ -65,7 +63,7 @@ static void Ctrl_Post_Process(Gimbal_cmd* obj);   // 控制量后处理
 static void Arm_Ref_Set(Gimbal_cmd* obj);         // 机械臂控制值设置
 // NOLINTEND
 /* 私有函数(非顶层) */
-static void joint_src_follow(Gimbal_cmd* obj);                       // 关节控制源跟随反馈
+static void joint_src_follow(Gimbal_cmd* obj);  // 关节控制源跟随反馈
 static void joint_angle_td_follow(Gimbal_cmd* obj, float ref[ARM_JOINT_NUM]);  // TD 直接跟随
 
 Gimbal_cmd* Gimbal_Cmd_Create(void) {
@@ -157,10 +155,13 @@ static void Stop_Mode_Update(Gimbal_cmd* obj) {
      * 顺带还有个"自播种"的效果：joint_src 一直跟着反馈走，所以将来第一次进 arm_run 时
      * joint_src 已经是当前位姿，不会从 0 猛拽回去。(源工程对应的是
      * arm_ref_synced_flag + 上电默认折叠姿态那一套，本工程不需要。) */
-    memcpy(obj->gimbal->arm_control_data.joint_angle, obj->gimbal->arm_feedback_data.joint_angle,
+    memcpy(obj->gimbal->arm_control_data.joint_angle,
+        obj->gimbal->arm_feedback_data.joint_angle,
         sizeof(obj->gimbal->arm_feedback_data.joint_angle));
-    memset(obj->gimbal->arm_control_data.joint_vel, 0, sizeof(obj->gimbal->arm_control_data.joint_vel));
-    memset(obj->gimbal->arm_control_data.joint_acc, 0, sizeof(obj->gimbal->arm_control_data.joint_acc));
+    memset(obj->gimbal->arm_control_data.joint_vel, 0,
+        sizeof(obj->gimbal->arm_control_data.joint_vel));
+    memset(obj->gimbal->arm_control_data.joint_acc, 0,
+        sizeof(obj->gimbal->arm_control_data.joint_acc));
 
     /* 控制源跟随。
      * 源工程还有 cartesian_src_follow() / custom_selfsaving_src_follow()(各自跟反馈的
@@ -221,8 +222,8 @@ static void Ctrl_Src_Calc(Gimbal_cmd* obj) {  // 无论模式都解算各数据�
         memcpy(obj->ctrl_src.joint_angle_solved, obj->ctrl_src.joint_src.joint_angle,
             sizeof(obj->ctrl_src.joint_angle_solved));
         break;
-    /* case arm_ctrl_cartesian:          笛卡尔空间控制 —— 不做 */
-    /* case arm_ctrl_custom_selfsaving:  自定义控制器腕点控制 —— 不做 */
+        /* case arm_ctrl_cartesian:          笛卡尔空间控制 —— 不做 */
+        /* case arm_ctrl_custom_selfsaving:  自定义控制器腕点控制 —— 不做 */
     }
 
     /* 控制源跟随：源工程那三行 if 的意思是"当前没在用的控制源跟着反馈走，防止切过去时
@@ -231,7 +232,8 @@ static void Ctrl_Src_Calc(Gimbal_cmd* obj) {  // 无论模式都解算各数据�
     /* 停机保护 */
     if (obj->mode == arm_stop) {
         for (int i = 0; i < ARM_JOINT_NUM; i++) {
-            obj->ctrl_src.joint_angle_solved[i] = obj->gimbal->arm_feedback_data.joint_angle[i];
+            obj->ctrl_src.joint_angle_solved[i] =
+                obj->gimbal->arm_feedback_data.joint_angle[i];
         }
     }
 }
@@ -253,6 +255,11 @@ static void Motor_Angle_Limit(Gimbal_cmd* obj) {
     }
     /* 源工程还有"笛卡尔空间控制源和自定义控制器控制源的反向传递限位"，两边都标着
      * TODO，本工程那两个源没有。 */
+
+    // 夹爪
+    obj->gimbal->arm_control_data.gripper_oc_angle =
+        fclip(obj->gimbal->arm_control_data.gripper_oc_angle, GRIPPER_ANGLE_MIN,
+            GRIPPER_ANGLE_MAX);
 }
 
 static void Ctrl_Post_Process(Gimbal_cmd* obj) {

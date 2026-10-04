@@ -48,7 +48,7 @@ typedef struct {
     float joint_angle[ARM_JOINT_NUM];  // 关节角度，deg
     float joint_vel[ARM_JOINT_NUM];    // 关节速度
     float joint_acc[ARM_JOINT_NUM];    // 关节加速度
-    float gripper_oc;    // 夹爪开合程度，0~1，0为完全闭合，1为完全张开
+    float gripper_oc_angle;    // 夹爪开合程度，0~1，0为完全闭合，1为完全张开
 } Arm_control_data;
 
 /* arm -> 云台 cmd：反馈 */

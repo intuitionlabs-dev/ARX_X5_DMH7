@@ -26,7 +26,7 @@ CONSTEXPR float JOINT_ANGLE_MIN[ARM_JOINT_NUM] = {
     -90,
     -90,
     -112.87,
-};
+}; 
 
 CONSTEXPR float JOINT_ANGLE_MAX[ARM_JOINT_NUM] = {
     180,
@@ -36,3 +36,6 @@ CONSTEXPR float JOINT_ANGLE_MAX[ARM_JOINT_NUM] = {
     90,
     119.17,
 };
+
+CONSTEXPR float GRIPPER_ANGLE_MIN = 0;  // 夹爪闭合
+CONSTEXPR float GRIPPER_ANGLE_MAX = 284;  // 夹爪张开

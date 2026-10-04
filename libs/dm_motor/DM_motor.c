@@ -56,10 +56,19 @@ void DMmotor_RxCallBack(uint8_t can_id, uint32_t identifier, uint8_t *data, uint
     // DEBUG_ASSERT(len == 8);
     (void)can_id;
 
+    /* 认电机要两个条件同时成立(与 ARX X5 SDK 的 MotorType2::CanAnalyze() 一致)：
+     *  1. 仲裁ID == can_rx_id(= 上位机里的 MST_ID)。本工程 4 台达妙的出厂 MST_ID 都是 0，
+     *     反馈帧的仲裁ID 因此全是 0，四台挤在同一条"通道"上；
+     *  2. 载荷首字节低 4 位 == can_tx_id(= 上位机里的 CAN_ID)。达妙反馈帧 data[0] 的高 4 位
+     *     是错误码、低 4 位才是电机自己的 ID，四台正是靠这个字段区分。
+     * 少了第 2 条，MST_ID=0 时四台会互相抢帧；少了第 1 条，别处 ID 相同的数据也会被吃进来。
+     * 若哪天把某台的 MST_ID 改成非 0，把它的 can_rx_id 跟着改即可，这个函数不用动。 */
+    if (!dm_motor_list || !data) return;
     for (size_t i = 0; i < dm_motor_list->cv_len; i++) {
         DM_motor *obj = *(DM_motor **)cvector_val_at(dm_motor_list, i);
-        if (obj->config.can_rx_id == identifier) {
-            DMmotor_FeedbackData_Update(obj, data); 
+        if (obj->config.can_rx_id == identifier &&
+            (data[0] & 0x0F) == obj->config.can_tx_id) {
+            DMmotor_FeedbackData_Update(obj, data);
         }
     }
 }

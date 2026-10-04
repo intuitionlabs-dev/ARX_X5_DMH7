@@ -37,6 +37,8 @@ void Gripper_Motor_Lost(void* motor) { (void)motor; } /* gripper DM4310 lost */
 // float Joint1_Speed_Fdb_Calc(void* lkmotor);
 // float Joint23_Pos_Fdb_Calc(void* arg);
 /* 自定义控制函数 DM_Mit_Control() 现在在 libs/dm_motor/dm_mit_control.h */
+float DM_Pos_Fdb_Calc(void* arg);
+float DM_Speed_Fdb_Calc(void* arg);
 
 /* 主函数 */
 // NOLINTBEGIN
@@ -131,7 +133,7 @@ Gimbal* Gimbal_Create(void) {
         // Joint1 ENCOS V1.20EAP(原 dm8006 的位置)。CAN id 用 SDK 那套：j1 = 1
         ENCOS_motor_config joint1_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT1],
-            .bsp_can_index = 2, 
+            .bsp_can_index = 2,
             .can_tx_id = 0x01,
             .can_rx_id = 0x01,  // ENCOS 要求收发同 id，否则 Create 直接返回 NULL
             .lost_callback_ = Joint1_Motor_Lost,
@@ -191,21 +193,39 @@ Gimbal* Gimbal_Create(void) {
         obj->joint3 = ENCOSmotor_Create(&joint3_motor_config, ENCOS_Mixed_Control);
         if (!encos_joint_init(obj, JOINT3)) return NULL;
 
+        /* j4~j6 + 夹爪是达妙(ARX X5 的 MotorType2)，ID 取 SDK 的出厂值 5/6/7/8
+         * (parameters.json 的 joint_parameters/gripper_motor 里写的 can_id)。
+         *
+         * **can_rx_id 一律写 0**：达妙反馈帧的仲裁ID 是电机里的 MST_ID，这 4 台出厂都是 0，
+         * 所以四台反馈全挤在 ID=0 上；真正区分是哪一台的是载荷首字节低 4 位(= CAN_ID)，
+         * 由 DMmotor_RxCallBack() 里和 can_tx_id 比对。这与 ARX X5 SDK 的
+         * MotorType2::CanAnalyze()(要求 can_id==0 且 data[0]&0x0F==motor_id)完全一致。
+         * 详见仓库根目录 ARX_X5_CAN_FEEDBACK_ROUTING.md。
+         *
+         * **量程必须和电机里存的 P_MAX/V_MAX/T_MAX 一致**：反馈帧的位置/速度/力矩都是按
+         * 电机自己存的量程归一化后发出来的，本工程再按 config.max_* 还原回去，两边不等
+         * 就差一个系数(比如 max_position 写 π 而电机里是 12.5，解出来的角度就小 3.98 倍，
+         * 零位附近两种取值都读到 ≈0，看不出来)。下面取 SDK 的 Type2 量程——见
+         * libs/gravity_compensation/sdk_parameters/parameters.json 的 motor_protocols
+         * (type=2) 与 binary_constants.type2_*：位置 ±12.5 rad、速度 ±45 rad/s、
+         * 力矩 ±10 N·m、kp 0~500、kd 0~5，与电机出厂配置一致。
+         * 核对办法：在达妙上位机里读这 4 台的 P_MAX/V_MAX/T_MAX；或者手转一个已知角度
+         * (90° = 1.571 rad)看 fdb_position 是否跟着变 1.571。 */
         // Joint4 DM4310
         DM_motor_config joint4_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT4],
-            .bsp_can_index = 0,  
+            .bsp_can_index = 0,
             .can_tx_id = 0x05,
-            .can_rx_id = 0x05,
+            .can_rx_id = 0x00,
             .lost_callback_ = Joint4_Motor_Lost,
             .control_mode = dm_mit,
-            .max_position = 3.14159f,
-            .max_speed = 30,
+            .max_position = 12.5f,  // 达妙 Type2 协议量程，见上面 JOINT4 处的说明
+            .max_speed = 45.0f,     // 达妙 Type2 协议量程，见上面 JOINT4 处的说明
             .max_torque = 10,
             .max_kp = 500,
             .max_kd = 5,
-            .pos_fdb_calc = NULL,
-            .speed_fdb_calc = NULL,
+            .pos_fdb_calc = DM_Pos_Fdb_Calc,
+            .speed_fdb_calc = DM_Speed_Fdb_Calc,
             .arg = NULL,
             .fre_rel = 2,  //500Hz
         };
@@ -219,18 +239,18 @@ Gimbal* Gimbal_Create(void) {
         // Joint5 DM4310
         DM_motor_config joint5_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT5],
-            .bsp_can_index = 0,  
+            .bsp_can_index = 0,
             .can_tx_id = 0x06,
-            .can_rx_id = 0x06,
+            .can_rx_id = 0x00,  // MST_ID=0，见 JOINT4 处的说明
             .lost_callback_ = Joint5_Motor_Lost,
             .control_mode = dm_mit,
-            .max_position = 3.14159f,
-            .max_speed = 30,
+            .max_position = 12.5f,  // 达妙 Type2 协议量程，见上面 JOINT4 处的说明
+            .max_speed = 45.0f,     // 达妙 Type2 协议量程，见上面 JOINT4 处的说明
             .max_torque = 10,
             .max_kp = 500,
             .max_kd = 5,
-            .pos_fdb_calc = NULL,
-            .speed_fdb_calc = NULL,
+            .pos_fdb_calc = DM_Pos_Fdb_Calc,
+            .speed_fdb_calc = DM_Speed_Fdb_Calc,
             .arg = NULL,
             .fre_rel = 2,  //500Hz
         };
@@ -246,17 +266,19 @@ Gimbal* Gimbal_Create(void) {
             .motor_controller_config = joint_controller_config[JOINT6],
             .bsp_can_index = 0,
             .can_tx_id = 0x07,
-            .can_rx_id = 0x07,
+            .can_rx_id = 0x00,  // MST_ID=0，见 JOINT4 处的说明
             .lost_callback_ = Joint6_Motor_Lost,
             .control_mode = dm_mit,
-            .max_position = 3.14159f,
-            .max_speed = 30,
-            .max_torque = 5,
+            .max_position = 12.5f,  // 达妙 Type2 协议量程，见上面 JOINT4 处的说明
+            .max_speed = 45.0f,     // 达妙 Type2 协议量程，见上面 JOINT4 处的说明
+            /* 原来写 5(源工程注释是 DM2325)：SDK 对 Type2 这一组只有一套力气量程
+             * (binary_constants.type2_effort = ±10)，J4/J5/J6/夹爪 都按 ±10 解码，
+             * 所以这里跟其余三台取齐。真要确认得去达妙上位机读这台的 T_MAX。 */
+            .max_torque = 10.0f,
             .max_kp = 500,
             .max_kd = 5,
-            .pos_fdb_calc =
-                /* Joint6_Pos_Fdb_Calc */ NULL,
-            .speed_fdb_calc = NULL,
+            .pos_fdb_calc = DM_Pos_Fdb_Calc,
+            .speed_fdb_calc = DM_Speed_Fdb_Calc,
             .arg = NULL,
             .fre_rel = 2,  //500Hz
         };
@@ -274,16 +296,16 @@ Gimbal* Gimbal_Create(void) {
             .motor_controller_config = joint_controller_config[JOINT4],
             .bsp_can_index = 0,
             .can_tx_id = 0x08,
-            .can_rx_id = 0x08,
+            .can_rx_id = 0x00,  // MST_ID=0，见 JOINT4 处的说明
             .lost_callback_ = Gripper_Motor_Lost,
             .control_mode = dm_mit,
-            .max_position = 3.14159f,
-            .max_speed = 30,
+            .max_position = 12.5f,  // 达妙 Type2 协议量程，见上面 JOINT4 处的说明
+            .max_speed = 45.0f,     // 达妙 Type2 协议量程，见上面 JOINT4 处的说明
             .max_torque = 10,
             .max_kp = 500,
             .max_kd = 5,
-            .pos_fdb_calc = NULL,
-            .speed_fdb_calc = NULL,
+            .pos_fdb_calc = DM_Pos_Fdb_Calc,
+            .speed_fdb_calc = DM_Speed_Fdb_Calc,
             .arg = NULL,
             .fre_rel = 2,  //500Hz
         };
@@ -329,8 +351,7 @@ void Gimbal_Update(Gimbal* obj) {
         if (first_init_flag == 0) {
             //成功后返回1，失败返回0
             first_init_flag = Arm_Auto_Init(obj);
-            if (!first_init_flag)
-                obj->arm_mode = arm_stop;  // 自动初始化未成功则停机
+            if (!first_init_flag) obj->arm_mode = arm_stop;  // 自动初始化未成功则停机
         }
     }
 
@@ -689,7 +710,6 @@ MAYBE_UNUSED static void set_pid_zero(Gimbal* obj) {
     // obj->gripper->motor_controller->pid_speed_data.config = zero_config;
 }
 
-
 /* 【注意】Joint2_Speed_Fdb_Calc()/Joint3_Speed_Fdb_Calc() 是达妙时代留下的，里面把
  * void* 强转成 DM_motor*，而现在 j2/j3 已经是 ENCOS_motor 了 —— 这两个函数目前没有
  * 调用方(上面 config 里的 .speed_fdb_calc 是写死的 NULL，函数名被注释掉了)，所以
@@ -715,4 +735,14 @@ float Joint3_Speed_Fdb_Calc(void* arg) {
     cur_speed_j3 = motor->fdb_speed * RAD2DEG;
     filt_speed_j3 = lowpass_filter(cur_speed_j3, j3_a, JOINT3);  // 对速度反馈进行低通滤波
     return filt_speed_j3;
+}
+
+float DM_Pos_Fdb_Calc(void* arg) {
+    DM_motor* motor = (DM_motor*)arg;
+    return motor->fdb_position * RAD2DEG;
+}
+
+float DM_Speed_Fdb_Calc(void* arg) {
+    DM_motor* motor = (DM_motor*)arg;
+    return motor->fdb_speed * RAD2DEG;
 }
