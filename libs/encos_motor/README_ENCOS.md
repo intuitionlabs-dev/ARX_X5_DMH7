@@ -59,7 +59,7 @@ cfg.torque_constant = 0.0f;     // 未知：fdb_torque=NAN，torque_valid=0
 cfg.position_offset = 0.0f;     // rad
 cfg.feedback_timeout_ms = 100;  // 主控策略，可配置
 cfg.stop_mode = mt4_soft_stop;  // 零电流；不是硬件失能
-cfg.fre_rel = 1;                // 每次 Calc_Send 都发送
+cfg.tx_group = CAN_TX_GROUP_ALL; // 发送分组掩码(见 libs/can/can_config.h)：ALL = 每拍都发
 
 MT4_motor *motor = MT4motor_Create(&cfg, my_control_callback);
 if (motor == NULL) { /* 配置错误或内存不足，禁止进入控制 */ }
@@ -73,6 +73,7 @@ if (motor == NULL) { /* 配置错误或内存不足，禁止进入控制 */ }
 
 1. 初始化 BSP/monitor，创建电机；初始状态为 `mt4_stop`，创建本身不发送报文。
 2. 周期调用 `MT4motor_Calc_Send()`。停止态发送零电流/配置的制动帧，请求类型 1 反馈，可持续读取位置。
+   注意：**主控 controller 在停止态也照算**（只有"发什么帧"由使能状态决定），见 `ENCOSmotor_Calc_Send()` 里的 ①/②。
 3. 获得新鲜的位置、速度反馈后，设置目标，再调用 `MT4motor_Enable()`，检查返回值。
 4. 正常控制时每个发送周期只有一帧混控，没有额外的 300 ms “使能帧”。
 5. `MT4motor_Disable()` 立即置软件停止并发送停止帧。反馈超时、已报告错误或非有限数值指令也会使驱动停止；恢复通信不会自动恢复运动，需重新启用。

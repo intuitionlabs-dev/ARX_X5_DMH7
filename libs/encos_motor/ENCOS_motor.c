@@ -304,18 +304,18 @@ void ENCOSmotor_Calc_Send(void) {
     if (obj->zero_pending &&
         (uint32_t)(now_ms() - obj->zero_sent_ms) >= ENCOS_ZERO_ACK_TIMEOUT_MS)
       obj->zero_pending = 0;
-    /* 控制频率由 obj->config.tx_group 的掩码决定：不在当前组的这一拍整拍跳过，
-     * 连 PID 都不算 —— 不能"算了不发"，PID_Calc 没有 dt，增益按调用次数算，
-     * 按 1 kHz 算而按 500 Hz 发会让 KI 凭空翻倍。(上面的 zero_pending 超时清理
-     * 是"每隔多久检查一次"，跟发送无关，所以留在门外面。) */
+    /* 控制频率由 obj->config.tx_group 的掩码决定：不在当前组的这一拍整拍跳过。
+     * 不能"算了不发"：PID_Calc 没有 dt，增益按调用次数算，按 1 kHz 算而按
+     * 500 Hz 发会让 KI 凭空翻倍。(上面的 zero_pending 超时清理是"每隔多久检查
+     * 一次"，跟发送无关，所以留在门外面。) */
     if (!BSP_CAN_TxGroupMatch(obj->config.tx_group))
       continue;
-    if (obj->enable != encos_enable || !motion_ready(obj)) {
-      obj->enable = encos_stop;
-      reset_controller(obj);
-      obj->last_result = send_stop(obj);
-      continue;
-    }
+
+    /* ---- ① 只要轮到自己这一组，就无条件算一遍 controller --------------------
+     * **和使能状态无关**：stop 时也照算，对齐 DMmotor_Calc_Send 里那句
+     * "即使 stop 也应该更新 motor_controller"。发什么由下面的 ② 决定，
+     * 所以停着的电机 controller 里的 fdb/ref/积分/微分一直跟着走，
+     * 不会因为"这一拍整拍跳过了"而在切到 enable 的那一拍跳一下。 */
     controller *c = obj->motor_controller;
     c->fdb_position = obj->config.pos_fdb_calc
                           ? obj->config.pos_fdb_calc(obj->config.arg)
@@ -336,8 +336,20 @@ void ENCOSmotor_Calc_Send(void) {
                             ? -c->output
                             : c->output;
     }
+
+    /* ---- ② 算完之后的行为由状态决定 ----------------------------------------
+     * 没使能(或反馈不新鲜/有错误码/正在设零) -> 这一拍发停止帧；否则发混控控制帧。
+     * 注意这里**不再**每拍调 reset_controller()：那样 ① 刚算出来的积分/微分下一拍
+     * 就被抹掉，"stop 时也算"就白算了。清环只发生在 ENCOSmotor_Enable() 和
+     * ENCOSmotor_Disable() 里(后者也是下面两条故障路径的收尾)。 */
+    if (obj->enable != encos_enable || !motion_ready(obj)) {
+      obj->enable = encos_stop;
+      obj->last_result = send_stop(obj);
+      continue;
+    }
     if (bus_busy(obj->config.bsp_can_index))
       continue;
+    /* control_calc 是外部钩子，理论上能在上面把 enable 改掉，所以再问一次 */
     if (obj->enable != encos_enable) {
       obj->last_result = send_stop(obj);
       continue;
