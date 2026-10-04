@@ -32,6 +32,7 @@
 #include "can_loopback_test.h"
 #include "cmd.h"
 #include "gimbal_arm.h"
+#include "gimbal_cmd.h"
 #include "hal_move_plan.h"
 /* USER CODE END Includes */
 
@@ -267,6 +268,8 @@ void StartCmdTask(void *argument)
    * 本任务栈是 CmdTaskBuffer(16 KB)。依赖的 BSP_CAN_Init()/DMmotor_Driver_Init()
    * 在 main.c 里、调度器启动前就跑完了。失败(内存不够)时是 NULL，Cmd_Loop() 判空跳过。 */
   gimbal = Gimbal_Create();
+  /* 命令层：它挂在 gimbal 上(Gimbal_Cmd_Create() 里读全局 gimbal)，所以必须接在后面。 */
+  gimbal_cmd = Gimbal_Cmd_Create();
   /* Infinite loop */
   uint32_t tick = osKernelGetTickCount();
   for(;;)

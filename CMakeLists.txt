@@ -47,6 +47,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Application
     App/cmd.c
     App/gimbal_arm.c
+    App/gimbal_cmd.c
     App/test/can_loopback_test.c
 
     # Board support
@@ -133,18 +134,17 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
 )
 
-# 机械臂的指令入口 Gimbal_Set_Control() 目前工程里还没有调用方（遥控器 -> 关节角
-# 的映射没做），-ffunction-sections + -Wl,--gc-sections 会把它整个删掉，连 JLink
-# 都调不到。--undefined 强制把它当成 GC 根保留下来（函数上的 __attribute__((used))
-# 在 GCC 10 上不生成 SHF_GNU_RETAIN，拦不住 --gc-sections，所以只能从链接器这边来)。
-# 等有真实调用方之后这行可以删。
+# Move_Plan_Temp_Create() 目前还没有业务代码调它：hal_move_plan.c 接上以后
+# Move_Plan_Update() 是活的，但造轨迹这个入口只会被同样没人调的
+# Plan_Group_Temp_Calc_And_Run() 引用，-ffunction-sections + -Wl,--gc-sections 会把它
+# 整个删掉，烧进板子后连 JLink 都调不到（没法验证规划器算得对不对）。--undefined 强制
+# 把它当成 GC 根保留下来（函数上的 __attribute__((used)) 在 GCC 10 上不生成
+# SHF_GNU_RETAIN，拦不住 --gc-sections，所以只能从链接器这边来）。等有真实调用方之后
+# 这行可以删。
 #
-# Move_Plan_Temp_Create() 同理：hal_move_plan.c 接上以后 Move_Plan_Update() 是活的，
-# 但没有业务代码造轨迹，这个函数只会被同样没人调的 Plan_Group_Temp_Calc_And_Run()
-# 引用，照样会被 --gc-sections 删掉，烧进板子后连 JLink 都调不到（没法验证规划器算得对不对）。
-# 等有真实调用方之后这行也可以删。
+# (Gimbal_Set_Control() 原来也在这张表里。那个函数连同"喂指令"这套接口一起删掉了 ——
+#  命令层改成直接写 Gimbal.arm_control_data，所以这一项早就没用了。)
 target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
-    -Wl,--undefined=Gimbal_Set_Control
     -Wl,--undefined=Move_Plan_Temp_Create
 )
 

@@ -1,20 +1,26 @@
 #pragma once
 
-/* CMD 线程。
+/* CMD 线程：500 Hz / 2 ms，跑机械臂命令层 + 机械臂驱动。
  *
- * 这里原来挂着 cmd_motor(单个达妙电机，参数写在 App/cmd.c 的 cmd_motor_config
- * 里)和 Cmd_Init()，机械臂云台接进来之后那段逻辑删掉了 —— 电机对象现在由
- * gimbal_arm.c 的 Gimbal_Create() 统一建，见 App/inc/gimbal_arm.h。
+ *   Cmd_Loop()
+ *     ├─ Rc_Loop()            遥控器驱动(libs/rc)的服务：换算/判丢信号/喂狗
+ *     ├─ Gimbal_Cmd_Update()  命令层(App/gimbal_cmd.c)：输入 → Arm_control_data
+ *     └─ Gimbal_Update()      机械臂驱动(App/gimbal_arm.c)：按 Arm_control_data 跑电机
  *
- * 遥控器输入不在这里 —— 它是独立驱动，在 libs/rc/(见 rc.h)，Cmd_Loop() 只是
- * 顺手带跑一遍 Rc_Loop()。
+ * 这里原来挂着 cmd_motor(单个达妙电机，参数写在 App/cmd.c 的 cmd_motor_config 里)和
+ * Cmd_Init()，机械臂云台接进来之后那段逻辑删掉了 —— 电机对象现在由 gimbal_arm.c 的
+ * Gimbal_Create() 统一建，见 App/inc/gimbal_arm.h。
+ *
+ * 遥控器的输入逻辑不在这里：本层目前只是"服务"遥控器驱动，把摇杆值用起来那部分
+ * (摇杆 → 关节角)按用户要求先不做，见 App/gimbal_cmd.c 的 Remote_Mode_Update()。
  *
  * 挂载方式：
- *   gimbal = Gimbal_Create();  // freertos.c 的 StartCmdTask 里、进循环之前。
- *                              // 必须在 BSP_CAN_Init() 和 DMmotor_Driver_Init()
- *                              // 之后(它依赖 dm_motor_list 和 FDCAN)；
- *                              // 也必须在任务里而不是 main()（主栈只有 2 KB）。
- *   StartCmdTask 的循环里调 Cmd_Loop();(Cmd_Loop() 里已经带了 Rc_Loop())
+ *   gimbal = Gimbal_Create();          // freertos.c 的 StartCmdTask 里、进循环之前。
+ *                                      // 必须在 BSP_CAN_Init() 和 DMmotor_Driver_Init()
+ *                                      // 之后(它依赖 dm_motor_list 和 FDCAN)；
+ *                                      // 也必须在任务里而不是 main()（主栈只有 2 KB）。
+ *   gimbal_cmd = Gimbal_Cmd_Create();  // 紧跟其后(它要读全局 gimbal)
+ *   StartCmdTask 的循环里调 Cmd_Loop();
  */
 
 void Cmd_Loop(void);

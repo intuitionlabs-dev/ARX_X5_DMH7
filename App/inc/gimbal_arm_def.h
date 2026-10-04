@@ -51,23 +51,19 @@ CONSTEXPR float JOINT3_POS_INIT =
     get_pos_init(0, MOTOR_DIR[JOINT3], MOTOR_REDUCTION[JOINT3], JOINT_ANGLE_INIT[JOINT3]);
 CONSTEXPR float JOINT4_POS_INIT =
     get_pos_init(0, MOTOR_DIR[JOINT4], MOTOR_REDUCTION[JOINT4], JOINT_ANGLE_INIT[JOINT4]);
-// j4 由于存在多圈问题，故每次上电都重新设置为当前 fdb_position
 CONSTEXPR float JOINT5_POS_INIT =
     get_pos_init(0, MOTOR_DIR[JOINT5], MOTOR_REDUCTION[JOINT5], JOINT_ANGLE_INIT[JOINT5]);
-// j6 和 gripper 电机掉电不保存零点，motor_pos_init 在初始化时设置为当前 fdb_position
 CONSTEXPR float JOINT6_POS_INIT =
     get_pos_init(0, MOTOR_DIR[JOINT6], MOTOR_REDUCTION[JOINT6], JOINT_ANGLE_INIT[JOINT6]);
 
-// 达妙电机 ref_torque 会在驱动里做映射，只用考虑传动比
-CONSTEXPR float MG6010E_TORQUE_CONSTANT = 0.16f;  // Nm/A
 // 关节电机转矩转换系数，由转矩到 output
 CONSTEXPR float JOINT_TORQUE_TRANS[ARM_JOINT_NUM] = {
     1,
     1,
     1,
-    1 / MOTOR_REDUCTION[JOINT4],
     1,
-    1 / MOTOR_REDUCTION[JOINT6],
+    1,
+    1,
 };
 // 关节电机转矩转换系数修正系数
 CONSTEXPR float JOINT_TORQUE_TRANS_COEF[ARM_JOINT_NUM] = {

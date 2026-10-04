@@ -5,13 +5,12 @@
 #include "dm_mit_control.h"      /* DM_Mit_Control() */
 #include "encos_mixed_control.h" /* ENCOS_Mixed_Control() */
 #include "gimbal_arm_def.h"
-#include "main.h" /* HAL_GetTick()，判指令超时用 */
 #include "temperature_protect.h"
 
 /* 本工程没有的框架，先注释掉：
 #include "arm_serial_link/arm_serial_link.h"  运动学/动力学(Newton-Euler)，见 Joint_Feedforward_Calc()
 #include "print_help.h"                       printf_log()/Print_Float()，本工程 printf 是坏的
-#include "pub_sub.h"                          指令来源，改用 Gimbal_Set_Control()
+#include "pub_sub.h"                          指令来源，现由命令层直接写 arm_control_data
 */
 
 // 使pid不输出，只使用前馈，便于调试
@@ -132,7 +131,7 @@ Gimbal* Gimbal_Create(void) {
         // Joint1 ENCOS V1.20EAP(原 dm8006 的位置)。CAN id 用 SDK 那套：j1 = 1
         ENCOS_motor_config joint1_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT1],
-            .bsp_can_index = 2,  // CAN3，接线没动
+            .bsp_can_index = 2, 
             .can_tx_id = 0x01,
             .can_rx_id = 0x01,  // ENCOS 要求收发同 id，否则 Create 直接返回 NULL
             .lost_callback_ = Joint1_Motor_Lost,
@@ -145,7 +144,7 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = NULL,
             .speed_fdb_calc = NULL,
             .arg = NULL,   // 速度或位置环的反馈计算函数的对象
-            .fre_rel = 1,  //1000Hz
+            .fre_rel = 2,  //500Hz
         };
         obj->joint1 = ENCOSmotor_Create(&joint1_motor_config, ENCOS_Mixed_Control);
         if (!encos_joint_init(obj, JOINT1)) return NULL;
@@ -153,7 +152,7 @@ Gimbal* Gimbal_Create(void) {
         // Joint2 ENCOS V1.20EAP(原 dm8009 的位置)。CAN id 用 SDK 那套：j2 = 2
         ENCOS_motor_config joint2_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT2],
-            .bsp_can_index = 0,  // CAN1，接线没动
+            .bsp_can_index = 2,
             .can_tx_id = 0x02,
             .can_rx_id = 0x02,  // ENCOS 要求收发同 id，否则 Create 直接返回 NULL
             .lost_callback_ = Joint2_Motor_Lost,
@@ -166,7 +165,7 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = NULL,
             .speed_fdb_calc = /* Joint2_Speed_Fdb_Calc */ NULL,
             .arg = NULL,   // 速度或位置环的反馈计算函数的对象
-            .fre_rel = 1,  //1000Hz
+            .fre_rel = 2,  //500Hz
         };
         obj->joint2 = ENCOSmotor_Create(&joint2_motor_config, ENCOS_Mixed_Control);
         if (!encos_joint_init(obj, JOINT2)) return NULL;
@@ -174,7 +173,7 @@ Gimbal* Gimbal_Create(void) {
         // Joint3 ENCOS V1.20EAP(原 dm4340p 的位置)。CAN id 用 SDK 那套：j3 = 4
         ENCOS_motor_config joint3_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT3],
-            .bsp_can_index = 0,  // CAN1，接线没动
+            .bsp_can_index = 2,
             .can_tx_id = 0x04,
             .can_rx_id = 0x04,  // ENCOS 要求收发同 id，否则 Create 直接返回 NULL
             .lost_callback_ = Joint3_Motor_Lost,
@@ -187,7 +186,7 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = NULL,
             .speed_fdb_calc = /* Joint3_Speed_Fdb_Calc */ NULL,
             .arg = NULL,   // 速度或位置环的反馈计算函数的对象
-            .fre_rel = 1,  //1000Hz
+            .fre_rel = 2,  //500Hz
         };
         obj->joint3 = ENCOSmotor_Create(&joint3_motor_config, ENCOS_Mixed_Control);
         if (!encos_joint_init(obj, JOINT3)) return NULL;
@@ -195,9 +194,9 @@ Gimbal* Gimbal_Create(void) {
         // Joint4 DM4310
         DM_motor_config joint4_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT4],
-            .bsp_can_index = 1,  // CAN2
-            .can_tx_id = 0x04,
-            .can_rx_id = 0x04,
+            .bsp_can_index = 0,  
+            .can_tx_id = 0x05,
+            .can_rx_id = 0x05,
             .lost_callback_ = Joint4_Motor_Lost,
             .control_mode = dm_mit,
             .max_position = 3.14159f,
@@ -220,9 +219,9 @@ Gimbal* Gimbal_Create(void) {
         // Joint5 DM4310
         DM_motor_config joint5_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT5],
-            .bsp_can_index = 1,  // CAN2
-            .can_tx_id = 0x05,
-            .can_rx_id = 0x05,
+            .bsp_can_index = 0,  
+            .can_tx_id = 0x06,
+            .can_rx_id = 0x06,
             .lost_callback_ = Joint5_Motor_Lost,
             .control_mode = dm_mit,
             .max_position = 3.14159f,
@@ -245,9 +244,9 @@ Gimbal* Gimbal_Create(void) {
         // Joint6 DM2325
         DM_motor_config joint6_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT6],
-            .bsp_can_index = 1,  // CAN2
-            .can_tx_id = 0x06,
-            .can_rx_id = 0x06,
+            .bsp_can_index = 0,
+            .can_tx_id = 0x07,
+            .can_rx_id = 0x07,
             .lost_callback_ = Joint6_Motor_Lost,
             .control_mode = dm_mit,
             .max_position = 3.14159f,
@@ -273,9 +272,9 @@ Gimbal* Gimbal_Create(void) {
         // Gripper DM4310
         DM_motor_config gripper_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT4],
-            .bsp_can_index = 1,  // CAN2
-            .can_tx_id = 0x07,
-            .can_rx_id = 0x07,
+            .bsp_can_index = 0,
+            .can_tx_id = 0x08,
+            .can_rx_id = 0x08,
             .lost_callback_ = Gripper_Motor_Lost,
             .control_mode = dm_mit,
             .max_position = 3.14159f,
@@ -308,34 +307,18 @@ Gimbal* Gimbal_Create(void) {
 #ifdef JOINT_ONLY_COMP
     set_pid_zero(obj);
 #endif
-    obj->last_cmd_ms = HAL_GetTick();
     return obj;
 }
 
-/* 喂指令。每拍调一次；data 存起来，真正的执行在下一拍 Gimbal_Update() 里。
- * 源工程里这些数据是从 pub_sub 订阅队列取出来的，本工程没有那个框架，
- * 就由调用方(上层逻辑/调试器)直接写进来。
- * 只写 last_cmd_ms，不在这里判超时 —— 超时判定统一放在 Gimbal_Update() 开头。
- *
- * used：本工程里还没有调用方(遥控器→关节角的映射没做)，不写这个属性会被
- * --gc-sections 整个删掉，连 JLink 都调不到。等有真实调用方了可以去掉。 */
-__attribute__((used)) void Gimbal_Set_Control(Gimbal* obj, Arm_control_data* data) {
-    if (obj == NULL || data == NULL) return;
-    memcpy(&obj->arm_control_data, data, sizeof(Arm_control_data));
-    obj->last_cmd_ms = HAL_GetTick();
-}
-
 void Gimbal_Update(Gimbal* obj) {
-    /* 取得cmd数据。
-     * 源工程是从 pub_sub 的订阅队列里取，取不到(len == -1)就把 arm_mode 打回 stop。
-     * 本工程没有 pub_sub，改成 Gimbal_Set_Control() 直接喂 —— "队列空"这个语义用
-     * "超时"来等价：超过 ARM_CMD_TIMEOUT_MS 没新指令就停机。 */
-    if ((uint32_t)(HAL_GetTick() - obj->last_cmd_ms) > ARM_CMD_TIMEOUT_MS) {
-        // 未接收到cmd
-        obj->arm_mode = arm_stop;
-    } else {
-        obj->arm_mode = obj->arm_control_data.mode;
-    }
+    /* 取指令。
+     * 源工程是从 pub_sub 的订阅队列里取，取不到(len == -1)就把 arm_mode 打回 arm_stop。
+     * 本工程没有 pub_sub：命令层(App/gimbal_cmd.c)在同一个任务里、上一拍已经把
+     * obj->arm_control_data 写好了，这里直接读 mode —— 中间既没有队列也没有独立的
+     * 指令源，所以不存在"没收到 cmd"这种情况，也就没有超时判定。
+     * 真正会把 arm_mode 变成 arm_stop 的是下面的 Motor_Lost_Handle()(电机掉线)
+     * 和命令层自己的模式判定(输入链路断了的时候)。 */
+    obj->arm_mode = obj->arm_control_data.mode;
 
     /* 电机掉线相关处理 */
     Motor_Lost_Handle(obj);  // 放在最前面

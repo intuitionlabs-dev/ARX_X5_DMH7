@@ -4,10 +4,12 @@
  *
  * 从 ec_code/engineer-wheel-leg-v-1/APP/gimbal/ 搬过来的，和当前框架的适配：
  *
- *   - **指令来源**：源工程走 pub_sub(arm_control_sub->getdata())，本工程没有这个
- *     框架，所以改成 Gimbal_Set_Control() 直接喂 —— 调用方每拍调一次。
- *     超过 ARM_CMD_TIMEOUT_MS 没新指令，Gimbal_Update() 会把 arm_mode 打回 arm_stop
- *     (电机失能)，这就是源工程"订阅队列空就 stop"那个语义。
+ *   - **指令来源**：源工程走 pub_sub(arm_control_sub->getdata())，订阅队列空(len == -1)
+ *     就把 arm_mode 打回 arm_stop(电机失能)。本工程没有这个框架，也**不再有独立的
+ *     指令源**：命令层 App/gimbal_cmd.c 每拍直接写 obj->arm_control_data，
+ *     Gimbal_Update() 直接读 data.mode 决定使能/失能，两边在同一个任务里、顺序执行，
+ *     中间没有队列也没有"喂指令"的入口。源工程"掉线就停"的两条判据在本工程换成：
+ *     输入链路(遥控器)由命令层自己判(未做)，电机掉线由 Motor_Lost_Handle() 判。
  *   - **服务(service.h)**：电机重初始化服务没接入，Arm_Reinit_Service_Handler 和相关
  *     字段都注释掉了。
  *   - **动力学(arm_serial_link)**：Joint_Feedforward_Calc() 整个注释掉了，所以
@@ -41,10 +43,6 @@
 /* HAL 层 */
 #include "DM_motor.h"
 #include "ENCOS_motor.h"
-
-/* 多久没收到新指令就把 arm_mode 打回 arm_stop(ms)。
- * 和 CmdTask 的周期(2 ms)比足够宽，正常丢几帧也不会误停。 */
-#define ARM_CMD_TIMEOUT_MS 100U
 
 /* 前三个关节是 ENCOS，后面 j4~j6 和夹爪还是达妙。
  * 两个驱动的电机类型不一样，数组下标也就分开算。 */
@@ -83,11 +81,8 @@ typedef struct Gimbal_t {
     // Publisher* arm_feedback_pub;
     Arm_feedback_data arm_feedback_data;  // 回传云台cmd的数据
     // Subscriber* arm_control_sub;
-    Arm_control_data arm_control_data;  // 接收到的指令，由 Gimbal_Set_Control() 写
+    Arm_control_data arm_control_data;  // 指令，由命令层(App/gimbal_cmd.c)每拍直接写
     // Server* reinit_server;           // 重新初始化服务
-
-    /* Gimbal_Set_Control() 上次被调用的时刻，用来判指令超时(HAL_GetTick) */
-    uint32_t last_cmd_ms;
 } Gimbal;
 
 /* 机械臂对象，Gimbal_Create() 之后有效。DMmotor_Create() 失败时是 NULL。 */
@@ -95,7 +90,3 @@ extern Gimbal* gimbal;
 
 Gimbal* Gimbal_Create(void);
 void Gimbal_Update(Gimbal* obj);
-
-/* 喂指令：每拍调一次，data->mode 决定启动/停止。
- * 停手超过 ARM_CMD_TIMEOUT_MS 就自动回 arm_stop。 */
-void Gimbal_Set_Control(Gimbal* obj, Arm_control_data* data);

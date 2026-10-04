@@ -10,8 +10,7 @@
  * 各得一份副本"，只给 gimbal_arm.c 用。
  *
  * 机械臂的指令来源：源工程走 pub_sub(register_pub / register_sub)，本工程没有这个
- * 框架，所以换成了 gimbal_arm.h 里的 Gimbal_Set_Control()。下面那几个 TOPIC/SERVICE
- * 字符串先留着，等 pub_sub 接进来时直接就能用。
+ * 框架，改由命令层(App/gimbal_cmd.c)每拍直接写 Gimbal.arm_control_data。
  */
 
 #include <stdint.h>
