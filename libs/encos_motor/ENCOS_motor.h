@@ -26,6 +26,18 @@ typedef enum { encos_stop, encos_enable } ENCOS_enable;
 typedef enum { encos_output_normal, encos_output_reverse } ENCOS_output_mode;
 typedef enum { encos_soft_stop, encos_damping_stop } ENCOS_stop_mode;
 
+/* 2026-10-05：未使能态("停着")给电机发哪种帧 —— 实测结论是这一条决定 j3 认不认我们。
+ *   1 = 发 8 字节零增益 mode-0 混控帧（厂商 SDK 空闲时的做法）；
+ *   0 = 发 3 字节零电流 mode-3 停帧（原来的实现，`61 00 00`）。
+ * 真机实测（2026-10-05 在 CAN1 上用一次性探针量的，探针已删）：
+ *   - j3(MT4) 只认 8 字节 mode-0 混控帧的**帧流**；3 字节停帧、2 字节查询帧它当废帧，
+ *     一帧都不回。厂商 SDK 对 MT4 从头到尾也只发 8 字节帧，同一个道理。
+ *   - 只发混控帧（没有短帧掺和）时，帧流够密它就按查询帧持续回型号 5 应答。
+ * Kp/Kd 恒为 0：手册 §3.1 `T_ref = Kp·e_p + Kd·e_v + T_des` ⇒ 扭矩恒 0，不出力。
+ * 注意手册同一段提醒"全零 **不等于** 驱动器失能"——这不是机械抱闸，只是不出力。
+ * damping_stop 仍然走原来的 mode-3 阻尼刹车，不受本宏影响。 */
+#define ENCOS_IDLE_USE_MIXED_FRAME 1
+
 typedef struct encos_motor_config_t {
     uint8_t bsp_can_index;
     uint16_t can_tx_id, can_rx_id; /* 1..0x7FE; must be equal */
@@ -34,7 +46,12 @@ typedef struct encos_motor_config_t {
     void *arg;
     lost_callback lost_callback_;
     ENCOS_output_mode output_mode;
-    uint16_t fre_rel; /* send every N Calc_Send calls, 0 means 1 */
+    /* 发送分组掩码(见 libs/can/can_config.h 的 CAN_TX_xxxHZ_Gn)：
+     * 这一路控制帧属于哪些组。总线只在"当前组"匹配时才真的发出去，
+     * 于是**控制频率由掩码决定**——每 1ms 调一次 Calc_Send、传 CAN_TX_500HZ_G0
+     * 就是 500 Hz，不需要再在驱动里分频。0 会被兜底成 CAN_TX_GROUP_ALL
+     * (不管控位掩码是"永远发不出去"，太难查)。 */
+    uint8_t tx_group;
     ENCOS_Ranges ranges; /* REQUIRED: kp/kd/position/speed/torque/current min/max */
     float torque_constant; /* Nm/A; 0 = unknown, estimated torque is invalid */
     float position_offset; /* rad; host coordinate = motor position + offset */
@@ -55,7 +72,6 @@ typedef struct encos_motor_t {
     uint8_t torque_valid, feedback_valid, seen_reply;
     uint32_t last_rx_ms, last_position_ms, last_speed_ms;
     float ref_position, ref_speed, ref_torque, kp, kd;
-    uint16_t frequency_cnt;
     monitor_item *monitor;
     FPS_t motor_fps;
     controller *motor_controller;

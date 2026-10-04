@@ -76,22 +76,23 @@ void DMmotor_RxCallBack(uint8_t can_id, uint32_t identifier, uint8_t *data, uint
 void DMmotor_Enable(DM_motor *obj)
 {
     uint8_t data[8] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFC};
+    /* 命令帧必须送达，不走分组，用 ALL 避免被当前组过滤掉 */
     BSP_CAN_Send(obj->config.bsp_can_index,
-        obj->config.can_tx_id + obj->config.control_mode * 0x100, data, 8);
+        obj->config.can_tx_id + obj->config.control_mode * 0x100, data, 8, CAN_TX_GROUP_ALL);
 }
 
 void DMmotor_Disable(DM_motor *obj)
 {
     uint8_t data[8] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFD};
     BSP_CAN_Send(obj->config.bsp_can_index,
-        obj->config.can_tx_id + obj->config.control_mode * 0x100, data, 8);
+        obj->config.can_tx_id + obj->config.control_mode * 0x100, data, 8, CAN_TX_GROUP_ALL);
 }
 
 void DMmotor_Clear_Err(DM_motor *obj)
 {
     uint8_t data[8] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFB};
     BSP_CAN_Send(obj->config.bsp_can_index,
-        obj->config.can_tx_id + obj->config.control_mode * 0x100, data, 8);
+        obj->config.can_tx_id + obj->config.control_mode * 0x100, data, 8, CAN_TX_GROUP_ALL);
 }
 
 // TODO: 测试DMmotor_Save_Zero函数
@@ -99,7 +100,7 @@ void DMmotor_Save_Zero(DM_motor *obj)
 {
     uint8_t data[8] = {0xFF ,0xFF ,0xFF, 0xFF ,0xFF, 0xFF ,0xFF, 0xFE};
     BSP_CAN_Send(obj->config.bsp_can_index,
-        obj->config.can_tx_id + obj->config.control_mode * 0x100, data, 8);
+        obj->config.can_tx_id + obj->config.control_mode * 0x100, data, 8, CAN_TX_GROUP_ALL);
 }
 
 void DMmotor_Driver_Init(void)
@@ -138,8 +139,10 @@ DM_motor* DMmotor_Create(DM_motor_config* config , control_dm_func func)
      * Monitor_Loop() 的频率改了这里要跟着改。 */
     obj->monitor = Monitor_Register(obj->config.lost_callback_, 2, obj);
     obj->check_motor_inplace = DMMotor_Check_InPlace;
-    if(config->fre_rel == 0) {
-        obj->config.fre_rel = 1;  // 默认相对频率为1
+    /* 掩码 0 = 哪位都不属于 = 这一路永远发不出去，是最难查的那类故障，
+     * 所以按旧语义兜底成"每拍都发"(以前 fre_rel 默认 1 就是这个意思)。 */
+    if (obj->config.tx_group == 0) {
+        obj->config.tx_group = CAN_TX_GROUP_ALL;
     }
     cvector_pushback(dm_motor_list, (void *)&obj);
     // DMmotor_Enable(obj);
@@ -169,11 +172,11 @@ void DMmotor_Calc_Send(void) {
     {
         DM_motor *obj = *(DM_motor **)cvector_val_at(dm_motor_list, i);
 
-        // 频率控制
-        obj->frequency_cnt++;
-        if (obj->frequency_cnt >= obj->config.fre_rel) {
-            obj->frequency_cnt = 0;
-        } else {
+        /* 控制频率由 obj->config.tx_group 的掩码决定：不在当前组的这一拍整拍跳过，
+         * 连 PID 都不算 —— 不能"算了不发"，PID_Calc 没有 dt，增益按调用次数算，
+         * 按 1 kHz 算而按 500 Hz 发会让 KI 凭空翻倍。发射那一步在 bsp_can 里还有
+         * 一道同样的过滤(兜底)，这里是"连算都不算"。 */
+        if (!BSP_CAN_TxGroupMatch(obj->config.tx_group)) {
             continue;
         }
         // if (obj->errcode) {
@@ -236,7 +239,7 @@ void DMmotor_Calc_Send(void) {
                 send_data[6] = ((kd_send & 0xF) << 4) | (torque_send >> 8);
                 send_data[7] = torque_send;
                 BSP_CAN_Send(obj->config.bsp_can_index,
-                    obj->config.can_tx_id + DM_MIT_OFFSET, send_data, 8);
+                    obj->config.can_tx_id + DM_MIT_OFFSET, send_data, 8, obj->config.tx_group);
             }
             else if (obj->config.control_mode == dm_pos)
             {
@@ -246,7 +249,7 @@ void DMmotor_Calc_Send(void) {
                 memcpy(send_data, ppos, 4);
                 memcpy(send_data + 4, pspeed, 4);
                 BSP_CAN_Send(obj->config.bsp_can_index,
-                    obj->config.can_tx_id + DM_POS_SPEED_OFFSET, send_data, 8);
+                    obj->config.can_tx_id + DM_POS_SPEED_OFFSET, send_data, 8, obj->config.tx_group);
             }
             else if (obj->config.control_mode == dm_speed)
             {
@@ -254,7 +257,7 @@ void DMmotor_Calc_Send(void) {
                 uint8_t *pspeed = (uint8_t *)&obj->ref_speed;
                 memcpy(send_data, pspeed, 4);
                 BSP_CAN_Send(obj->config.bsp_can_index,
-                    obj->config.can_tx_id + DM_SPEED_OFFSET, send_data, 4);
+                    obj->config.can_tx_id + DM_SPEED_OFFSET, send_data, 4, obj->config.tx_group);
             }
             // obj->update = 0;
             // uint8_t cnt = 0;
@@ -271,7 +274,7 @@ void DMmotor_Calc_Send(void) {
             {
                 uint8_t send_data[8] = {0x7F, 0xFF, 0x7F, 0xF0, 0x00, 0x00, 0x07, 0xFF};
                 BSP_CAN_Send(obj->config.bsp_can_index,
-                    obj->config.can_tx_id + DM_MIT_OFFSET, send_data, 8);
+                    obj->config.can_tx_id + DM_MIT_OFFSET, send_data, 8, obj->config.tx_group);
             }
             else if (obj->config.control_mode == dm_pos)
             {

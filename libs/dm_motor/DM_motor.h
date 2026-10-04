@@ -46,8 +46,12 @@ typedef struct dm_motor_config_t {
     lost_callback lost_callback_;
     DM_control_mode control_mode;
     DM_output_mode output_mode;  // 达妙电机输出方向，默认正转
-    //相对频率 :真实频率(控制频率)为 (1000/fre_rel)
-    uint16_t fre_rel;
+    /* 发送分组掩码(见 libs/can/can_config.h 的 CAN_TX_xxxHZ_Gn)：
+     * 这一路控制帧属于哪些组。总线只在"当前组"匹配时才真的发出去，
+     * 于是**控制频率由掩码决定**——每 1ms 调一次 Calc_Send、传 CAN_TX_500HZ_G0
+     * 就是 500 Hz，不需要再在驱动里分频。命令帧(使能/失能/设零)不走这个，
+     * 一律 CAN_TX_GROUP_ALL。 */
+    uint8_t tx_group;
 
     /* 各物理量(或其绝对值)最大值,用于反馈与MIT模式控制时线性映射,可在上位机查看 */
     float max_position;
@@ -83,9 +87,6 @@ typedef struct dm_motor_t {
     float kd;                 //Kd             MIT模式
 
     uint8_t (*check_motor_inplace)(struct dm_motor_t* obj, float range);//电机到位了返回1
-
-    // 频率控制
-    uint16_t frequency_cnt;
 
     monitor_item* monitor;
     FPS_t motor_fps;

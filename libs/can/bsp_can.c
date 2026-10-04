@@ -14,15 +14,27 @@
  ******************************************************************************
  */
 #include "bsp_can.h"
-#include "main.h" // HAL_GetTick()
+#include "main.h"  // HAL_GetTick()
 
 #if _BSP_CAN_ENABLE && _BSP_FDCAN_ENABLE
-#error
+    #error
 #endif
 
+/* ---- 发送分组（掩码见 can_config.h）--------------------------------------
+ * 当前组 = HAL_GetTick() % CAN_TX_GROUP_NUM，掩码里不含当前组的调用在 BSP_CAN_Send
+ * 里被丢掉（不发送、不报错）。只读 HAL_GetTick()，不持有状态，多任务同时调也安全。
+ *
+ * 驱动那边**也用这个函数**把"算控制量"和"发帧"卡在同一个节拍上：只发不算是浪费，
+ * 只算不发则 PID 会按 1 kHz 跑（PID_Calc 没有 dt，增益是按调用次数算的，
+ * 于是 KI 有效值会翻倍）。所以驱动在进循环体之前先问一次本函数。 */
+uint8_t BSP_CAN_TxGroupMatch(uint8_t tx_group) {
+    uint8_t now_group = (uint8_t)(HAL_GetTick() % CAN_TX_GROUP_NUM);
+    return (tx_group & (uint8_t)(1u << now_group)) != 0u;
+}
+
 #if _BSP_CAN_ENABLE && DEVICE_CAN_CNT
-#include "can.h" // IWYU pragma: keep
-#include "cvector.h"
+    #include "can.h"  // IWYU pragma: keep
+    #include "cvector.h"
 
 typedef struct Bsp_can_type_def_t {
     CAN_HandleTypeDef *device;  // 自定义总线编号
@@ -36,14 +48,13 @@ typedef struct Bsp_can_type_def_t {
 Bsp_can_type_def_t can_devices[DEVICE_CAN_CNT];  // 定义对应数量的can外设，即代码中定义can总线
 
 void BSP_CAN_Init(void) {
-    CAN_HandleTypeDef* can_ports[DEVICE_CAN_CNT]  = CAN_PORT_ARRAY;
+    CAN_HandleTypeDef *can_ports[DEVICE_CAN_CNT] = CAN_PORT_ARRAY;
     uint32_t prefix_array[DEVICE_CAN_CNT] = CAN_PREFIX_ARRAY;
     for (int i = 0; i < DEVICE_CAN_CNT; ++i) {
         can_devices[i].device = can_ports[i];
         can_devices[i].bank_prefix = prefix_array[i];
         can_devices[i].call_backs = cvector_create(sizeof(can_rx_callback));
         can_devices[i].frame_callbacks = cvector_create(sizeof(Can_frame_rx_callback_t));
-
     }
     for (size_t d = 0; d < DEVICE_CAN_CNT; ++d) {
         for (size_t i = 0; i < FILTER_MAX_CNT; ++i) {
@@ -51,15 +62,19 @@ void BSP_CAN_Init(void) {
         }
     }
     for (int i = 0; i < DEVICE_CAN_CNT; ++i) {
-        HAL_CAN_Start(can_devices[i].device);                                              // 将HAL库的对应功能函数封装，实现映射和隔离
-        HAL_CAN_ActivateNotification(can_devices[i].device, CAN_IT_RX_FIFO0_MSG_PENDING);  // 检测can是否报错
+        HAL_CAN_Start(can_devices[i].device);  // 将HAL库的对应功能函数封装，实现映射和隔离
+        HAL_CAN_ActivateNotification(can_devices[i].device,
+            CAN_IT_RX_FIFO0_MSG_PENDING);  // 检测can是否报错
         HAL_CAN_ActivateNotification(can_devices[i].device, CAN_IT_RX_FIFO1_MSG_PENDING);
     }
 }
 
 //  仅对HAL库的can发送函数进行了形式上的封装，实际参数依然依赖外部传参
-void BSP_CAN_Send(uint8_t can_id, uint16_t identifier, uint8_t *data,
-                  basic_data_t len) {
+void BSP_CAN_Send(uint8_t can_id, uint16_t identifier, uint8_t *data, basic_data_t len,
+    uint8_t tx_group) {
+    if (!BSP_CAN_TxGroupMatch(tx_group)) {
+        return; /* 不属于当前组：直接丢弃 */
+    }
     #if !_BSP_DEBUG_CAN_NOT_SEND
     CAN_TxHeaderTypeDef txconf;  //配置发送包头
     txconf.StdId = identifier;
@@ -72,15 +87,17 @@ void BSP_CAN_Send(uint8_t can_id, uint16_t identifier, uint8_t *data,
         basic_data_t can_tx_now_time = BSP_sys_time_ms();
         // 2ms还没有发送出去，放弃发送
         if (can_tx_now_time > can_tx_start_time + 2) {
-            HAL_CAN_AbortTxRequest(can_devices[can_id].device, CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
+            HAL_CAN_AbortTxRequest(can_devices[can_id].device,
+                CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
             __NOP();
             break;
         }
     }
-    HAL_CAN_AddTxMessage(can_devices[can_id].device, &txconf, data,  // 上次信息发送成功，传输新信息
-                         &can_devices[can_id].tx_mailbox);
+    HAL_CAN_AddTxMessage(can_devices[can_id].device, &txconf,
+        data,  // 上次信息发送成功，传输新信息
+        &can_devices[can_id].tx_mailbox);
     #else
-    #warning "Config CAN to not send!!"
+        #warning "Config CAN to not send!!"
     #endif
 }
 
@@ -90,7 +107,9 @@ void Update_Filter(uint8_t can_id, uint32_t filter_index) {
     tmp.FilterMode = CAN_FILTERMODE_IDLIST;
     tmp.FilterScale = CAN_FILTERSCALE_16BIT;
     // tmp.FilterFIFOAssignment = can_devices[can_id].fifo;
-    tmp.FilterFIFOAssignment = (group_index & 1) ? CAN_RX_FIFO0 : CAN_RX_FIFO1;  // 4个一组，按照组别设置FIFO，平衡负载
+    tmp.FilterFIFOAssignment = (group_index & 1)
+        ? CAN_RX_FIFO0
+        : CAN_RX_FIFO1;  // 4个一组，按照组别设置FIFO，平衡负载
     tmp.SlaveStartFilterBank = 14;
     uint16_t *filter_data = can_devices[can_id].filters;  // 与can总线保持一致
     tmp.FilterIdLow = filter_data[group_index * 4] << 5;
@@ -109,7 +128,6 @@ void Update_Filter(uint8_t can_id, uint32_t filter_index) {
     HAL_CAN_ConfigFilter(can_devices[can_id].device, &tmp);  // 配置can接收过滤器
 }
 
-
 void BSP_CAN_FifoMsg_Callback(CAN_HandleTypeDef *hcan, uint32_t fifo) {
     for (int i = 0; i < DEVICE_CAN_CNT; ++i) {
         if (hcan == can_devices[i].device) {
@@ -117,7 +135,8 @@ void BSP_CAN_FifoMsg_Callback(CAN_HandleTypeDef *hcan, uint32_t fifo) {
             CAN_RxHeaderTypeDef rxconf;
             HAL_CAN_GetRxMessage(hcan, fifo, &rxconf, bsp_can_rxbuf);
             for (size_t j = 0; j < can_devices[i].call_backs->cv_len; ++j) {
-                can_rx_callback funcnow = *(can_rx_callback *)cvector_val_at(can_devices[i].call_backs, j);
+                can_rx_callback funcnow =
+                    *(can_rx_callback *)cvector_val_at(can_devices[i].call_backs, j);
                 funcnow(i, rxconf.StdId, bsp_can_rxbuf, rxconf.DLC);
             }
             can_frame_callback(i, rxconf.StdId, bsp_can_rxbuf, rxconf.DLC);
@@ -146,8 +165,8 @@ void BSP_ADD_Filters(uint8_t can_id) {
 
 #if _BSP_FDCAN_ENABLE
 
-#include "fdcan.h" // IWYU pragma: keep
-#include "cvector.h"
+    #include "cvector.h"
+    #include "fdcan.h"  // IWYU pragma: keep
 
 typedef struct Bsp_fd_can_type_def_t {
     FDCAN_HandleTypeDef *device;  //自定义总线编号
@@ -159,8 +178,52 @@ typedef struct Bsp_fd_can_type_def_t {
 
 Bsp_fd_can_type_def can_devices[DEVICE_CAN_CNT];  //定义对应数量的can外设，即代码中定义can总线
 
+    /* ---- 诊断(2026-10-05)：两条我们发出的帧之间至少隔 N 微秒 ------------------
+ * 目的：j3(ENCOS) 在达妙 500 Hz 满流量下不发声，怀疑"我们一 tick 里连着丢好几帧"
+ * （4 台达妙指令帧挨着发 → 它们几乎同时回反馈）把总线的空档挤没。这里把**我们自己**
+ * 的发送节奏摊平成"每帧至少隔 200us"，再在达妙正常跑的情况下看 j3 活不活。
+ * 注意：它只改"我们发帧"的间隔，**改不了达妙的反馈节奏**（那是电机自己发的回应），
+ * 所以这个实验能区分"我们的帧挤在一起的锅"和"达妙反馈量的锅"。
+ * 计时用 DWT->CYCCNT，开机后用 HAL_GetTick() 的 1ms 边沿自校准 cycles/us ——
+ * 不猜主频：H7 的 CPUCLK 和 HCLK 不是一个数，SystemCoreClock 给的是 HCLK。
+ * 代价：本实验里 CAN1 最多只能发 5000 帧/s，而我们要发约 2500 帧/s，等于 MotorTask
+ * 每拍要空转 ~0.5ms。若看到达妙反馈帧率掉下来，就是 MotorTask 被拖了。
+ * **实验完把 BSP_CAN_TX_MIN_GAP_US 改回 0u。** */
+    #define BSP_CAN_TX_MIN_GAP_US 200u
+    #define BSP_CAN_TX_GAP_BUS 0u /* 只作用于 CAN1(索引 0)；其它总线不受影响 */
+
+    #if BSP_CAN_TX_MIN_GAP_US
+static uint32_t tx_gap_cycles_per_us; /* 0 = 还没校准 */
+static uint32_t tx_gap_last_cyc;
+
+static void tx_gap_calibrate(void) {
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->LAR = 0xC5ACCE55u; /* Cortex-M7 要解锁才写得进 DWT */
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    uint32_t t = HAL_GetTick();
+    while (HAL_GetTick() == t) {}
+    uint32_t c0 = DWT->CYCCNT;
+    t = HAL_GetTick();
+    while (HAL_GetTick() == t) {}
+    uint32_t c1 = DWT->CYCCNT;
+    tx_gap_cycles_per_us = (c1 - c0) / 1000u;
+    tx_gap_last_cyc = DWT->CYCCNT;
+}
+
+/* 距上一帧不足 N us 就原地等 —— 调用者(MotorTask)会被拖住，这是实验的代价 */
+static void tx_gap_wait(void) {
+    if (!tx_gap_cycles_per_us) {
+        tx_gap_calibrate();
+    }
+    uint32_t need = BSP_CAN_TX_MIN_GAP_US * tx_gap_cycles_per_us;
+    while ((uint32_t)(DWT->CYCCNT - tx_gap_last_cyc) < need) {}
+    tx_gap_last_cyc = DWT->CYCCNT;
+}
+    #endif
+
 void BSP_CAN_Init(void) {
-    FDCAN_HandleTypeDef* can_ports[DEVICE_CAN_CNT]  = CAN_PORT_ARRAY;
+    FDCAN_HandleTypeDef *can_ports[DEVICE_CAN_CNT] = CAN_PORT_ARRAY;
     uint32_t prefix_array[DEVICE_CAN_CNT] = CAN_PREFIX_ARRAY;
     for (int i = 0; i < DEVICE_CAN_CNT; ++i) {
         can_devices[i].device = can_ports[i];
@@ -175,55 +238,68 @@ void BSP_CAN_Init(void) {
     }
 
     for (int i = 0; i < DEVICE_CAN_CNT; ++i) {
-        if (HAL_FDCAN_ConfigGlobalFilter(can_devices[i].device, FDCAN_REJECT, FDCAN_REJECT, FDCAN_REJECT_REMOTE, FDCAN_REJECT_REMOTE) != HAL_OK) {
+        if (HAL_FDCAN_ConfigGlobalFilter(can_devices[i].device, FDCAN_REJECT,
+                FDCAN_REJECT, FDCAN_REJECT_REMOTE, FDCAN_REJECT_REMOTE)
+            != HAL_OK) {
             return;
         }
         HAL_FDCAN_Start(can_devices[i].device);  // 将HAL库的对应功能函数封装，实现映射和隔离
-        HAL_FDCAN_ActivateNotification(can_devices[i].device, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0);
+        HAL_FDCAN_ActivateNotification(can_devices[i].device,
+            FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0);
         HAL_FDCAN_ActivateNotification(can_devices[i].device, FDCAN_IT_RX_FIFO0_FULL, 0);
         // HAL_FDCAN_ActivateNotification(can_devices[i].device, FDCAN_IT_RX_FIFO0_WATERMARK, 0);
-        HAL_FDCAN_ActivateNotification(can_devices[i].device, FDCAN_IT_RX_FIFO1_NEW_MESSAGE, 0);
+        HAL_FDCAN_ActivateNotification(can_devices[i].device,
+            FDCAN_IT_RX_FIFO1_NEW_MESSAGE, 0);
         HAL_FDCAN_ActivateNotification(can_devices[i].device, FDCAN_IT_RX_FIFO1_FULL, 0);
         // HAL_FDCAN_ActivateNotification(can_devices[i].device, FDCAN_IT_RX_FIFO1_WATERMARK, 0);
     }
 }
 
 //  仅对HAL库的can发送函数进行了形式上的封装，实际参数依然依赖外部传参
-void BSP_CAN_Send(uint8_t fdcan_id, uint16_t identifier, uint8_t *data, basic_data_t len) {
-        #if !_BSP_DEBUG_CAN_NOT_SEND
+void BSP_CAN_Send(uint8_t fdcan_id, uint16_t identifier, uint8_t *data, basic_data_t len,
+    uint8_t tx_group) {
+    if (!BSP_CAN_TxGroupMatch(tx_group)) {
+        return; /* 不属于当前组：直接丢弃 */
+    }
+    #if !_BSP_DEBUG_CAN_NOT_SEND
+        #if BSP_CAN_TX_MIN_GAP_US
+    if (fdcan_id == BSP_CAN_TX_GAP_BUS) {
+        tx_gap_wait(); /* 诊断：本次发送距上一次至少 BSP_CAN_TX_MIN_GAP_US 微秒 */
+    }
+        #endif
     FDCAN_TxHeaderTypeDef txconf;
     switch (len) {
-        case 0:
-            txconf.DataLength = FDCAN_DLC_BYTES_0; /* 数据长度:0 */
-            break;
-        case 1:
-            txconf.DataLength = FDCAN_DLC_BYTES_1; /* 数据长度:1 */
-            break;
-        case 2:
-            txconf.DataLength = FDCAN_DLC_BYTES_2; /* 数据长度:2 */
-            break;
-        case 3:
-            txconf.DataLength = FDCAN_DLC_BYTES_3; /* 数据长度:3 */
-            break;
-        case 4:
-            txconf.DataLength = FDCAN_DLC_BYTES_4; /* 数据长度:4 */
-            break;
-        case 5:
-            txconf.DataLength = FDCAN_DLC_BYTES_5; /* 数据长度:5 */
-            break;
-        case 6:
-            txconf.DataLength = FDCAN_DLC_BYTES_6; /* 数据长度:6 */
-            break;
-        case 7:
-            txconf.DataLength = FDCAN_DLC_BYTES_7; /* 数据长度:7 */
-            break;
-        case 8:
-            txconf.DataLength = FDCAN_DLC_BYTES_8; /* 数据长度:8 */
-            break;
-        default:
-            /* 其他长度就退出函数 */
-            return;
-    }    
+    case 0:
+        txconf.DataLength = FDCAN_DLC_BYTES_0; /* 数据长度:0 */
+        break;
+    case 1:
+        txconf.DataLength = FDCAN_DLC_BYTES_1; /* 数据长度:1 */
+        break;
+    case 2:
+        txconf.DataLength = FDCAN_DLC_BYTES_2; /* 数据长度:2 */
+        break;
+    case 3:
+        txconf.DataLength = FDCAN_DLC_BYTES_3; /* 数据长度:3 */
+        break;
+    case 4:
+        txconf.DataLength = FDCAN_DLC_BYTES_4; /* 数据长度:4 */
+        break;
+    case 5:
+        txconf.DataLength = FDCAN_DLC_BYTES_5; /* 数据长度:5 */
+        break;
+    case 6:
+        txconf.DataLength = FDCAN_DLC_BYTES_6; /* 数据长度:6 */
+        break;
+    case 7:
+        txconf.DataLength = FDCAN_DLC_BYTES_7; /* 数据长度:7 */
+        break;
+    case 8:
+        txconf.DataLength = FDCAN_DLC_BYTES_8; /* 数据长度:8 */
+        break;
+    default:
+        /* 其他长度就退出函数 */
+        return;
+    }
     txconf.Identifier = identifier;  // fdcan id
     txconf.IdType = FDCAN_STANDARD_ID;
     txconf.TxFrameType = FDCAN_DATA_FRAME;
@@ -248,17 +324,17 @@ void BSP_CAN_Send(uint8_t fdcan_id, uint16_t identifier, uint8_t *data, basic_da
             return;
         }
     }
-    
+
     HAL_FDCAN_AddMessageToTxFifoQ(can_devices[fdcan_id].device, &txconf, data);
-#endif//_BSP_DEBUG_CAN_NOT_SEND
+    #endif  //_BSP_DEBUG_CAN_NOT_SEND
 }
 
 void Update_Filter(uint8_t fdcan_id, uint32_t filter_index) {
     FDCAN_FilterTypeDef tmp;
     uint16_t id = can_devices[fdcan_id].filters[filter_index];
 
-    tmp.IdType = FDCAN_STANDARD_ID;      /* 只接收标准帧ID */
-    tmp.FilterIndex = filter_index;      /* 一个滤波元素对应 filters[] 的一个槽位 */
+    tmp.IdType = FDCAN_STANDARD_ID; /* 只接收标准帧ID */
+    tmp.FilterIndex = filter_index; /* 一个滤波元素对应 filters[] 的一个槽位 */
     tmp.FilterType = FDCAN_FILTER_RANGE; /* 范围滤波；FilterID1 == FilterID2 时即精确匹配该ID */
 
     if (id == ID_NOTSET) {
@@ -281,7 +357,8 @@ void Update_Filter(uint8_t fdcan_id, uint32_t filter_index) {
 }
 
 static const uint8_t DL_CTO_BYTES[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64};
-static void bsp_can_fifo_msg_callback(FDCAN_HandleTypeDef *hfdcan, uint32_t fifo, uint32_t RxFifo0ITs) {
+static void bsp_can_fifo_msg_callback(FDCAN_HandleTypeDef *hfdcan, uint32_t fifo,
+    uint32_t RxFifo0ITs) {
     for (int i = 0; i < DEVICE_CAN_CNT; ++i) {
         if (hfdcan == can_devices[i].device) {
             /* 必须 >= 64 字节：HAL_FDCAN_GetRxMessage() 是按 DLCtoBytes[DataLength] 拷的，
@@ -290,15 +367,18 @@ static void bsp_can_fifo_msg_callback(FDCAN_HandleTypeDef *hfdcan, uint32_t fifo
              * 就会被拷爆(在中断里，栈是 MSP)。留够 64。 */
             uint8_t bsp_can_rxbuf[64];
             FDCAN_RxHeaderTypeDef rxconf;
-            HAL_FDCAN_GetRxMessage(hfdcan, fifo, &rxconf, bsp_can_rxbuf); /* 提取FIFO0中接收到的数据 */
-                                                                          /* 更新RXFIFO的状态（了解FIFO是否有剩余报文） */
+            HAL_FDCAN_GetRxMessage(hfdcan, fifo, &rxconf,
+                bsp_can_rxbuf); /* 提取FIFO0中接收到的数据 */
+                                /* 更新RXFIFO的状态（了解FIFO是否有剩余报文） */
             for (size_t j = 0; j < can_devices[i].call_backs->cv_len; ++j) {
-                can_rx_callback funcnow = *(can_rx_callback *)cvector_val_at(can_devices[i].call_backs, j);
+                can_rx_callback funcnow =
+                    *(can_rx_callback *)cvector_val_at(can_devices[i].call_backs, j);
                 /* 本工程的 HAL(见 stm32h7xx_hal_fdcan.c:3084)在 HAL_FDCAN_GetRxMessage()
                  * 里已经把 DLC 右移过了(掩码 0x000F0000)，rxconf.DataLength 就是 0~15 的
                  * 裸 DLC 值(FDCAN_DLC_BYTES_8 == 8)。这里再 >>16 会恒得 0，导致所有回调
                  * 收到的 len 都是 0、一个字节都拷不出去。直接拿它当表下标。 */
-                funcnow(i, rxconf.Identifier, bsp_can_rxbuf, DL_CTO_BYTES[rxconf.DataLength & 0x0FU]);
+                funcnow(i, rxconf.Identifier, bsp_can_rxbuf,
+                    DL_CTO_BYTES[rxconf.DataLength & 0x0FU]);
             }
         }
     }
@@ -319,14 +399,12 @@ void BSP_CAN_AddFilter(uint8_t can_id, uint16_t filter) {
     // uint32_t filter_index = can_devices[can_id].filter_cnt++;
     /* 已经登记过的 ID 直接返回：一条总线上多台电机用同一个接收 ID 是常见情形
      * (达妙四台的反馈帧仲裁ID 都是 MST_ID=0)，重复占槽位没有任何作用 */
-    for (size_t filter_index = 0; filter_index < FILTER_MAX_CNT;
-         ++filter_index) {
+    for (size_t filter_index = 0; filter_index < FILTER_MAX_CNT; ++filter_index) {
         if (can_devices[can_id].filters[filter_index] == filter) {
             return;
         }
     }
-    for (size_t filter_index = 0; filter_index < FILTER_MAX_CNT;
-         ++filter_index) {
+    for (size_t filter_index = 0; filter_index < FILTER_MAX_CNT; ++filter_index) {
         if (can_devices[can_id].filters[filter_index] == ID_NOTSET) {
             can_devices[can_id].filters[filter_index] = filter;
             Update_Filter(can_id, filter_index);
@@ -338,8 +416,7 @@ void BSP_CAN_AddFilter(uint8_t can_id, uint16_t filter) {
 // 注销过滤器
 void BSP_CAN_RemoveFilter(uint8_t can_id, uint16_t filter) {
     // uint32_t filter_index = can_devices[can_id].filter_cnt++;
-    for (size_t filter_index = 0; filter_index < FILTER_MAX_CNT;
-         ++filter_index) {
+    for (size_t filter_index = 0; filter_index < FILTER_MAX_CNT; ++filter_index) {
         if (can_devices[can_id].filters[filter_index] == filter) {
             can_devices[can_id].filters[filter_index] = ID_NOTSET;
             Update_Filter(can_id, filter_index);
@@ -349,6 +426,6 @@ void BSP_CAN_RemoveFilter(uint8_t can_id, uint16_t filter) {
 
 // 注册回调函数
 void BSP_CAN_RegisterRxCallback(uint8_t fdcan_id, can_rx_callback func) {
-    cvector_pushback(can_devices[fdcan_id].call_backs, (void*)(void**)&func);
+    cvector_pushback(can_devices[fdcan_id].call_backs, (void *)(void **)&func);
 }
 #endif

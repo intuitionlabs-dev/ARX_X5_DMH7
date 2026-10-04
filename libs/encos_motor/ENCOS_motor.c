@@ -26,11 +26,14 @@ static int bus_busy(uint8_t bus) {
   bus_guard[bus] = 0;
   return 0;
 }
-static ENCOS_Result send_frame(ENCOS_motor *obj, const ENCOS_Frame *frame) {
+/* tx_group: 见 libs/can/can_config.h。控制帧传 obj->config.tx_group(频率由掩码决定)；
+ * 设零/查询这类必须送达的命令帧传 CAN_TX_GROUP_ALL，别被分组吃掉。 */
+static ENCOS_Result send_frame(ENCOS_motor *obj, const ENCOS_Frame *frame,
+                               uint8_t tx_group) {
   if (bus_busy(obj->config.bsp_can_index))
     return ENCOS_BUSY;
   BSP_CAN_Send(obj->config.bsp_can_index, frame->id, (uint8_t *)frame->data,
-               frame->len);
+               frame->len, tx_group);
   return ENCOS_OK; /* submitted to BSP; NOT an acknowledgement from motor */
 }
 static void reset_controller(ENCOS_motor *obj) {
@@ -48,12 +51,23 @@ static void reset_controller(ENCOS_motor *obj) {
 }
 static ENCOS_Result send_stop(ENCOS_motor *obj) {
   ENCOS_Frame frame;
+#if ENCOS_IDLE_USE_MIXED_FRAME
+  /* 软停走"零增益混控帧"保活(见 ENCOS_motor.h 那个宏的注释)。damping_stop 是
+   * 明确的阻尼刹车需求，仍走下面的 mode-3；PackMixed 失败(量程不合法)也不硬来。 */
+  if (obj->config.stop_mode == encos_soft_stop) {
+    ENCOS_Result mixed = ENCOS_PackMixed(&frame, obj->config.can_tx_id,
+                                         &obj->config.ranges, 0, 0, 0, 0, 0);
+    if (mixed == ENCOS_OK)
+      return send_frame(obj, &frame, obj->config.tx_group);
+  }
+#endif
   ENCOS_CurrentMode mode = obj->config.stop_mode == encos_damping_stop
                                ? ENCOS_DAMPING_BRAKE
                                : ENCOS_CURRENT;
   ENCOS_Result result =
       ENCOS_PackCurrent(&frame, obj->config.can_tx_id, mode, 0, 1);
-  return result == ENCOS_OK ? send_frame(obj, &frame) : result;
+  return result == ENCOS_OK ? send_frame(obj, &frame, obj->config.tx_group)
+                            : result;
 }
 static int fresh(ENCOS_motor *obj, uint8_t field, uint32_t at) {
   return (obj->feedback_valid & field) &&
@@ -173,8 +187,10 @@ ENCOS_motor *ENCOSmotor_Create(ENCOS_motor_config *config, control_encos_func fu
     return NULL;
   memset(obj, 0, sizeof(*obj));
   obj->config = *config;
-  if (!obj->config.fre_rel)
-    obj->config.fre_rel = 1;
+  /* 掩码 0 = 哪位都不属于 = 这一路永远发不出去，是最难查的那类故障，
+   * 所以按旧语义兜底成"每拍都发"(以前 fre_rel 默认 1 就是这个意思)。 */
+  if (!obj->config.tx_group)
+    obj->config.tx_group = CAN_TX_GROUP_ALL;
   if (!obj->config.feedback_timeout_ms)
     obj->config.feedback_timeout_ms = ENCOS_OFFLINE_TIMEOUT_MS;
   /* Allocation failures are checked before publishing the motor to callbacks.
@@ -248,7 +264,7 @@ ENCOS_Result ENCOSmotor_Save_Zero(ENCOS_motor *obj) {
   obj->zero_ack_success = 0;
   obj->zero_sent_ms = now_ms();
   obj->feedback_valid &= (uint8_t)~(ENCOS_HAS_POSITION | ENCOS_HAS_SPEED);
-  r = send_frame(obj, &frame);
+  r = send_frame(obj, &frame, CAN_TX_GROUP_ALL); /* 设零帧绝不能因分组被丢 */
   bus_setting_ms[obj->config.bsp_can_index] = now_ms();
   bus_guard[obj->config.bsp_can_index] = 1;
   return obj->last_result = r;
@@ -258,7 +274,9 @@ ENCOS_Result ENCOSmotor_Query(ENCOS_motor *obj, uint8_t code) {
     return ENCOS_INVALID;
   ENCOS_Frame frame;
   ENCOS_Result r = ENCOS_PackQuery(&frame, obj->config.can_tx_id, code);
-  return obj->last_result = r == ENCOS_OK ? send_frame(obj, &frame) : r;
+  return obj->last_result = r == ENCOS_OK
+                                ? send_frame(obj, &frame, CAN_TX_GROUP_ALL)
+                                : r;
 }
 const char *ENCOSmotor_Err_String(uint8_t code) {
   return ENCOS_ErrorString(code);
@@ -286,9 +304,12 @@ void ENCOSmotor_Calc_Send(void) {
     if (obj->zero_pending &&
         (uint32_t)(now_ms() - obj->zero_sent_ms) >= ENCOS_ZERO_ACK_TIMEOUT_MS)
       obj->zero_pending = 0;
-    if (++obj->frequency_cnt < obj->config.fre_rel)
+    /* 控制频率由 obj->config.tx_group 的掩码决定：不在当前组的这一拍整拍跳过，
+     * 连 PID 都不算 —— 不能"算了不发"，PID_Calc 没有 dt，增益按调用次数算，
+     * 按 1 kHz 算而按 500 Hz 发会让 KI 凭空翻倍。(上面的 zero_pending 超时清理
+     * 是"每隔多久检查一次"，跟发送无关，所以留在门外面。) */
+    if (!BSP_CAN_TxGroupMatch(obj->config.tx_group))
       continue;
-    obj->frequency_cnt = 0;
     if (obj->enable != encos_enable || !motion_ready(obj)) {
       obj->enable = encos_stop;
       reset_controller(obj);
@@ -330,6 +351,6 @@ void ENCOSmotor_Calc_Send(void) {
       (void)ENCOSmotor_Disable(obj);
       obj->last_result = r;
     } else
-      obj->last_result = send_frame(obj, &frame);
+      obj->last_result = send_frame(obj, &frame, obj->config.tx_group);
   }
 }

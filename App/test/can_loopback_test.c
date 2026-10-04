@@ -124,7 +124,7 @@ void CanLoopbackTest_Loop(void) {
     /* 3. 再发下一帧 */
     uint8_t data[8];
     CanLoopbackTest_FillFrame(data, (uint8_t)can_lb_tx_cnt);
-    BSP_CAN_Send(CAN_LB_TX_CAN, CAN_LB_ID, data, 8);
+    BSP_CAN_Send(CAN_LB_TX_CAN, CAN_LB_ID, data, 8, CAN_TX_GROUP_ALL); /* 测试帧不受分组限制 */
     can_lb_tx_cnt++;
 }
 

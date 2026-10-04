@@ -129,11 +129,26 @@ Gimbal* Gimbal_Create(void) {
         joint_controller_config[i].position_pid_config = obj->pid_cfgs[i][0];
         joint_controller_config[i].speed_pid_config = obj->pid_cfgs[i][1];
     }
+    /* ---- CAN1 发送分组一览（7 台电机全在 CAN1，index 0）---------------------
+     * 总线上所有发送者占的组数之和 = 每 8 拍的总帧数：
+     *   4 台 500 Hz(各占 4 组) + 3 台 250 Hz(各占 2 组) = 22 帧 / 8 ms = 2750 帧/s。
+     * 摊到 8 拍上做不到每拍 2 帧(8×2 = 16 < 22)，所以**每拍 3 帧是这组频率下的
+     * 下界**，再调相位也压不下去；想压下去只能降频(见 libs/can/can_config.h)。
+     * 下面的相位就是贴着这个下界排的：
+     *   tick   0  1  2  3  4  5  6  7
+     *   帧数   3  3  3  2  3  3  3  2
+     * 做法：① 4 台 500 Hz 平分两个相位 —— j1/j3 = G0、j2/j4 = G1，各 2 台；
+     *       ② 3 台 250 Hz 摊到 3 个不同相位 —— j5 = G2、夹爪 = G0 这两个**偶数**相
+     *          把 tick 0,2,4,6 各加满到 3 帧；j6 = G1 是奇数相，只落到 1/5 两拍，
+     *          于是只剩 tick 3/7 是 2 帧。
+     * 改频率或改相位后要重新算这张表，否则峰值会莫名其妙跳上去。
+     * (峰值之所以要紧：bsp_can.c 那个 BSP_CAN_TX_MIN_GAP_US 是**串行**的，
+     *  一拍 n 帧就要在 MotorTask 里空等 (n-1)×200us。) */
     {
         // Joint1 ENCOS V1.20EAP(原 dm8006 的位置)。CAN id 用 SDK 那套：j1 = 1
         ENCOS_motor_config joint1_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT1],
-            .bsp_can_index = 2,
+            .bsp_can_index = 0,  // CAN1：7 台电机合并到一条总线，见上面的分组表
             .can_tx_id = 0x01,
             .can_rx_id = 0x01,  // ENCOS 要求收发同 id，否则 Create 直接返回 NULL
             .lost_callback_ = Joint1_Motor_Lost,
@@ -146,7 +161,8 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = NULL,
             .speed_fdb_calc = NULL,
             .arg = NULL,   // 速度或位置环的反馈计算函数的对象
-            .fre_rel = 2,  //500Hz
+            /* 500Hz(组 0,2,4,6)。CAN1 上 4 台 500 Hz 平分两个相位：j1/j3 走 G0 */
+            .tx_group = CAN_TX_500HZ_G0,
         };
         obj->joint1 = ENCOSmotor_Create(&joint1_motor_config, ENCOS_Mixed_Control);
         if (!encos_joint_init(obj, JOINT1)) return NULL;
@@ -154,7 +170,7 @@ Gimbal* Gimbal_Create(void) {
         // Joint2 ENCOS V1.20EAP(原 dm8009 的位置)。CAN id 用 SDK 那套：j2 = 2
         ENCOS_motor_config joint2_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT2],
-            .bsp_can_index = 2,
+            .bsp_can_index = 0,  // CAN1：7 台电机合并到一条总线，见上面的分组表
             .can_tx_id = 0x02,
             .can_rx_id = 0x02,  // ENCOS 要求收发同 id，否则 Create 直接返回 NULL
             .lost_callback_ = Joint2_Motor_Lost,
@@ -167,7 +183,8 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = NULL,
             .speed_fdb_calc = /* Joint2_Speed_Fdb_Calc */ NULL,
             .arg = NULL,   // 速度或位置环的反馈计算函数的对象
-            .fre_rel = 2,  //500Hz
+            /* 500Hz(组 1,3,5,7)。与 j1 错开，和 j4 一起走 G1 这半相 */
+            .tx_group = CAN_TX_500HZ_G1,
         };
         obj->joint2 = ENCOSmotor_Create(&joint2_motor_config, ENCOS_Mixed_Control);
         if (!encos_joint_init(obj, JOINT2)) return NULL;
@@ -175,7 +192,7 @@ Gimbal* Gimbal_Create(void) {
         // Joint3 ENCOS V1.20EAP(原 dm4340p 的位置)。CAN id 用 SDK 那套：j3 = 4
         ENCOS_motor_config joint3_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT3],
-            .bsp_can_index = 2,
+            .bsp_can_index = 0,
             .can_tx_id = 0x04,
             .can_rx_id = 0x04,  // ENCOS 要求收发同 id，否则 Create 直接返回 NULL
             .lost_callback_ = Joint3_Motor_Lost,
@@ -188,7 +205,10 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = NULL,
             .speed_fdb_calc = /* Joint3_Speed_Fdb_Calc */ NULL,
             .arg = NULL,   // 速度或位置环的反馈计算函数的对象
-            .fre_rel = 2,  //500Hz
+            /* 500Hz(组 0,2,4,6)。和 j1 一起走 G0；500 Hz 只有 G0/G1 两种相位，
+             * 4 台必须 2:2 分，挤成一相的话那半拍会多出 2 帧(峰值 3→4)。
+             * 一拍里那 3 帧真正被摊开靠的是 bsp_can.c 的 BSP_CAN_TX_MIN_GAP_US。 */
+            .tx_group = CAN_TX_500HZ_G0,
         };
         obj->joint3 = ENCOSmotor_Create(&joint3_motor_config, ENCOS_Mixed_Control);
         if (!encos_joint_init(obj, JOINT3)) return NULL;
@@ -227,7 +247,9 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = DM_Pos_Fdb_Calc,
             .speed_fdb_calc = DM_Speed_Fdb_Calc,
             .arg = NULL,
-            .fre_rel = 2,  //500Hz
+            /* 500Hz(组 1,3,5,7)。和 j2 一起走 G1 —— j1/j3 已在 G0 上占了 2 台，
+             * 这台要是也放 G0，tick 0,2,4,6 就会挤 3 台 500 Hz + 1 台 250 Hz = 4 帧。 */
+            .tx_group = CAN_TX_500HZ_G1,
         };
         obj->joint4 = DMmotor_Create(&joint4_motor_config, DM_Mit_Control);
         obj->joint4->config.arg = obj->joint4;
@@ -252,7 +274,10 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = DM_Pos_Fdb_Calc,
             .speed_fdb_calc = DM_Speed_Fdb_Calc,
             .arg = NULL,
-            .fre_rel = 2,  //500Hz
+            /* 250Hz(组 2,6)。3 台 250 Hz 摊在 G0/G1/G2 三个不同相位上：
+             * j5(G2) 和夹爪(G0) 是两个偶数相，正好把 tick 0,2,4,6 从 2 帧加满到 3；
+             * j6(G1) 是奇数相只落到 tick 1,5。所以峰值仍然是 3，落在 tick 0,1,2,4,5,6。 */
+            .tx_group = CAN_TX_250HZ_G2,
         };
         obj->joint5 = DMmotor_Create(&joint5_motor_config, DM_Mit_Control);
         obj->joint5->config.arg = obj->joint5;
@@ -280,7 +305,8 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = DM_Pos_Fdb_Calc,
             .speed_fdb_calc = DM_Speed_Fdb_Calc,
             .arg = NULL,
-            .fre_rel = 2,  //500Hz
+            /* 250Hz(组 1,5) —— 见 j5 处的相位说明 */
+            .tx_group = CAN_TX_250HZ_G1,
         };
         obj->joint6 = DMmotor_Create(&joint6_motor_config, DM_Mit_Control);
         obj->joint6->config.arg = obj->joint6;
@@ -288,8 +314,6 @@ Gimbal* Gimbal_Create(void) {
         obj->joint6->kd = obj->pid_mit_kpkd[JOINT6][1];
         motor_controller_list[JOINT6] = obj->joint6->motor_controller;
         motor_monitor_list[JOINT6] = obj->joint6->monitor;
-        obj->joint6->frequency_cnt =
-            1;  // 使joint6与joint4、5频率错开，避免同时更新导致的总线拥堵
 
         // Gripper DM4310
         DM_motor_config gripper_motor_config = {
@@ -307,7 +331,8 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = DM_Pos_Fdb_Calc,
             .speed_fdb_calc = DM_Speed_Fdb_Calc,
             .arg = NULL,
-            .fre_rel = 2,  //500Hz
+            /* 250Hz(组 0,4) —— 见 j5 处的相位说明 */
+            .tx_group = CAN_TX_250HZ_G0,
         };
         obj->gripper = DMmotor_Create(&gripper_motor_config, DM_Mit_Control);
         obj->gripper->config.arg = obj->gripper;
@@ -315,8 +340,8 @@ Gimbal* Gimbal_Create(void) {
         obj->gripper->kd = obj->pid_mit_kpkd[GRIPPER][1];
         motor_controller_list[GRIPPER] = obj->gripper->motor_controller;
         motor_monitor_list[GRIPPER] = obj->gripper->monitor;
-        obj->gripper->frequency_cnt =
-            1;  // 使gripper与joint4、5频率错开，避免同时更新导致的总线拥堵
+        /* (原来这里手工写 frequency_cnt = 1 错开夹爪与 joint4/5；
+         *  现在由 config.tx_group 的相位负责。) */
     }
     // 初始重置所有电机monitor掉线!!!防止误判在线状态
     for (int i = 0; i < ARM_MOTOR_NUM; i++) {
@@ -432,8 +457,9 @@ static uint8_t Arm_Auto_Init(Gimbal* obj) {
     obj->motor_pos_init[JOINT4] = JOINT4_POS_INIT;
     obj->motor_pos_init[JOINT5] = JOINT5_POS_INIT;
     obj->motor_pos_init[JOINT6] = JOINT6_POS_INIT;
-    for (int i = 0; i < ARM_JOINT_NUM; i++) {
-        obj->arm_feedback_data.motor_inited[i] = 1;  // 关节电机初始化完成
+    // TODO:夹爪的逻辑
+    for (int i = 0; i < ARM_MOTOR_NUM; i++) {
+        obj->arm_feedback_data.motor_inited[i] = 1;  // 所有电机初始化完成
     }
 
     return 1;  // 初始化完成
