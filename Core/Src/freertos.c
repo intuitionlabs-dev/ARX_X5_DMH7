@@ -33,6 +33,7 @@
 #include "cmd.h"
 #include "gimbal_arm.h"
 #include "gimbal_cmd.h"
+#include "arm_zero.h"
 #include "hal_move_plan.h"
 /* USER CODE END Includes */
 
@@ -244,8 +245,17 @@ void StartMotorTask(void *argument)
   uint32_t tick = osKernelGetTickCount();
   for(;;)
   {
-    DMmotor_Calc_Send();
-    ENCOSmotor_Calc_Send();
+    /* 设零状态机(App/arm_zero.c)。它必须和下面两个 Calc_Send() 待在同一个任务里：
+     * 两个驱动都要求自己的 API 由调用者串行化，而且"设零期间一条常规控制帧都不发"
+     * 这个门只能关在调用 Calc_Send() 的地方 —— 设零帧和常规控制帧是互斥的
+     * (尤其达妙每 300ms 那次无条件使能帧，会把状态机刚发过的"全部失能"直接抵消)。
+     * 先 Loop() 再判 Busy()：进入设零状态的那一拍就已经把门关上了。
+     * 关的是整条总线(现在有达妙的 CAN1 和 ENCOS 的 CAN3)，不是挑着关。 */
+    Arm_Zero_Loop();
+    if (!Arm_Zero_Busy()) {
+      DMmotor_Calc_Send();
+      ENCOSmotor_Calc_Send();
+    }
     tick += 1U;
     osDelayUntil(tick);
   }

@@ -98,5 +98,9 @@ typedef struct dm_motor_t {
 void DMmotor_Driver_Init(void);
 DM_motor* DMmotor_Create(DM_motor_config* config , control_dm_func func);
 void DMmotor_Calc_Send(void);
+/* 使能/失能帧(FF..FC / FF..FD)。实现在 DM_motor.c，一直在用(DMmotor_Calc_Send 里每
+ * 300ms 就发一次使能)，只是当初没往头里放 —— 设零状态机(App/arm_zero.c)要用失能帧。 */
+void DMmotor_Enable(DM_motor* obj);
+void DMmotor_Disable(DM_motor* obj);
 void DMmotor_Clear_Err(DM_motor* obj);
 void DMmotor_Save_Zero(DM_motor *obj);

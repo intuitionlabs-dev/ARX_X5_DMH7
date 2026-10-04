@@ -45,6 +45,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Application
+    App/arm_zero.c
     App/cmd.c
     App/gimbal_arm.c
     App/gimbal_cmd.c
