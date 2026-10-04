@@ -86,6 +86,44 @@ static float Rc_Normalize(uint32_t width_us) {
     return v;
 }
 
+/* ---- 摇杆边沿触发器：建对象 ------------------------------------------------
+ * 3 个比例轴 × 2 个方向 = 6 个。这里只管建；每拍的刷新在逻辑层的
+ * Rc_Triggers_Update() 里。数值口径和两个阈值都在 rc_config.h 那一段。 */
+
+/* 归一化值(-1 ~ +1) -> 触发器要的整数：先加偏置变成非负，再乘 RC_TRIG_SCALE。
+ * 偏置是必须的 —— rc.rx/ry/lx 有正有负，直接往无符号转会把负半边折成一个大正数。
+ * 中位落在 RC_TRIG_CENTER(= RC_TRIG_BIAS * RC_TRIG_SCALE)。 */
+static int16_t Rc_TrigValue(float v) {
+    return (int16_t)((v + RC_TRIG_BIAS) * RC_TRIG_SCALE);
+}
+
+static void Rc_Triggers_Create(void) {
+    /* 阈值都从 rc_config.h 的 CENTER/DEAD/FULL 推，取法和源工程 remote 一致：
+     *   cont_pos 传 (CENTER+DEAD, CENTER+FULL) —— 低的是回中复位线，高的是触发线；
+     *   cont_neg 传 (CENTER-FULL, CENTER-DEAD) —— 同理，这一对都在负半边。
+     * **neg 这对的顺序不能写反**：Create() 判 threshold_low >= threshold_high 就
+     * 直接返回 NULL，写反了 6 个指针全 NULL、触发器一声不响地失效。 */
+    const int16_t pos_low = (int16_t)(RC_TRIG_CENTER + RC_TRIG_DEAD);
+    const int16_t pos_high = (int16_t)(RC_TRIG_CENTER + RC_TRIG_FULL);
+    const int16_t neg_low = (int16_t)(RC_TRIG_CENTER - RC_TRIG_FULL);
+    const int16_t neg_high = (int16_t)(RC_TRIG_CENTER - RC_TRIG_DEAD);
+
+    rc_triggers_t *t = &rc.trig;
+    t->rx_right = Edge_Trigger_Continuous_Create(cont_pos, pos_low, pos_high);
+    t->rx_left = Edge_Trigger_Continuous_Create(cont_neg, neg_low, neg_high);
+    t->ry_up = Edge_Trigger_Continuous_Create(cont_pos, pos_low, pos_high);
+    t->ry_down = Edge_Trigger_Continuous_Create(cont_neg, neg_low, neg_high);
+    t->lx_right = Edge_Trigger_Continuous_Create(cont_pos, pos_low, pos_high);
+    t->lx_left = Edge_Trigger_Continuous_Create(cont_neg, neg_low, neg_high);
+
+    /* 一个建不出来就说明堆不够，整体没戏 —— 6 个一起置 NULL，让"要么全在、要么
+     * 全不在"这个不变式成立，Rc_Triggers_Update() 里就只用查第一个指针。 */
+    if (t->rx_right == NULL || t->rx_left == NULL || t->ry_up == NULL ||
+        t->ry_down == NULL || t->lx_right == NULL || t->lx_left == NULL) {
+        t->rx_right = t->rx_left = t->ry_up = t->ry_down = t->lx_right = t->lx_left = NULL;
+    }
+}
+
 void Rc_Init(void) {
     /* 先把反向表全标成"没配"，再按 rc_config.h 那张表填 */
     for (uint32_t t = 0; t < RC_TIM_CNT; ++t) {
@@ -137,6 +175,10 @@ void Rc_Init(void) {
      * 必须在 Monitor_Init() 之后调 —— main.c 里就是那个顺序。 */
     rc.cap.fb_mask = 0U;
     rc.monitor = Monitor_Register(RC_LOST_CALLBACK, RC_MONITOR_LOST_COUNT, RC_LOST_CALLBACK_DATA);
+
+    /* 6 个摇杆边沿触发器。纯逻辑层的东西，不依赖上面任何一步，放最后只是顺手。
+     * 建失败(堆不够)时 rc.trig 里 6 个全是 NULL —— 看门狗那句注释说的"一眼看出来"。 */
+    Rc_Triggers_Create();
 }
 
 /* 直接按通道号读 CCR，不用 HAL_TIM_ReadCapturedValue()：后者要 TIM_CHANNEL_x，
@@ -280,6 +322,29 @@ static float Rc_AxisDeadband(float v) {
     return (fabsf(v) < RC_AXIS_DEADBAND) ? 0.0f : v;
 }
 
+/* 摇杆 -> 触发器：每拍把 3 个轴的值各喂给"推正/推负"一对。
+ * 和源工程 remote 的 Dt7_Data_Solve() 一样，同一次采样的值喂给一对里的两个 ——
+ * 哪个方向会 flag 起来由各自的 type(cont_pos/cont_neg)决定。
+ *
+ * 不分 link_ok 一律照喂：丢信号时 rx/ry/lx 是 0(中位)，两种触发器都回到复位态、
+ * flag 清 0，不会卡在"一直压着"。喂的是死区之后的值(rc.rx/...)，理由见 rc_config.h。 */
+static void Rc_Triggers_Update(void) {
+    if (rc.trig.rx_right == NULL) {
+        return; /* 6 个同生共死，查一个就够；见 Rc_Triggers_Create() 里的整理 */
+    }
+
+    const int16_t vx = Rc_TrigValue(rc.rx);
+    const int16_t vy = Rc_TrigValue(rc.ry);
+    const int16_t vl = Rc_TrigValue(rc.lx);
+
+    Etc_Update(rc.trig.rx_right, vx);
+    Etc_Update(rc.trig.rx_left, vx);
+    Etc_Update(rc.trig.ry_up, vy);
+    Etc_Update(rc.trig.ry_down, vy);
+    Etc_Update(rc.trig.lx_right, vl);
+    Etc_Update(rc.trig.lx_left, vl);
+}
+
 /* 捕获层 -> 逻辑层。捕获层那一半在 Rc_Loop() 里已经刷完了。 */
 static void Rc_UpdateLogic(void) {
     /* 先存死区前的原始值，再从它过死区 —— 原始值留给标定/调试看
@@ -301,6 +366,9 @@ static void Rc_UpdateLogic(void) {
     rc.valid_lx = rc.cap.ch[RC_LX_CAP].valid;
     rc.valid_swa = rc.cap.ch[RC_SWA_CAP].valid;
     rc.link_ok = (uint8_t)(rc.valid_rx && rc.valid_ry && rc.valid_lx && rc.valid_swa);
+
+    /* 触发器放最后，喂的就是上面刚算完的 rx/ry/lx —— 和逻辑层同一拍，不会差一拍 */
+    Rc_Triggers_Update();
 }
 
 void Rc_Loop(void) {

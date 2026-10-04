@@ -75,6 +75,29 @@
 /* swA 的死区：归一化值的绝对值小于它就记 0，否则记 1 */
 #define RC_SW_A_DEADBAND 0.1f
 
+/* ==================== 摇杆边沿触发器 ====================
+ * 3 个比例轴(rc.rx / rc.ry / rc.lx)各配一对触发器，一共 6 个，用法照源工程
+ * hal_bsp/hal/driver/remote 的 DT7 —— 那边也是每个通道 pos/neg 各一个。
+ *
+ * 喂进触发器的**不是浮点，是归一化值加偏置再放大后的整数**：
+ *     trig = (rc.rx + RC_TRIG_BIAS) * RC_TRIG_SCALE      // -1~+1 -> 0~2000
+ * 带偏置是因为 rc.rx 有正有负，直接转无符号会把负半边折成一个大正数。
+ * 口径和源工程的 CHx_BIAS(1024) 是一个路子，只是中心值不同。中位落在
+ * RC_TRIG_CENTER，它必须等于 RC_TRIG_BIAS * RC_TRIG_SCALE。
+ *
+ * 两个阈值沿用源工程的量级(它在 1024 上下取 100 / 320)，换算成归一化值就是：
+ *   RC_TRIG_DEAD 回中复位线 —— 归一化 ±0.10
+ *   RC_TRIG_FULL 触发线     —— 归一化 ±0.32
+ * 两个之间就是滞回带，防止摇杆停在阈值附近时反复触发。
+ *
+ * 注意 rc.rx/ry/lx 是**已经过 RC_AXIS_DEADBAND(±0.05)** 的值，比这里的
+ * RC_TRIG_DEAD(±0.10)小，所以两者不打架，不用为了触发器改去看 *_raw。 */
+#define RC_TRIG_SCALE 1000.0f
+#define RC_TRIG_BIAS 1.0f
+#define RC_TRIG_CENTER 1000
+#define RC_TRIG_DEAD 100
+#define RC_TRIG_FULL 320
+
 /* ==================== 看门狗 ====================
  * count 的单位是 Monitor_Loop() 的调用周期，现在 10 ms(100 Hz，见 freertos.c 的
  * StartMonitorTask)：10 -> 100 ms。遥控周期实测 18.4 ms，100 ms 能容忍整帧丢失；

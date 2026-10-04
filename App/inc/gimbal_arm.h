@@ -78,12 +78,8 @@ typedef struct Gimbal_t {
     float damp_comp[ARM_JOINT_NUM];  // 前馈计算得到的阻尼补偿值
     float tau_comp[ARM_JOINT_NUM];   // 前馈计算得到的无阻尼力矩补偿值(动力学未接入，恒 0)
 
-    /* 模块间通信(源工程走 pub_sub，本工程未接入) */
-    // Publisher* arm_feedback_pub;
     Arm_feedback_data arm_feedback_data;  // 回传云台cmd的数据
-    // Subscriber* arm_control_sub;
     Arm_control_data arm_control_data;  // 指令，由命令层(App/gimbal_cmd.c)每拍直接写
-    // Server* reinit_server;           // 重新初始化服务
 } Gimbal;
 
 /* 机械臂对象，Gimbal_Create() 之后有效。DMmotor_Create() 失败时是 NULL。 */

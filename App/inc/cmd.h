@@ -19,7 +19,7 @@
  *   gimbal = Gimbal_Create();          // freertos.c 的 StartCmdTask 里、进循环之前。
  *                                      // 必须在 BSP_CAN_Init() 和 DMmotor_Driver_Init()
  *                                      // 之后(它依赖 dm_motor_list 和 FDCAN)；
- *                                      // 也必须在任务里而不是 main()（主栈只有 2 KB）。
+ *                                      // 也必须在任务里而不是 main()（主栈只有 2 KB）。 
  *   gimbal_cmd = Gimbal_Cmd_Create();  // 紧跟其后(它要读全局 gimbal)
  *   StartCmdTask 的循环里调 Cmd_Loop();
  *

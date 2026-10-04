@@ -83,6 +83,9 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     libs/cvector/cvector.c
     libs/dm_motor/DM_motor.c
     libs/dm_motor/dm_mit_control.c
+    # 源工程这个目录下还有 edge_trigger_bin.c / edge_trigger_bin_pack.c(二值量的
+    # 边沿触发)，本工程零调用方，按老规矩不取(同 fast_math 的 fast_matrix.c)。
+    libs/edge_trigger/edge_trigger_cont.c
     libs/encos_motor/ENCOS_motor.c
     libs/encos_motor/encos_mixed_control.c
     libs/encos_motor/encos_protocol.c
@@ -117,6 +120,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/controller
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/cvector
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/dm_motor
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/edge_trigger
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/encos_motor
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/fast_math
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/fps

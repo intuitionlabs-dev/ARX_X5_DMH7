@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "edge_trigger_cont.h" /* Edge_trigger_continuous，rc.trig 下面那 6 个摇杆边沿触发器 */
 #include "monitor.h" /* monitor_item，本驱动自带一个"四路齐活"看门狗 */
 #include "tim.h"     /* TIM_HandleTypeDef（Rc_CountWrap 的参数）—— 它是匿名结构体，
                       * 没法前向声明，只能靠 include */
@@ -88,6 +89,32 @@ typedef struct {
     volatile uint32_t wrap[RC_TIM_CNT];
 } rc_cap_t;
 
+/* 摇杆边沿触发器：3 个比例轴 × 2 个方向 = 6 个，挂在 rc.trig 下面。
+ * 数值口径和两个阈值都在 rc_config.h 的"摇杆边沿触发器"那一段。
+ *
+ * **rc 只负责每拍 Etc_Update()，不转存结果** —— 和源工程 remote 一个做法，
+ * 中间量(flag / triggered)就留在触发器对象里，上层自己挑读法：
+ *   Etc_Peek(t)  现在是否还压着 —— 越过触发线就一直为 1，回到回中线才变 0；
+ *   Etc_Get(t)   取"这一次按下去的边沿"，**取完自动清 0**，所以只能读一次，
+ *                且读的时机要比 Rc_Loop() 快不了太多才不会漏。
+ *
+ * 方向名说的是"归一化值的正负"，不是"哪个方向的物理动作"：rx_right = rc.rx 转正、
+ * ry_up = rc.ry 转正，以此类推。
+ * **符号方向已确认(2026-10-05)：右摇杆、左摇杆都是向右、向上为正**，正好和
+ * 这里的名字对上，不用换指针。但换接收机、改 rc_config.h 的通道映射、或者动
+ * Rc_Normalize() 之后要重新确认一次 —— 拨着摇杆读 rc.rx_raw / rc.ry_raw 一眼
+ * 就能看出来，反了把对应的两个指针换一下即可。
+ *
+ * 指针在 Rc_Init() 里建好；建失败(堆不够)时 6 个全是 NULL。 */
+typedef struct {
+    Edge_trigger_continuous *rx_right; /* 右摇杆推右(rc.rx 转正) */
+    Edge_trigger_continuous *rx_left;  /* 右摇杆推左(rc.rx 转负) */
+    Edge_trigger_continuous *ry_up;    /* 右摇杆推上(rc.ry 转正) */
+    Edge_trigger_continuous *ry_down;  /* 右摇杆推下(rc.ry 转负) */
+    Edge_trigger_continuous *lx_right; /* 左摇杆推右(rc.lx 转正) */
+    Edge_trigger_continuous *lx_left;  /* 左摇杆推左(rc.lx 转负) */
+} rc_triggers_t;
+
 /* 遥控器对象。逻辑层在顶层 —— 上层只看上半部分；捕获层缩在下面的 cap 里。 */
 typedef struct {
     /* ================= 逻辑层：(实体) <- (捕获通道) =================
@@ -116,6 +143,11 @@ typedef struct {
     volatile uint8_t valid_swa;
     volatile uint8_t link_ok; /* 1 = 上面四路全部有效 */
 
+    /* 摇杆边沿触发器(6 个)。Rc_Loop() 每拍喂一次，结果留在触发器里，rc 不转存 ——
+     * 上层直接拿 Etc_Get()/Etc_Peek() 读，详见上面 rc_triggers_t 的说明。
+     * 丢信号时 rx/ry/lx 是 0(中位)，触发器跟着回中复位，不会卡在"一直触发"上。 */
+    rc_triggers_t trig;
+
     /* ================= 链路看门狗 =================
      * 四路输入都刷新过一遍才喂一次狗，所以它判的是"四路齐活"，不是"任一路活着"：
      *   is_Offline(rc.monitor) 为真  <=>  最近 RC_MONITOR_LOST_COUNT 个 monitor
@@ -135,12 +167,12 @@ typedef struct {
 /* 遥控器对象，Rc_Init() 之后有效；Rc_Loop() 每跑一遍，逻辑层就是最新的。 */
 extern rc_t rc;
 
-/* 改时基 + 开四路输入捕获中断 + 注册看门狗。必须在 MX_TIM1_Init()/MX_TIM2_Init()
- * 和 Monitor_Init() 之后、调度器启动之前调用。 */
+/* 改时基 + 开四路输入捕获中断 + 建 6 个摇杆边沿触发器 + 注册看门狗。
+ * 必须在 MX_TIM1_Init()/MX_TIM2_Init() 和 Monitor_Init() 之后、调度器启动之前调用。 */
 void Rc_Init(void);
 
-/* 把原始计数换算成 µs/频率/归一化值，判丢信号、选 active_ch、推逻辑层、喂看门狗。
- * 周期调用(1 kHz 够了)，Cmd_Loop() 里已经调了。
+/* 把原始计数换算成 µs/频率/归一化值，判丢信号、选 active_ch、推逻辑层、
+ * 喂 6 个摇杆边沿触发器、喂看门狗。周期调用(1 kHz 够了)，Cmd_Loop() 里已经调了。
  * 中断上下文不能用，也不要在比 RC_LOST_TIMEOUT_MS 还慢的地方调。 */
 void Rc_Loop(void);
 
