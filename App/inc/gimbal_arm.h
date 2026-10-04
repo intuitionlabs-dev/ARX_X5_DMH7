@@ -12,8 +12,11 @@
  *     输入链路(遥控器)由命令层自己判(未做)，电机掉线由 Motor_Lost_Handle() 判。
  *   - **服务(service.h)**：电机重初始化服务没接入，Arm_Reinit_Service_Handler 和相关
  *     字段都注释掉了。
- *   - **动力学(arm_serial_link)**：Joint_Feedforward_Calc() 整个注释掉了，所以
- *     tau_comp[] 恒为 0。位置/速度/摩擦前馈不受影响。
+ *   - **动力学(arm_serial_link)**：整机 Newton-Euler 没移植，那一块仍然是注释状态。
+ *     但**静态重力项接上了**：Joint_Gravity_Comp_Calc() 每拍用反馈关节角调
+ *     libs/gravity_compensation 的 x5_gravity_compute()，结果填 tau_comp[]。
+ *     型号/输出模式/开关在 gimbal_arm_def.h 的"重力补偿"那一段。
+ *     所以 tau_comp[] 不再是恒 0，位置/速度/摩擦前馈照旧。
  *   - **打印**：本工程 printf 是坏的(__io_putchar 没定义)，PRINT_ANGLE 关掉了。
  *   - **j1~j3 的电机驱动**：从达妙换成 ENCOS(ENCOS V1.20EAP，就是 ARX X5 的
  *     MotorType4)。配置散在 gimbal_arm.c 的 Gimbal_Create() 里，参数来源见那里。
@@ -76,7 +79,10 @@ typedef struct Gimbal_t {
 
     /* 控制量 */
     float damp_comp[ARM_JOINT_NUM];  // 前馈计算得到的阻尼补偿值
-    float tau_comp[ARM_JOINT_NUM];   // 前馈计算得到的无阻尼力矩补偿值(动力学未接入，恒 0)
+    /* 前馈计算得到的无阻尼力矩补偿值, N·m, 关节系(joint1..joint6)。
+     * Joint_Gravity_Comp_Calc() 每拍写一次 = X5 静态重力力矩；整机动力学(惯量/
+     * 科里奥利)没接入。arm_stop 下照样算，只是 Set_Motor_ref() 不会用它。 */
+    float tau_comp[ARM_JOINT_NUM];
 
     Arm_feedback_data arm_feedback_data;  // 回传云台cmd的数据
     Arm_control_data arm_control_data;  // 指令，由命令层(App/gimbal_cmd.c)每拍直接写

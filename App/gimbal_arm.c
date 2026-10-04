@@ -8,13 +8,15 @@
 #include "temperature_protect.h"
 
 /* 本工程没有的框架，先注释掉：
-#include "arm_serial_link/arm_serial_link.h"  运动学/动力学(Newton-Euler)，见 Joint_Feedforward_Calc()
+#include "arm_serial_link/arm_serial_link.h"  运动学/整机动力学(Newton-Euler)，没移植；
+                                             重力项改由 libs/gravity_compensation 顶替，
+                                             见 Joint_Gravity_Comp_Calc()
 #include "print_help.h"                       printf_log()/Print_Float()，本工程 printf 是坏的
 #include "pub_sub.h"                          指令来源，现由命令层直接写 arm_control_data
 */
 
 // 使pid不输出，只使用前馈，便于调试
-// #define JOINT_ONLY_COMP
+#define JOINT_ONLY_COMP
 // 打印关节角
 // #define PRINT_ANGLE   /* 本工程 printf 是坏的(__io_putchar 没定义)，别开 */
 
@@ -45,7 +47,7 @@ float DM_Speed_Fdb_Calc(void* arg);
 static void Motor_Lost_Handle(Gimbal* obj);  // 电机掉线处理
 static uint8_t Arm_Auto_Init(Gimbal* obj);   // 初次上电自动初始化
 static void Get_Motor_Fdb(Gimbal* obj);      // 电机反馈
-// static void Joint_Feedforward_Calc(Gimbal* obj);  // 动力学前馈计算(未接入，见下文)
+static void Joint_Gravity_Comp_Calc(Gimbal* obj);  // 静态重力力矩前馈(见下文)
 static void Set_Motor_ref(Gimbal* obj);  // 电机控制
 // NOLINTEND
 /* 辅助函数 */
@@ -160,7 +162,7 @@ Gimbal* Gimbal_Create(void) {
             .stop_mode = encos_soft_stop,
             .pos_fdb_calc = NULL,
             .speed_fdb_calc = NULL,
-            .arg = NULL,   // 速度或位置环的反馈计算函数的对象
+            .arg = NULL,  // 速度或位置环的反馈计算函数的对象
             /* 500Hz(组 0,2,4,6)。CAN1 上 4 台 500 Hz 平分两个相位：j1/j3 走 G0 */
             .tx_group = CAN_TX_500HZ_G0,
         };
@@ -182,7 +184,7 @@ Gimbal* Gimbal_Create(void) {
             .stop_mode = encos_soft_stop,
             .pos_fdb_calc = NULL,
             .speed_fdb_calc = /* Joint2_Speed_Fdb_Calc */ NULL,
-            .arg = NULL,   // 速度或位置环的反馈计算函数的对象
+            .arg = NULL,  // 速度或位置环的反馈计算函数的对象
             /* 500Hz(组 1,3,5,7)。与 j1 错开，和 j4 一起走 G1 这半相 */
             .tx_group = CAN_TX_500HZ_G1,
         };
@@ -204,7 +206,7 @@ Gimbal* Gimbal_Create(void) {
             .stop_mode = encos_soft_stop,
             .pos_fdb_calc = NULL,
             .speed_fdb_calc = /* Joint3_Speed_Fdb_Calc */ NULL,
-            .arg = NULL,   // 速度或位置环的反馈计算函数的对象
+            .arg = NULL,  // 速度或位置环的反馈计算函数的对象
             /* 500Hz(组 0,2,4,6)。和 j1 一起走 G0；500 Hz 只有 G0/G1 两种相位，
              * 4 台必须 2:2 分，挤成一相的话那半拍会多出 2 帧(峰值 3→4)。
              * 一拍里那 3 帧真正被摊开靠的是 bsp_can.c 的 BSP_CAN_TX_MIN_GAP_US。 */
@@ -383,8 +385,10 @@ void Gimbal_Update(Gimbal* obj) {
     /* 获取电机反馈 */
     Get_Motor_Fdb(obj);
 
-    /* 动力学前馈计算加载(arm_serial_link 未移植，整块注释掉，tau_comp[] 恒 0) */
-    // Joint_Feedforward_Calc(obj);
+    /* 重力前馈：填 obj->tau_comp[]。必须在 Get_Motor_Fdb() 之后(用反馈角)。
+     * 只在 arm_run 里才有下文 —— Set_Motor_ref() 在 arm_stop 分支会把 output_comp
+     * 归零，所以这里算出来也不会让电机出力。 */
+    Joint_Gravity_Comp_Calc(obj);
 
 #ifdef JOINT_ONLY_COMP
     set_pid_zero(obj);
@@ -424,13 +428,13 @@ void Gimbal_Update(Gimbal* obj) {
     Set_Motor_ref(obj);
 
     // DEBUG:拷贝控制器数据
-    g_fdb_pos = obj->gripper->motor_controller->fdb_position;
-    g_fdb_speed = obj->gripper->motor_controller->fdb_speed;
-    g_ref_pos = obj->gripper->motor_controller->ref_position;
-    g_ref_speed = obj->gripper->motor_controller->ref_speed;
-    g_speed_comp = obj->gripper->motor_controller->speed_comp;
-    g_output = obj->gripper->motor_controller->output;
-    g_ouput_comp = obj->gripper->motor_controller->output_comp;
+    g_fdb_pos = obj->joint1->motor_controller->fdb_position;
+    g_fdb_speed = obj->joint1->motor_controller->fdb_speed;
+    g_ref_pos = obj->joint1->motor_controller->ref_position;
+    g_ref_speed = obj->joint1->motor_controller->ref_speed;
+    g_speed_comp = obj->joint1->motor_controller->speed_comp;
+    g_output = obj->joint1->motor_controller->output;
+    g_ouput_comp = obj->joint1->motor_controller->output_comp;
 
     /* 杂项 */
     obj->arm_feedback_data.mode = obj->arm_mode;
@@ -560,38 +564,61 @@ static void Get_Motor_Fdb(Gimbal* obj) {
     obj->arm_feedback_data.motor_temp[GRIPPER] = obj->gripper->t_rotor;
 }
 
-/* 动力学前馈(Newton-Euler)：依赖 arm_serial_link / robotics_port 那一套(DH 参数、
- * 连杆质量/惯量)，本工程没移植，整块先注释掉。所以 obj->tau_comp[] 从头到尾是 0，
- * Set_Motor_ref() 里那项力矩前馈实际只剩粘性摩擦 damp_comp。
- * 要接回来：把 arm_serial_link 那套搬进 libs/，再把这里和 Gimbal_Update() 里的调用点
- * 一起打开即可。 */
-/*
-// float cofs[6] = {1,1,1,1,1,1};
-// uint8_t isload = 0;
-static void Joint_Feedforward_Calc(Gimbal* obj) {
-    Arm_q_c q;
-    Arm_q_c qd;
-    Arm_q_c qdd;
+/* 重力前馈：把当前关节角喂给 libs/gravity_compensation，结果写进 obj->tau_comp[]。
+ *
+ * 顶替原来那个 Joint_Feedforward_Calc() —— 那个走 arm_serial_link 的整机
+ * Newton-Euler(DH + 连杆质量/惯量)，本工程没移植。这里只要静态重力项，正好是
+ * X5 那个模块的全部内容(它不算法速度/加速度惯性、不算科里奥利)，而且零依赖、
+ * 无堆、不调 libm，比搬一整套 RNE 划算。
+ *
+ * 关节顺序和 tau_comp[] 的下标一致(joint1..joint6 / JOINT1..JOINT6)，单位 N·m；
+ * 外层 Set_Motor_ref() 乘 JOINT_TORQUE_TRANS * JOINT_TORQUE_TRANS_COEF 再加阻尼项。
+ *
+ * **输入用的是反馈角(arm_feedback_data.joint_angle)，不是指令角** —— 重力项是
+ * "当前姿态下的力矩"，用指令角会在指令跳变时给出一记假的冲击力矩。
+ *
+ * 原来那个函数对 j6 做了 normalize(-pi, pi)，这里**不需要**：重力项只经过
+ * sin/cos(周期 2pi)，而模块自己的角度范围是 ±128 rad(约 20 圈)，正常关节都在
+ * 里面。包不包回绕，sin/cos 出来的值一样，算出来的 G(q) 也一样。
+ *
+ * 注意调用时机：必须在 Get_Motor_Fdb() 之后(见 Gimbal_Update())，否则用的是上
+ * 一拍的关节角。
+ *
+ * TODO(未验证，上电前必做)：arm_feedback_data.joint_angle 的**零点和符号**是不是
+ * 和 URDF/SDK 坐标系一致，还没在真机上对过。厂商 SDK 是"把电机实际位置直接写进
+ * KDL"，本工程的角度也是从电机 fdb_position 直接来的(pos_to_angle() 里
+ * MOTOR_DIR = 1、MOTOR_REDUCTION = 1、pos_init = 0)，量程也取自同一个 SDK，所以
+ * **大概率一致**；但 j2/j3 如果被本工程的设零流程(arm_zero)动过，零点就对不上了。
+ * 对的办法：把臂摆到一个已知姿态(比如各关节都读着 0 附近)，比 x5_gravity_compute()
+ * 的输出和厂商 SDK 重力模式下的 effort；或者松开电机用手扶着，开重力模式看它会不会
+ * 自己往下掉。**方向反了的表现是重力补偿推着臂往下走，比不补偿还危险。** */
+static void Joint_Gravity_Comp_Calc(Gimbal* obj) {
+#if JOINT_GRAVITY_COMP_ENABLE
+    /* 下面的循环按 ARM_JOINT_NUM 走，数组按 X5_GRAVITY_DOF 开 —— 两个不等就是越界 */
+    _Static_assert(ARM_JOINT_NUM == X5_GRAVITY_DOF, "重力补偿的关节数和本工程对不上");
 
-    memset(&q, 0, sizeof(Arm_q_c));
-    memset(&qd, 0, sizeof(Arm_q_c));
-    memset(&qdd, 0, sizeof(Arm_q_c));
-    //位置使用当前值，速度、加速度使用目标值
-    for (int i = 0; i < ARM_JOINT_NUM - 1; i++) {
-        q.q[i] = obj->arm_feedback_data.joint_angle[i] * DEG2RAD;
-        qd.q[i] = obj->arm_control_data.joint_vel[i] * DEG2RAD;
-        qdd.q[i] = obj->arm_control_data.joint_acc[i] * DEG2RAD;
+    x5_real q[X5_GRAVITY_DOF];
+
+    for (int i = 0; i < ARM_JOINT_NUM; i++) {
+        q[i] = obj->arm_feedback_data.joint_angle[i] * DEG2RAD;
     }
-    // 保证j6的运动学角度在-pi到pi之间
-    q.q[JOINT6] =
-        normalize(obj->arm_feedback_data.joint_angle[JOINT6] * DEG2RAD, -pi, pi, 2 * pi);
-    qd.q[JOINT6] = obj->arm_control_data.joint_vel[JOINT6] * DEG2RAD;
-    qdd.q[JOINT6] = obj->arm_control_data.joint_acc[JOINT6] * DEG2RAD;
 
-    // 动力学，牛顿欧拉法
-    Serial_Link_Rne_Alter(arm_serial_link, q, qd, qdd, obj->is_load, obj->tau_comp);
+    /* 校验失败时模块**不写** output 数组(见 x5_gravity.h 的说明)，所以得自己清零 ——
+     * 不清的话 tau_comp 会留下上一次的值继续出力。会失败的情况只有角度非有限
+     * (ENCOS 第一帧反馈之前是 NAN)或者 |q| > 128 rad，两者都不该拿旧值顶上。 */
+    if (x5_gravity_compute(JOINT_GRAVITY_COMP_MODEL, q, JOINT_GRAVITY_BASE,
+            JOINT_GRAVITY_COMP_MODE, obj->tau_comp) != X5_GRAVITY_OK) {
+        for (int i = 0; i < ARM_JOINT_NUM; i++) {
+            obj->tau_comp[i] = 0.0f;
+        }
+    }
+#else
+    /* 关掉时显式清零，别留上一次的值 —— 中途改这个宏重新烧录时更明显 */
+    for (int i = 0; i < ARM_JOINT_NUM; i++) {
+        obj->tau_comp[i] = 0.0f;
+    }
+#endif
 }
-*/
 
 static float lowpass_filter(float current_speed, float a, uint8_t index) {
     static float last_speed[ARM_MOTOR_NUM] = {0};
@@ -636,6 +663,49 @@ static void pid_init(Gimbal* obj) {
     memset(obj->pid_cfgs, 0, sizeof(obj->pid_cfgs));
     memset(obj->encos_kpkd, 0, sizeof(obj->encos_kpkd));
     memset(obj->pid_mit_kpkd, 0, sizeof(obj->pid_mit_kpkd));
+
+    // joint1
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][0], 6, 0.08, 50, 200, 1000);
+    obj->pid_cfgs[JOINT1][0].Irange = 1;
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][1], 0.0f, 0.0f, 0.0f, 0.0f, 12);
+    obj->encos_kpkd[JOINT1][0] = 0;
+    obj->encos_kpkd[JOINT1][1] = 35;
+    
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][0], 6, 0.08, 50, 200, 1000);
+    obj->pid_cfgs[JOINT2][0].Irange = 1;
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][1], 0.0f, 0.0f, 0.0f, 0.0f, 12);
+    obj->encos_kpkd[JOINT2][0] = 0;
+    obj->encos_kpkd[JOINT2][1] = 35;
+    
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][0], 6, 0.08, 50, 200, 1000);
+    obj->pid_cfgs[JOINT3][0].Irange = 1;
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][1], 0.0f, 0.0f, 0.0f, 0.0f, 12);
+    obj->encos_kpkd[JOINT3][0] = 0;
+    obj->encos_kpkd[JOINT3][1] = 35;
+
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT4][0], 6, 0.08, 50, 200, 1000);
+    obj->pid_cfgs[JOINT4][0].Irange = 0;
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT4][1], 0.0f, 0.0f, 0.0f, 0.0f, 10);
+    obj->pid_mit_kpkd[JOINT4][0] = 50;
+    obj->pid_mit_kpkd[JOINT4][1] = 0.8;
+
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT5][0], 6, 0.08, 50, 200, 1000);
+    obj->pid_cfgs[JOINT5][0].Irange = 0;
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT5][1], 0.0f, 0.0f, 0.0f, 0.0f, 10);
+    obj->pid_mit_kpkd[JOINT5][0] = 25;
+    obj->pid_mit_kpkd[JOINT5][1] = 0.8;
+
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT6][0], 6, 0.08, 50, 200, 1000);
+    obj->pid_cfgs[JOINT6][0].Irange = 0;
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT6][1], 0.0f, 0.0f, 0.0f, 0.0f, 10);
+    obj->pid_mit_kpkd[JOINT6][0] = 10;
+    obj->pid_mit_kpkd[JOINT6][1] = 1;
+
+    PID_SetConfig_Pos(&obj->pid_cfgs[GRIPPER][0], 6, 0.08, 50, 200, 1000);
+    obj->pid_cfgs[GRIPPER][0].Irange = 0;
+    PID_SetConfig_Pos(&obj->pid_cfgs[GRIPPER][1], 0.0f, 0.0f, 0.0f, 0.0f, 10);
+    obj->pid_mit_kpkd[GRIPPER][0] = 2;
+    obj->pid_mit_kpkd[GRIPPER][1] = 0.1;
 }
 
 MAYBE_UNUSED static void set_pid_normal(Gimbal* obj) {

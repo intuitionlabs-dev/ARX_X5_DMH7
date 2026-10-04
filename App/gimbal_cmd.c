@@ -79,12 +79,12 @@ Gimbal_cmd* Gimbal_Cmd_Create(void) {
 
     /* 关节角跟踪微分器初始化。*/
     const float td_r[ARM_JOINT_NUM] = {
-        /* 3000 */ 400,
-        500,
-        /* 3000 */ 600,
-        /* 3000 */ 4000,
+        /* 400 */ 1000,
+        700,
+        700,
+        4000,
         1000,
-        /* 3000 */ 4000,
+        4000,
     };
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         TD_Config td_config = {
@@ -194,13 +194,23 @@ static void Stop_Mode_Update(Gimbal_cmd* obj) {
  * 函数体、不用动骨架。 */
 static void Remote_Mode_Update(Gimbal_cmd* obj) {
     obj->gimbal->arm_control_data.mode = arm_run;
+
+    if (rc.sw_a == 0) {
+        return;
+    }
+
+    // 右摇杆左右控制 j1，
+    if (Etc_Get(rc.trig.rx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT1] += 30;
+    if (Etc_Get(rc.trig.rx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT1] -= 30;
+    // 右摇杆上下控制 j2
+    if (Etc_Get(rc.trig.ry_up)) obj->ctrl_src.joint_src.joint_angle[JOINT2] += 30;
+    if (Etc_Get(rc.trig.ry_down)) obj->ctrl_src.joint_src.joint_angle[JOINT2] -= 30;
+    // 左摇杆左右控制 j3
+    if (Etc_Get(rc.trig.lx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT3] += 30;
+    if (Etc_Get(rc.trig.lx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT3] -= 30;
 }
 
 static void Set_Ctrl_Default(Gimbal_cmd* obj) {
-    /* 源工程这里还要清 gimbal_send_data 的一堆东西(底盘一键模式标志、vx/vy、UI 刷新
-     * 标志、RFID 状态、yaw 增量…)和夹爪相关，本工程都没有。
-     * 剩下要清的只有关节速度和加速度：它们在 Arm_Ref_Set() 里还会被整个重写一遍，
-     * 但源工程就是这么写的，留着 —— 免得将来有人往这两个字段塞别的默认值。 */
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         obj->gimbal->arm_control_data.joint_vel[i] = 0;
         obj->gimbal->arm_control_data.joint_acc[i] = 0;
@@ -256,9 +266,10 @@ static void Motor_Angle_Limit(Gimbal_cmd* obj) {
      * TODO，本工程那两个源没有。 */
 
     // 夹爪
-    obj->gimbal->arm_control_data.gripper_oc_angle =
-        fclip(obj->gimbal->arm_control_data.gripper_oc_angle, GRIPPER_ANGLE_MIN,
-            GRIPPER_ANGLE_MAX);
+    if (obj->gimbal->arm_feedback_data.motor_inited[GRIPPER])
+        obj->gimbal->arm_control_data.gripper_oc_angle =
+            fclip(obj->gimbal->arm_control_data.gripper_oc_angle, GRIPPER_ANGLE_MIN,
+                GRIPPER_ANGLE_MAX);
 }
 
 static void Ctrl_Post_Process(Gimbal_cmd* obj) {

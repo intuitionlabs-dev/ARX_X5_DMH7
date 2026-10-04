@@ -93,6 +93,12 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # 源工程还有个 fast_matrix.c（fast_mat_* 那套矩阵运算），只有 robotics/ 那个
     # C++ 矩阵封装在用，本工程没移植那个框架，所以这个文件没有拿过来。
     libs/fast_math/fast_sin_f32.c
+    # X5 静态重力力矩，纯 C99、零依赖(x5_gravity.h 里说得很明白：不调 libm、不用堆、
+    # 没有可变的全局状态)。同目录的 x5_sdk_parameters.c 只是参数表，本工程当文档用
+    # (gimbal_arm.c 里照着它填 ENCOS/达妙的量程)，零调用方，按老规矩不取。
+    # 许可证是 LGPL-2.1-or-later(见各文件头的 SPDX)，静态链接进固件没问题，
+    # 源文件原位留在仓库里就满足"可重新链接"的要求。
+    libs/gravity_compensation/c/x5_gravity.c
     libs/fps/bsp_supervise.c
     libs/monitor/monitor.c
     libs/move_plan/curves/cubic_spline.c
@@ -124,6 +130,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/encos_motor
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/fast_math
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/fps
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/gravity_compensation/c
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/monitor
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/move_plan
     # 源工程是把 lib/ 下每个子目录都塞进 include path 的
