@@ -33,13 +33,20 @@ const osThreadAttr_t Moveplan_Task_attributes = {
 
 static void start_moveplan_task(void *argument) {
     (void)argument;
-    uint32_t tick = osKernelGetTickCount();
-    /* Infinite loop */
+    /* Infinite loop。500 Hz。 */
+    portTickType currentTimeMoveplan;
+    currentTimeMoveplan = xTaskGetTickCount();
     for (;;) {
         FrameRateStatistics(&FPS_Moveplan);
         Move_Plan_Update();
-        tick += 2U;
-        osDelayUntil(tick);
+        /* 接住返回值：xTaskDelayUntil 在"该醒的时刻已经过去"时**不阻塞**，却照样把
+         * prev 推进一个周期(task.h 原文：A task will not be delayed if the next
+         * expected wake time is in the past)，任务会一直以循环体自身的耗时为空转
+         * 周期、再也回不来。pdFALSE = 这一拍没睡成，重新对齐到"现在"。
+         * 详见 Core/Src/freertos.c 里 StartMotorTask 的实测记录。 */
+        if (xTaskDelayUntil(&currentTimeMoveplan, 2) == pdFALSE) {
+            currentTimeMoveplan = xTaskGetTickCount();   /* 这一拍没睡成：重新对齐到"现在" */
+        }
     }
 }
 

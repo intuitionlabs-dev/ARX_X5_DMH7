@@ -14,22 +14,18 @@
  ******************************************************************************
  */
 #include "bsp_can.h"
-#include "main.h"  // HAL_GetTick()
-
+#include "bsp_supervise.h"
+#include "cmsis_os2.h"
 #if _BSP_CAN_ENABLE && _BSP_FDCAN_ENABLE
     #error
 #endif
 
-/* ---- 发送分组（掩码见 can_config.h）--------------------------------------
- * 当前组 = HAL_GetTick() % CAN_TX_GROUP_NUM，掩码里不含当前组的调用在 BSP_CAN_Send
- * 里被丢掉（不发送、不报错）。只读 HAL_GetTick()，不持有状态，多任务同时调也安全。
- *
- * 驱动那边**也用这个函数**把"算控制量"和"发帧"卡在同一个节拍上：只发不算是浪费，
- * 只算不发则 PID 会按 1 kHz 跑（PID_Calc 没有 dt，增益是按调用次数算的，
- * 于是 KI 有效值会翻倍）。所以驱动在进循环体之前先问一次本函数。 */
 uint8_t BSP_CAN_TxGroupMatch(uint8_t tx_group) {
-    uint8_t now_group = (uint8_t)(HAL_GetTick() % CAN_TX_GROUP_NUM);
-    return (tx_group & (uint8_t)(1u << now_group)) != 0u;
+    uint8_t gate_phase = 0;
+    uint32_t now = osKernelGetTickCount();//此处必须使用 osKernelGetTickCount()，不能使用 HAL_GetTick()，因为BSP_CAN_TxGroupMatch的与任务调度强相关，而任务调度默认使用的时基是systick而不是HAL_GetTick()对应的TIM，所以使用HAL_GetTick()会导致与任务调度不同步，造成预期之外的结果
+    gate_phase = (uint8_t)(now % CAN_TX_GROUP_NUM);
+    uint8_t pass = (tx_group & (uint8_t)(1u << gate_phase)) != 0u;
+    return pass;
 }
 
 #if _BSP_CAN_ENABLE && DEVICE_CAN_CNT
@@ -72,9 +68,13 @@ void BSP_CAN_Init(void) {
 //  仅对HAL库的can发送函数进行了形式上的封装，实际参数依然依赖外部传参
 void BSP_CAN_Send(uint8_t can_id, uint16_t identifier, uint8_t *data, basic_data_t len,
     uint8_t tx_group) {
-    if (!BSP_CAN_TxGroupMatch(tx_group)) {
-        return; /* 不属于当前组：直接丢弃 */
-    }
+    /* 这里**不再**重复判分组：判一次是不够、判两次是错的。
+     * 需要分组的调用者(两个电机驱动)在进循环体之前就判过了；
+     * 命令帧传的是 CAN_TX_GROUP_ALL，每一位都命中，判了永远是真。
+     * 而判两次用的又是两次独立的 HAL_GetTick() —— 只要毫秒边沿落在
+     * "驱动判过"和"这里再判"之间，这一帧就被静默丢掉，纯粹白丢。
+     * 参数留着是为了调用点可读（以及将来要在这层加分组时不用改所有调用点）。 */
+    (void)tx_group;
     #if !_BSP_DEBUG_CAN_NOT_SEND
     CAN_TxHeaderTypeDef txconf;  //配置发送包头
     txconf.StdId = identifier;
@@ -255,12 +255,9 @@ void BSP_CAN_Init(void) {
     }
 }
 
+FPS_t j1_tx_fps;
 //  仅对HAL库的can发送函数进行了形式上的封装，实际参数依然依赖外部传参
-void BSP_CAN_Send(uint8_t fdcan_id, uint16_t identifier, uint8_t *data, basic_data_t len,
-    uint8_t tx_group) {
-    if (!BSP_CAN_TxGroupMatch(tx_group)) {
-        return; /* 不属于当前组：直接丢弃 */
-    }
+void BSP_CAN_Send(uint8_t fdcan_id, uint16_t identifier, uint8_t *data, basic_data_t len) {
     #if !_BSP_DEBUG_CAN_NOT_SEND
         #if BSP_CAN_TX_MIN_GAP_US
     if (fdcan_id == BSP_CAN_TX_GAP_BUS) {
@@ -318,9 +315,6 @@ void BSP_CAN_Send(uint8_t fdcan_id, uint16_t identifier, uint8_t *data, basic_da
             HAL_FDCAN_AbortTxRequest(can_devices[fdcan_id].device,
                 FDCAN_TX_BUFFER0 | FDCAN_TX_BUFFER1 | FDCAN_TX_BUFFER2 | FDCAN_TX_BUFFER3 | FDCAN_TX_BUFFER4);
             // clang-format on
-            /* TODO: 接入本工程日志后恢复
-            LOG_WARN(DEBUG_WARN, "CAN%u,id0x%X TX abort\r in %s\n", fdcan_id, identifier,__func__);
-            */
             return;
         }
     }

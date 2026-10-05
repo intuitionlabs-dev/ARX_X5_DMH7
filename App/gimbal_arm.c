@@ -46,11 +46,11 @@ float DM_Speed_Fdb_Calc(void* arg);
 
 /* 主函数 */
 // NOLINTBEGIN
-static void Motor_Lost_Handle(Gimbal* obj);  // 电机掉线处理
-static uint8_t Arm_Auto_Init(Gimbal* obj);   // 初次上电自动初始化
-static void Get_Motor_Fdb(Gimbal* obj);      // 电机反馈
+static void Motor_Lost_Handle(Gimbal* obj);        // 电机掉线处理
+static uint8_t Arm_Auto_Init(Gimbal* obj);         // 初次上电自动初始化
+static void Get_Motor_Fdb(Gimbal* obj);            // 电机反馈
 static void Joint_Gravity_Comp_Calc(Gimbal* obj);  // 静态重力力矩前馈(见下文)
-static void Set_Motor_ref(Gimbal* obj);  // 电机控制
+static void Set_Motor_ref(Gimbal* obj);            // 电机控制
 // NOLINTEND
 /* 辅助函数 */
 static void pid_init(Gimbal* obj);                            // 初始化pid参数
@@ -134,23 +134,8 @@ Gimbal* Gimbal_Create(void) {
         joint_controller_config[i].position_pid_config = obj->pid_cfgs[i][0];
         joint_controller_config[i].speed_pid_config = obj->pid_cfgs[i][1];
     }
-    /* ---- CAN1 发送分组一览（7 台电机全在 CAN1，index 0）---------------------
-     * 总线上所有发送者占的组数之和 = 每 8 拍的总帧数：
-     *   4 台 500 Hz(各占 4 组) + 3 台 250 Hz(各占 2 组) = 22 帧 / 8 ms = 2750 帧/s。
-     * 摊到 8 拍上做不到每拍 2 帧(8×2 = 16 < 22)，所以**每拍 3 帧是这组频率下的
-     * 下界**，再调相位也压不下去；想压下去只能降频(见 libs/can/can_config.h)。
-     * 下面的相位就是贴着这个下界排的：
-     *   tick   0  1  2  3  4  5  6  7
-     *   帧数   3  3  3  2  3  3  3  2
-     * 做法：① 4 台 500 Hz 平分两个相位 —— j1/j3 = G0、j2/j4 = G1，各 2 台；
-     *       ② 3 台 250 Hz 摊到 3 个不同相位 —— j5 = G2、夹爪 = G0 这两个**偶数**相
-     *          把 tick 0,2,4,6 各加满到 3 帧；j6 = G1 是奇数相，只落到 1/5 两拍，
-     *          于是只剩 tick 3/7 是 2 帧。
-     * 改频率或改相位后要重新算这张表，否则峰值会莫名其妙跳上去。
-     * (峰值之所以要紧：bsp_can.c 那个 BSP_CAN_TX_MIN_GAP_US 是**串行**的，
-     *  一拍 n 帧就要在 MotorTask 里空等 (n-1)×200us。) */
     {
-        // Joint1 ENCOS V1.20EAP(原 dm8006 的位置)。CAN id 用 SDK 那套：j1 = 1
+        // Joint1 ENCOS V1.20EAP。
         ENCOS_motor_config joint1_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT1],
             .bsp_can_index = 0,  // CAN1：7 台电机合并到一条总线，见上面的分组表
@@ -166,7 +151,6 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = NULL,
             .speed_fdb_calc = NULL,
             .arg = NULL,  // 速度或位置环的反馈计算函数的对象
-            /* 500Hz(组 0,2,4,6)。CAN1 上 4 台 500 Hz 平分两个相位：j1/j3 走 G0 */
             .tx_group = CAN_TX_500HZ_G0,
         };
         obj->joint1 = ENCOSmotor_Create(&joint1_motor_config, ENCOS_Mixed_Control);
@@ -188,8 +172,7 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = NULL,
             .speed_fdb_calc = /* Joint2_Speed_Fdb_Calc */ NULL,
             .arg = NULL,  // 速度或位置环的反馈计算函数的对象
-            /* 500Hz(组 1,3,5,7)。与 j1 错开，和 j4 一起走 G1 这半相 */
-            .tx_group = CAN_TX_500HZ_G1,
+            .tx_group = CAN_TX_250HZ_G1,
         };
         obj->joint2 = ENCOSmotor_Create(&joint2_motor_config, ENCOS_Mixed_Control);
         if (!encos_joint_init(obj, JOINT2)) return NULL;
@@ -210,10 +193,7 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = NULL,
             .speed_fdb_calc = /* Joint3_Speed_Fdb_Calc */ NULL,
             .arg = NULL,  // 速度或位置环的反馈计算函数的对象
-            /* 500Hz(组 0,2,4,6)。和 j1 一起走 G0；500 Hz 只有 G0/G1 两种相位，
-             * 4 台必须 2:2 分，挤成一相的话那半拍会多出 2 帧(峰值 3→4)。
-             * 一拍里那 3 帧真正被摊开靠的是 bsp_can.c 的 BSP_CAN_TX_MIN_GAP_US。 */
-            .tx_group = CAN_TX_500HZ_G0,
+            .tx_group = CAN_TX_250HZ_G1,
         };
         obj->joint3 = ENCOSmotor_Create(&joint3_motor_config, ENCOS_Mixed_Control);
         if (!encos_joint_init(obj, JOINT3)) return NULL;
@@ -252,9 +232,7 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = DM_Pos_Fdb_Calc,
             .speed_fdb_calc = DM_Speed_Fdb_Calc,
             .arg = NULL,
-            /* 500Hz(组 1,3,5,7)。和 j2 一起走 G1 —— j1/j3 已在 G0 上占了 2 台，
-             * 这台要是也放 G0，tick 0,2,4,6 就会挤 3 台 500 Hz + 1 台 250 Hz = 4 帧。 */
-            .tx_group = CAN_TX_500HZ_G1,
+            .tx_group = CAN_TX_250HZ_G2,
         };
         obj->joint4 = DMmotor_Create(&joint4_motor_config, DM_Mit_Control);
         obj->joint4->config.arg = obj->joint4;
@@ -279,9 +257,6 @@ Gimbal* Gimbal_Create(void) {
             .pos_fdb_calc = DM_Pos_Fdb_Calc,
             .speed_fdb_calc = DM_Speed_Fdb_Calc,
             .arg = NULL,
-            /* 250Hz(组 2,6)。3 台 250 Hz 摊在 G0/G1/G2 三个不同相位上：
-             * j5(G2) 和夹爪(G0) 是两个偶数相，正好把 tick 0,2,4,6 从 2 帧加满到 3；
-             * j6(G1) 是奇数相只落到 tick 1,5。所以峰值仍然是 3，落在 tick 0,1,2,4,5,6。 */
             .tx_group = CAN_TX_250HZ_G2,
         };
         obj->joint5 = DMmotor_Create(&joint5_motor_config, DM_Mit_Control);
@@ -311,7 +286,7 @@ Gimbal* Gimbal_Create(void) {
             .speed_fdb_calc = DM_Speed_Fdb_Calc,
             .arg = NULL,
             /* 250Hz(组 1,5) —— 见 j5 处的相位说明 */
-            .tx_group = CAN_TX_250HZ_G1,
+            .tx_group = CAN_TX_250HZ_G3,
         };
         obj->joint6 = DMmotor_Create(&joint6_motor_config, DM_Mit_Control);
         obj->joint6->config.arg = obj->joint6;
@@ -337,7 +312,7 @@ Gimbal* Gimbal_Create(void) {
             .speed_fdb_calc = DM_Speed_Fdb_Calc,
             .arg = NULL,
             /* 250Hz(组 0,4) —— 见 j5 处的相位说明 */
-            .tx_group = CAN_TX_250HZ_G0,
+            .tx_group = CAN_TX_250HZ_G3,
         };
         obj->gripper = DMmotor_Create(&gripper_motor_config, DM_Mit_Control);
         obj->gripper->config.arg = obj->gripper;
@@ -355,21 +330,11 @@ Gimbal* Gimbal_Create(void) {
 
     /* 杂项 */
     PID_SetConfig_Pos(&zero_config, 0, 0, 0, 0, 0);
-
-    /* 建完之后**不在这里挑 PID 配置**：每拍 Gimbal_Update() 都会按当前 arm_mode
-     * 重设一遍（set_pid_normal / set_pid_damping / set_pid_zero），这里设了立刻被盖掉。
-     * 原来这里有个 #ifdef JOINT_ONLY_COMP 的一次性 set_pid_zero()，随那个开关一起删了。 */
     return obj;
 }
 
 void Gimbal_Update(Gimbal* obj) {
-    /* 取指令。
-     * 源工程是从 pub_sub 的订阅队列里取，取不到(len == -1)就把 arm_mode 打回 arm_stop。
-     * 本工程没有 pub_sub：命令层(App/gimbal_cmd.c)在同一个任务里、上一拍已经把
-     * obj->arm_control_data 写好了，这里直接读 mode —— 中间既没有队列也没有独立的
-     * 指令源，所以不存在"没收到 cmd"这种情况，也就没有超时判定。
-     * 真正会把 arm_mode 变成 arm_stop 的是下面的 Motor_Lost_Handle()(电机掉线)
-     * 和命令层自己的模式判定(输入链路断了的时候)。 */
+    /* 取指令*/
     obj->arm_mode = obj->arm_control_data.mode;
 
     /* 电机掉线相关处理 */
@@ -408,17 +373,17 @@ void Gimbal_Update(Gimbal* obj) {
      *                                    力矩），但让它和 run 一致最省心：万一哪天从
      *                                    stop 直接使能，配置不会是"上一个模式的残留"。 */
     switch (obj->arm_mode) {
-        case arm_damping:
-            set_pid_damping(obj);
-            break;
-        case arm_only_gravity_comp:
-            set_pid_zero(obj);
-            break;
-        case arm_run:
-        case arm_stop:
-        default:
-            set_pid_normal(obj);
-            break;
+    case arm_damping:
+        set_pid_damping(obj);
+        break;
+    case arm_only_gravity_comp:
+        set_pid_zero(obj);
+        break;
+    case arm_run:
+    case arm_stop:
+    default:
+        set_pid_normal(obj);
+        break;
     }
 
     /* 电机状态。
@@ -453,13 +418,13 @@ void Gimbal_Update(Gimbal* obj) {
     Set_Motor_ref(obj);
 
     // DEBUG:拷贝控制器数据
-    g_fdb_pos = obj->joint2->motor_controller->fdb_position;
-    g_fdb_speed = obj->joint2->motor_controller->fdb_speed;
-    g_ref_pos = obj->joint2->motor_controller->ref_position;
-    g_ref_speed = obj->joint2->motor_controller->ref_speed;
-    g_speed_comp = obj->joint2->motor_controller->speed_comp;
-    g_output = obj->joint2->motor_controller->output;
-    g_ouput_comp = obj->joint2->motor_controller->output_comp;
+    g_fdb_pos = obj->gripper->motor_controller->fdb_position;
+    g_fdb_speed = obj->gripper->motor_controller->fdb_speed;
+    g_ref_pos = obj->gripper->motor_controller->ref_position;
+    g_ref_speed = obj->gripper->motor_controller->ref_speed;
+    g_speed_comp = obj->gripper->motor_controller->speed_comp;
+    g_output = obj->gripper->motor_controller->output;
+    g_ouput_comp = obj->gripper->motor_controller->output_comp;
 
     /* 杂项 */
     obj->arm_feedback_data.mode = obj->arm_mode;
@@ -480,9 +445,9 @@ static uint8_t Arm_Auto_Init(Gimbal* obj) {
     obj->motor_pos_init[JOINT4] = JOINT4_POS_INIT;
     obj->motor_pos_init[JOINT5] = JOINT5_POS_INIT;
     obj->motor_pos_init[JOINT6] = JOINT6_POS_INIT;
-    // TODO:夹爪的逻辑
-    for (int i = 0; i < ARM_MOTOR_NUM; i++) {
-        obj->arm_feedback_data.motor_inited[i] = 1;  // 所有电机初始化完成
+    // 夹爪默认未初始化
+    for (int i = 0; i < ARM_JOINT_NUM; i++) {
+        obj->arm_feedback_data.motor_inited[i] = 1;  // j1-j6电机初始化完成
     }
 
     return 1;  // 初始化完成
@@ -502,13 +467,13 @@ static void Motor_Lost_Handle(Gimbal* obj) {
         if (obj->arm_feedback_data.is_motor_lost[JOINT6])
             obj->arm_feedback_data.motor_inited[JOINT6] = 0;
     }
-    // j1~j5与夹爪始终认为已初始化，因为它们具有绝对值编码器，掉线后重启仍能获得正确的角度反馈，不会出现误判掉线的情况
+    // j1~j6始终认为已初始化，因为它们具有绝对值编码器，掉线后重启仍能获得正确的角度反馈，不会出现误判掉线的情况
     obj->arm_feedback_data.motor_inited[JOINT1] = 1;
     obj->arm_feedback_data.motor_inited[JOINT2] = 1;
     obj->arm_feedback_data.motor_inited[JOINT3] = 1;
     obj->arm_feedback_data.motor_inited[JOINT4] = 1;
     obj->arm_feedback_data.motor_inited[JOINT5] = 1;
-    obj->arm_feedback_data.motor_inited[GRIPPER] = 1;
+    obj->arm_feedback_data.motor_inited[JOINT6] = 1;
 
     /* 处理 */
     if (any_motor_lost && ANY_MOTOR_LOST_STOP_ENABLE) {  // 若配置为掉线停机则停机
@@ -591,7 +556,8 @@ static void Set_Motor_ref(Gimbal* obj) {
     }
 
     /* 设置夹爪电机目标位置和力矩 */
-    // TODO:
+    motor_controller_list[GRIPPER]->ref_position = obj->arm_control_data.gripper_angle;
+    motor_controller_list[GRIPPER]->output_comp = 0;
 }
 
 /* 电机温度 float -> uint8_t(℃) 的转换，专门给 ENCOS 用。
@@ -614,8 +580,9 @@ static void Get_Motor_Fdb(Gimbal* obj) {
         obj->arm_feedback_data.joint_angle[i] =
             pos_to_angle(motor_controller_list[i]->fdb_position, obj->motor_pos_init[i],
                 MOTOR_DIR[i], MOTOR_REDUCTION[i]);
-        obj->arm_feedback_data.joint_vel[i] = speed_to_vel(
-            motor_controller_list[i]->fdb_speed, MOTOR_DIR[i], MOTOR_REDUCTION[i]);
+        obj->arm_feedback_data.joint_vel[i] =
+            speed_to_vel(motor_controller_list[i]->fdb_speed, MOTOR_DIR[i],
+                MOTOR_REDUCTION[i]);
     }
 
     /* 夹爪实际角：直接用电机反馈角（已经是 deg，见 DM_motor.c 里 fdb_position 乘的
@@ -681,7 +648,8 @@ static void Joint_Gravity_Comp_Calc(Gimbal* obj) {
      * 不清的话 tau_comp 会留下上一次的值继续出力。会失败的情况只有角度非有限
      * (ENCOS 第一帧反馈之前是 NAN)或者 |q| > 128 rad，两者都不该拿旧值顶上。 */
     if (x5_gravity_compute(JOINT_GRAVITY_COMP_MODEL, q, JOINT_GRAVITY_BASE,
-            JOINT_GRAVITY_COMP_MODE, obj->tau_comp) != X5_GRAVITY_OK) {
+            JOINT_GRAVITY_COMP_MODE, obj->tau_comp)
+        != X5_GRAVITY_OK) {
         for (int i = 0; i < ARM_JOINT_NUM; i++) {
             obj->tau_comp[i] = 0.0f;
         }
@@ -744,14 +712,14 @@ static void pid_init(Gimbal* obj) {
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][1], 0.0f, 0.0f, 0.0f, 0.0f, 12);
     obj->encos_kpkd[JOINT1][0] = 0;
     obj->encos_kpkd[JOINT1][1] = 35;
-    
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][0], 4, 0, 100, 200, 1000);
+
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][0], 4, 0, 50, 200, 1000);
     obj->pid_cfgs[JOINT2][0].Irange = 1;
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][1], 0.0f, 0.0f, 0.0f, 0.0f, 12);
     obj->encos_kpkd[JOINT2][0] = 0;
     obj->encos_kpkd[JOINT2][1] = 50;
-    
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][0], 4, 0, 100, 200, 1000);
+
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][0], 4, 0, 50, 200, 1000);
     obj->pid_cfgs[JOINT3][0].Irange = 1;
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][1], 0.0f, 0.0f, 0.0f, 0.0f, 12);
     obj->encos_kpkd[JOINT3][0] = 0;

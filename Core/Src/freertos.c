@@ -56,6 +56,13 @@ typedef StaticTask_t osStaticThreadDef_t;
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
+// FPS
+typedef struct  {
+    FPS_t cmd;
+    FPS_t motor;
+    FPS_t monitor;
+} Freertos_fps;
+Freertos_fps freertos_fps;
 #if TEST_CAN_LOOPBACK_ENABLE
 /* Definitions for CanLoopbackTask */
 osThreadId_t CanLoopbackTaskHandle;
@@ -218,13 +225,14 @@ void StartDefaultTask(void *argument)
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN StartDefaultTask */
-  /* Infinite loop */
-  uint32_t tick = osKernelGetTickCount();
-  for(;;)
-  {
-    tick += 1U;
-    osDelayUntil(tick);
-  }
+    /* Infinite loop：把 CPU 让出来，1 ms 一拍。 */
+    portTickType currentTimeDefault;
+    currentTimeDefault = xTaskGetTickCount();
+    for (;;) {
+        if (xTaskDelayUntil(&currentTimeDefault, 1) == pdFALSE) {
+            currentTimeDefault = xTaskGetTickCount();   /* 这一拍没睡成：重新对齐到"现在" */
+        }
+    }
   /* USER CODE END StartDefaultTask */
 }
 
@@ -237,18 +245,23 @@ void StartDefaultTask(void *argument)
 /* USER CODE END Header_StartMonitorTask */
 void StartMonitorTask(void *argument)
 {
-  /* USER CODE BEGIN StartMonitorTask */
-  /* Infinite loop */
-  uint32_t tick = osKernelGetTickCount();
-  for(;;)
-  {
-    Monitor_Loop();
-    /* 100 Hz：count 一次减 1 就是 10 ms。
-     * 这个频率和每个 monitor 注册时给的 count 是绑死的 —— 改这里必须同步改所有
+    /* USER CODE BEGIN StartMonitorTask */
+    /* Infinite loop。100 Hz —— count 一次减 1 就是 10 ms。
+     * 这个频率和每个 monitor 注册时给的 count 是绑死的：改这里必须同步改所有
      * Monitor_Register 的 count，否则所有掉线判定的时间一起变(见 monitor.h)。 */
-    tick += 10U;
-    osDelayUntil(tick);
-  }
+    portTickType currentTimeMonitor;
+    currentTimeMonitor = xTaskGetTickCount();
+    for (;;) {
+        FrameRateStatistics(&freertos_fps.monitor);
+        Monitor_Loop();
+        /* FreeRTOS 的 xTaskDelayUntil 在"该醒的时刻已经过去"时**不阻塞**，却照样把
+         * prev 推进一个周期(task.h 原文：A task will not be delayed if the next
+         * expected wake time is in the past)。不接住返回值，任务就会一直以循环体
+         * 自身的耗时为空转周期、再也回不来 —— 详见 StartMotorTask 里的实测记录。 */
+        if (xTaskDelayUntil(&currentTimeMonitor, 10) == pdFALSE) {
+            currentTimeMonitor = xTaskGetTickCount();   /* 这一拍没睡成：重新对齐到"现在" */
+        }
+    }
   /* USER CODE END StartMonitorTask */
 }
 
@@ -262,26 +275,26 @@ void StartMonitorTask(void *argument)
 void StartMotorTask(void *argument)
 {
   /* USER CODE BEGIN StartMotorTask */
-  /* BSP_CAN_Init() / DMmotor_Driver_Init() / Monitor_Init() live in
-   * main.c USER CODE BEGIN 2, before the scheduler starts. */
-  /* Infinite loop */
-  uint32_t tick = osKernelGetTickCount();
-  for(;;)
-  {
-    /* 设零状态机(App/arm_zero.c)。它必须和下面两个 Calc_Send() 待在同一个任务里：
-     * 两个驱动都要求自己的 API 由调用者串行化，而且"设零期间一条常规控制帧都不发"
-     * 这个门只能关在调用 Calc_Send() 的地方 —— 设零帧和常规控制帧是互斥的
-     * (尤其达妙每 300ms 那次无条件使能帧，会把状态机刚发过的"全部失能"直接抵消)。
-     * 先 Loop() 再判 Busy()：进入设零状态的那一拍就已经把门关上了。
-     * 关的是整条总线(现在有达妙的 CAN1 和 ENCOS 的 CAN3)，不是挑着关。 */
-    Arm_Zero_Loop();
-    if (!Arm_Zero_Busy()) {
-      DMmotor_Calc_Send();
-      ENCOSmotor_Calc_Send();
+    portTickType currentTimeMotor;
+    currentTimeMotor = xTaskGetTickCount();
+    for (;;) {
+        
+        FrameRateStatistics(&freertos_fps.motor);
+        /* 设零状态机(App/arm_zero.c)。它必须和下面两个 Calc_Send() 待在同一个任务里：
+         * 两个驱动都要求自己的 API 由调用者串行化，而且"设零期间一条常规控制帧都不发"
+         * 这个门只能关在调用 Calc_Send() 的地方 —— 设零帧和常规控制帧是互斥的
+         * (尤其达妙那次周期性使能帧，会把状态机刚发过的"全部失能"直接抵消)。
+         * 先 Loop() 再判 Busy()：进入设零状态的那一拍就已经把门关上了。
+         * 关的是整条总线(CAN1 上现在挂着全部 7 台电机)，不是挑着关。 */
+        Arm_Zero_Loop();
+        if (!Arm_Zero_Busy()) {
+            DMmotor_Calc_Send();
+            ENCOSmotor_Calc_Send();
+        }
+        if (xTaskDelayUntil(&currentTimeMotor, 1) == pdFALSE) {
+            currentTimeMotor = xTaskGetTickCount();   /* 这一拍没睡成：重新对齐到"现在" */
+        }
     }
-    tick += 1U;
-    osDelayUntil(tick);
-  }
   /* USER CODE END StartMotorTask */
 }
 
@@ -303,14 +316,20 @@ void StartCmdTask(void *argument)
   gimbal = Gimbal_Create();
   /* 命令层：它挂在 gimbal 上(Gimbal_Cmd_Create() 里读全局 gimbal)，所以必须接在后面。 */
   gimbal_cmd = Gimbal_Cmd_Create();
-  /* Infinite loop */
-  uint32_t tick = osKernelGetTickCount();
-  for(;;)
-  {
-    Cmd_Loop();
-    tick += 2U;
-    osDelayUntil(tick);
-  }
+    /* Infinite loop。500 Hz。 */
+    portTickType currentTimeCmd;
+    currentTimeCmd = xTaskGetTickCount();
+    for (;;) {
+        FrameRateStatistics(&freertos_fps.cmd);
+        Cmd_Loop();
+        /* FreeRTOS 的 xTaskDelayUntil 在"该醒的时刻已经过去"时**不阻塞**，却照样把
+         * prev 推进一个周期(task.h 原文：A task will not be delayed if the next
+         * expected wake time is in the past)。不接住返回值，任务就会一直以循环体
+         * 自身的耗时为空转周期、再也回不来 —— 详见 StartMotorTask 里的实测记录。 */
+        if (xTaskDelayUntil(&currentTimeCmd, 2) == pdFALSE) {
+            currentTimeCmd = xTaskGetTickCount();   /* 这一拍没睡成：重新对齐到"现在" */
+        }
+    }
   /* USER CODE END StartCmdTask */
 }
 
@@ -322,13 +341,19 @@ void StartCmdTask(void *argument)
 void StartCanLoopbackTask(void *argument)
 {
   (void)argument;
-  uint32_t tick = osKernelGetTickCount();
-  for(;;)
-  {
-    CanLoopbackTest_Loop();
-    tick += 1U;
-    osDelayUntil(tick);
-  }
+    /* 回环测试线程(TEST_CAN_LOOPBACK_ENABLE 才编译)。 */
+    portTickType currentTimeCanLb;
+    currentTimeCanLb = xTaskGetTickCount();
+    for (;;) {
+        CanLoopbackTest_Loop();
+        /* FreeRTOS 的 xTaskDelayUntil 在"该醒的时刻已经过去"时**不阻塞**，却照样把
+         * prev 推进一个周期(task.h 原文：A task will not be delayed if the next
+         * expected wake time is in the past)。不接住返回值，任务就会一直以循环体
+         * 自身的耗时为空转周期、再也回不来 —— 详见 StartMotorTask 里的实测记录。 */
+        if (xTaskDelayUntil(&currentTimeCanLb, 1) == pdFALSE) {
+            currentTimeCanLb = xTaskGetTickCount();   /* 这一拍没睡成：重新对齐到"现在" */
+        }
+    }
 }
 #endif
 
@@ -337,13 +362,19 @@ void StartCanLoopbackTask(void *argument)
 void StartUartLoopbackTask(void *argument)
 {
   (void)argument;
-  uint32_t tick = osKernelGetTickCount();
-  for(;;)
-  {
-    UartLoopbackTest_Loop();
-    tick += 1U;
-    osDelayUntil(tick);
-  }
+    /* 回环测试线程(TEST_UART_LOOPBACK_ENABLE 才编译)。 */
+    portTickType currentTimeUartLb;
+    currentTimeUartLb = xTaskGetTickCount();
+    for (;;) {
+        UartLoopbackTest_Loop();
+        /* FreeRTOS 的 xTaskDelayUntil 在"该醒的时刻已经过去"时**不阻塞**，却照样把
+         * prev 推进一个周期(task.h 原文：A task will not be delayed if the next
+         * expected wake time is in the past)。不接住返回值，任务就会一直以循环体
+         * 自身的耗时为空转周期、再也回不来 —— 详见 StartMotorTask 里的实测记录。 */
+        if (xTaskDelayUntil(&currentTimeUartLb, 1) == pdFALSE) {
+            currentTimeUartLb = xTaskGetTickCount();   /* 这一拍没睡成：重新对齐到"现在" */
+        }
+    }
 }
 #endif
 

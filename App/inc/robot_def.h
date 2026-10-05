@@ -76,7 +76,7 @@ typedef struct {
     float joint_angle[ARM_JOINT_NUM];  // 关节角度，deg
     float joint_vel[ARM_JOINT_NUM];    // 关节速度，deg/s
     float joint_acc[ARM_JOINT_NUM];    // 关节加速度
-    float gripper_oc_angle;    // 夹爪开合角，deg，范围 GRIPPER_ANGLE_MIN..MAX(-284..0)
+    float gripper_angle;    // 夹爪开合角，deg，范围 GRIPPER_ANGLE_MIN..MAX(-284..0)
 } Arm_control_data;
 
 /* arm -> 云台 cmd：反馈 */
@@ -86,6 +86,6 @@ typedef struct {
     uint8_t motor_inited[ARM_MOTOR_NUM];   // 初始化状态，0 未初始化 / 1 已初始化
     float joint_angle[ARM_JOINT_NUM];      // 关节角度，deg
     float joint_vel[ARM_JOINT_NUM];        // 关节角速度，deg/s（上位机规划速度前馈的起点）
-    float gripper_angle;                   // 夹爪实际角，deg，同 gripper_oc_angle 的口径
+    float gripper_angle;                   // 夹爪实际角，deg
     uint8_t motor_temp[ARM_MOTOR_NUM];     // 电机温度，℃
 } Arm_feedback_data;

@@ -33,7 +33,7 @@ static ENCOS_Result send_frame(ENCOS_motor *obj, const ENCOS_Frame *frame,
   if (bus_busy(obj->config.bsp_can_index))
     return ENCOS_BUSY;
   BSP_CAN_Send(obj->config.bsp_can_index, frame->id, (uint8_t *)frame->data,
-               frame->len, tx_group);
+               frame->len);
   return ENCOS_OK; /* submitted to BSP; NOT an acknowledgement from motor */
 }
 static void reset_controller(ENCOS_motor *obj) {
@@ -286,6 +286,7 @@ ENCOS_Result ENCOSmotor_Reset_Round(ENCOS_motor *obj) {
 ENCOS_Result ENCOSmotor_Broadcast_Cmd(ENCOS_motor *obj, uint8_t sub_cmd) {
   return sub_cmd == 3 ? ENCOSmotor_Save_Zero(obj) : ENCOS_UNSUPPORTED;
 }
+FPS_t j1_tx_checkmatch_fps;
 void ENCOSmotor_Calc_Send(void) {
   if (!ENCOS_motor_list)
     return;
@@ -302,6 +303,8 @@ void ENCOSmotor_Calc_Send(void) {
      * 不能"算了不发"：PID_Calc 没有 dt，增益按调用次数算，按 1 kHz 算而按
      * 500 Hz 发会让 KI 凭空翻倍。(上面的 zero_pending 超时清理是"每隔多久检查
      * 一次"，跟发送无关，所以留在门外面。) */
+    if(obj->config.tx_group==CAN_TX_250HZ_G0)
+        FrameRateStatistics(&j1_tx_checkmatch_fps);
     if (!BSP_CAN_TxGroupMatch(obj->config.tx_group))
       continue;
 

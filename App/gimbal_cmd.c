@@ -7,7 +7,7 @@
 #include "move_plan.h"      /* move_plan_run(判规划是否在跑) */
 #include "plan_group.h"     /* Plan_Group_Temp_Create() */
 #include "rc.h"
-#include "robot_state.h"    /* 串口总模式状态机：离线时的模式来源 + 控制帧来源 */
+#include "robot_state.h" /* 串口总模式状态机：离线时的模式来源 + 控制帧来源 */
 
 /* ===================== 相对于源工程砍掉了什么 =====================
  *
@@ -68,16 +68,16 @@ static uint8_t Rc_Online(void) { return (uint8_t)(!is_Offline(rc.monitor)); }
 
 /* 私有函数(顶层) */
 // NOLINTBEGIN
-static void Stop_Mode_Update(Gimbal_cmd* obj);    // 停机模式
-static void Passive_Mode_Update(Gimbal_cmd* obj); // 被动模式(阻尼 / 仅重力补偿)
-static void Run_Mode_Update(Gimbal_cmd* obj);     // 运行模式(遥控器点动 或 串口控制帧)
-static void Set_Ctrl_Default(Gimbal_cmd* obj);    // 部分控制默认值设置
-static void Auto_Mode_Update(Gimbal_cmd* obj);    // 一键模式分派
-static void Plan_Running_Check(Gimbal_cmd* obj);  // 规划运行状态检查
-static void Ctrl_Src_Calc(Gimbal_cmd* obj);       // 解算各数据源
-static void Motor_Angle_Limit(Gimbal_cmd* obj);   // 软限位
-static void Ctrl_Post_Process(Gimbal_cmd* obj);   // 控制量后处理
-static void Arm_Ref_Set(Gimbal_cmd* obj);         // 机械臂控制值设置
+static void Stop_Mode_Update(Gimbal_cmd* obj);     // 停机模式
+static void Passive_Mode_Update(Gimbal_cmd* obj);  // 被动模式(阻尼 / 仅重力补偿)
+static void Run_Mode_Update(Gimbal_cmd* obj);      // 运行模式(遥控器点动 或 串口控制帧)
+static void Set_Ctrl_Default(Gimbal_cmd* obj);     // 部分控制默认值设置
+static void Auto_Mode_Update(Gimbal_cmd* obj);     // 一键模式分派
+static void Plan_Running_Check(Gimbal_cmd* obj);   // 规划运行状态检查
+static void Ctrl_Src_Calc(Gimbal_cmd* obj);        // 解算各数据源
+static void Motor_Angle_Limit(Gimbal_cmd* obj);    // 软限位
+static void Ctrl_Post_Process(Gimbal_cmd* obj);    // 控制量后处理
+static void Arm_Ref_Set(Gimbal_cmd* obj);          // 机械臂控制值设置
 // NOLINTEND
 /* 私有函数(非顶层) */
 static void joint_src_follow(Gimbal_cmd* obj);  // 关节控制源跟随反馈
@@ -133,8 +133,7 @@ void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
      *
      * 总模式状态机**照常在跑**(握手/反馈/状态迁移都不受遥控器影响)，只是它的输出在
      * 这里被盖掉。这样不需要在状态机里维护"冻结/解冻"的第二套状态。 */
-    obj->mode = Rc_Online() ? ((rc.sw_a == 1) ? arm_run : arm_stop)
-                            : Robot_State_Arm_Mode();
+    obj->mode = Rc_Online() ? ((rc.sw_a == 1) ? arm_run : arm_stop) : Robot_State_Arm_Mode();
     /* 控制类型：源工程有 关节 / 笛卡尔 / 自定义腕点 三种(靠遥控器或图传切)，本工程
      * 只剩下关节空间这一种(见 gimbal_cmd.h 的 Arm_ctrl_type)。 */
     obj->ctrl_type = arm_ctrl_joint;
@@ -227,10 +226,9 @@ static void Stop_Mode_Update(Gimbal_cmd* obj) {
     /* 关节角跟踪微分器跟随：直接对齐，不要"跟"出速度来 */
     joint_angle_td_follow(obj, obj->gimbal->arm_feedback_data.joint_angle);
 
-    /* 源工程这里还做了：
-     *   - 加速度估计器同步跟随(td_accel_follow)：本工程 TD_t 没有 v3，估计器整条链没搬；
-     *   - plan_joint_vel/acc 置零：规划路径靠 arm_auto，删了；
-     *   - gimbal_send_data.robot_mode / auto_mode / auto_step：底盘那一套，删了。 */
+    // 夹爪跟随
+    obj->gimbal->arm_control_data.gripper_angle =
+        obj->gimbal->arm_feedback_data.gripper_angle;
 }
 
 /* 被动模式：阻尼 / 仅重力补偿。
@@ -262,6 +260,10 @@ static void Passive_Mode_Update(Gimbal_cmd* obj) {
 
     joint_src_follow(obj);
     joint_angle_td_follow(obj, obj->gimbal->arm_feedback_data.joint_angle);
+
+    // 夹爪跟随
+    obj->gimbal->arm_control_data.gripper_angle =
+        obj->gimbal->arm_feedback_data.gripper_angle;
 }
 
 /* 运行模式。输入源有**两个**，按遥控器是否在线二选一：
@@ -293,15 +295,17 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
             return;
         }
 
-        // 右摇杆左右控制 j1，
-        if (Etc_Get(rc.trig.rx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT1] += 30;
-        if (Etc_Get(rc.trig.rx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT1] -= 30;
-        // 右摇杆上下控制 j2
-        if (Etc_Get(rc.trig.ry_up)) obj->ctrl_src.joint_src.joint_angle[JOINT2] += 30;
-        if (Etc_Get(rc.trig.ry_down)) obj->ctrl_src.joint_src.joint_angle[JOINT2] -= 30;
-        // 左摇杆左右控制 j3
-        if (Etc_Get(rc.trig.lx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT3] += 30;
-        if (Etc_Get(rc.trig.lx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT3] -= 30;
+        // // 右摇杆左右控制 j1，
+        // if (Etc_Get(rc.trig.rx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT1] += 30;
+        // if (Etc_Get(rc.trig.rx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT1] -= 30;
+        // // 右摇杆上下控制 j2
+        // if (Etc_Get(rc.trig.ry_up)) obj->ctrl_src.joint_src.joint_angle[JOINT2] += 30;
+        // if (Etc_Get(rc.trig.ry_down)) obj->ctrl_src.joint_src.joint_angle[JOINT2] -= 30;
+        // // 左摇杆左右控制 j3
+        // if (Etc_Get(rc.trig.lx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT3] += 30;
+        // if (Etc_Get(rc.trig.lx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT3] -= 30;
+        // 左摇杆左右控制gripper
+        if (fabsf(rc.lx) > 0.1) obj->gimbal->arm_control_data.gripper_angle += rc.lx * 90/500.0;
         return;
     }
 
@@ -321,7 +325,7 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         obj->ctrl_src.joint_src.joint_angle[i] = cmd->joint_angle[i];
     }
-    obj->gimbal->arm_control_data.gripper_oc_angle = cmd->gripper_angle;
+    obj->gimbal->arm_control_data.gripper_angle = cmd->gripper_angle;
 }
 
 /* 一键模式分派(源工程 Gimbal_Cmd_Update() 里那个 switch (obj->auto_mode)，位置一样)。
@@ -433,8 +437,8 @@ static void Motor_Angle_Limit(Gimbal_cmd* obj) {
 
     // 夹爪
     if (obj->gimbal->arm_feedback_data.motor_inited[GRIPPER])
-        obj->gimbal->arm_control_data.gripper_oc_angle =
-            fclip(obj->gimbal->arm_control_data.gripper_oc_angle, GRIPPER_ANGLE_MIN,
+        obj->gimbal->arm_control_data.gripper_angle =
+            fclip(obj->gimbal->arm_control_data.gripper_angle, GRIPPER_ANGLE_MIN,
                 GRIPPER_ANGLE_MAX);
 }
 
@@ -480,8 +484,8 @@ static void Arm_Ref_Set(Gimbal_cmd* obj) {
          * 上位机打算走多快。0x17 带的速度是上位机自己的规划速度，直接当前馈用可以让
          * 速度环提前出力，跟得上；用 TD 的 v2 会有明显滞后（尤其起停那一下）。 */
         const Robot_ctrl_cmd* cmd = Robot_State_Ctrl();
-        const uint8_t use_ff =
-            (obj->mode == arm_run && !Rc_Online() && cmd != NULL && cmd->valid && cmd->has_vel);
+        const uint8_t use_ff = (obj->mode == arm_run && !Rc_Online() && cmd != NULL
+            && cmd->valid && cmd->has_vel);
 
         for (int i = 0; i < ARM_JOINT_NUM; i++) {
             obj->gimbal->arm_control_data.joint_angle[i] = obj->joint_angle_td[i].v1;
@@ -491,7 +495,8 @@ static void Arm_Ref_Set(Gimbal_cmd* obj) {
         }
     } else {
         for (int i = 0; i < ARM_JOINT_NUM; i++) {
-            obj->gimbal->arm_control_data.joint_angle[i] = obj->ctrl_src.joint_angle_solved[i];
+            obj->gimbal->arm_control_data.joint_angle[i] =
+                obj->ctrl_src.joint_angle_solved[i];
             obj->gimbal->arm_control_data.joint_vel[i] =
                 obj->plan_joint_vel[i] * PLAN_SPEED_COMP_COEF[i];
             obj->gimbal->arm_control_data.joint_acc[i] = obj->plan_joint_acc[i];
