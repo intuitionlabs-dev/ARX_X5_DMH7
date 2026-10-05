@@ -30,6 +30,7 @@
 #include "ENCOS_motor.h"
 #include "monitor.h"
 #include "can_loopback_test.h"
+#include "uart_loopback_test.h"
 #include "cmd.h"
 #include "gimbal_arm.h"
 #include "gimbal_cmd.h"
@@ -66,6 +67,21 @@ const osThreadAttr_t CanLoopbackTask_attributes = {
   .cb_size = sizeof(CanLoopbackTaskControlBlock),
   .stack_mem = &CanLoopbackTaskBuffer[0],
   .stack_size = sizeof(CanLoopbackTaskBuffer),
+  .priority = (osPriority_t) osPriorityLow,
+};
+#endif
+
+#if TEST_UART_LOOPBACK_ENABLE
+/* Definitions for UartLoopbackTask */
+osThreadId_t UartLoopbackTaskHandle;
+uint32_t UartLoopbackTaskBuffer[ 512 ];
+osStaticThreadDef_t UartLoopbackTaskControlBlock;
+const osThreadAttr_t UartLoopbackTask_attributes = {
+  .name = "UartLoopbackTask",
+  .cb_mem = &UartLoopbackTaskControlBlock,
+  .cb_size = sizeof(UartLoopbackTaskControlBlock),
+  .stack_mem = &UartLoopbackTaskBuffer[0],
+  .stack_size = sizeof(UartLoopbackTaskBuffer),
   .priority = (osPriority_t) osPriorityLow,
 };
 #endif
@@ -118,6 +134,9 @@ const osThreadAttr_t CmdTask_attributes = {
 /* USER CODE BEGIN FunctionPrototypes */
 #if TEST_CAN_LOOPBACK_ENABLE
 void StartCanLoopbackTask(void *argument);
+#endif
+#if TEST_UART_LOOPBACK_ENABLE
+void StartUartLoopbackTask(void *argument);
 #endif
 /* USER CODE END FunctionPrototypes */
 
@@ -173,6 +192,10 @@ void MX_FREERTOS_Init(void) {
 #if TEST_CAN_LOOPBACK_ENABLE
   /* creation of CanLoopbackTask */
   CanLoopbackTaskHandle = osThreadNew(StartCanLoopbackTask, NULL, &CanLoopbackTask_attributes);
+#endif
+#if TEST_UART_LOOPBACK_ENABLE
+  /* creation of UartLoopbackTask */
+  UartLoopbackTaskHandle = osThreadNew(StartUartLoopbackTask, NULL, &UartLoopbackTask_attributes);
 #endif
   HAL_Moveplan_Thread_Create();
   /* USER CODE END RTOS_THREADS */
@@ -303,6 +326,21 @@ void StartCanLoopbackTask(void *argument)
   for(;;)
   {
     CanLoopbackTest_Loop();
+    tick += 1U;
+    osDelayUntil(tick);
+  }
+}
+#endif
+
+#if TEST_UART_LOOPBACK_ENABLE
+/* UartLoopbackTest_Init() 在 main.c 的 USER CODE BEGIN 2 里调用，在调度器启动前。 */
+void StartUartLoopbackTask(void *argument)
+{
+  (void)argument;
+  uint32_t tick = osKernelGetTickCount();
+  for(;;)
+  {
+    UartLoopbackTest_Loop();
     tick += 1U;
     osDelayUntil(tick);
   }

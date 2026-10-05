@@ -50,6 +50,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/gimbal_arm.c
     App/gimbal_cmd.c
     App/test/can_loopback_test.c
+    App/test/uart_loopback_test.c
 
     # Board support
     Bsp/BMI088driver.c
@@ -108,6 +109,15 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     libs/move_plan/move_plan/move_plan.c
     libs/move_plan/move_plan/plan_group.c
     libs/rc/rc.c
+    # 串口帧协议 + 它依赖的 Modbus CRC8/CRC16。两个库都是新加的：soft_crc 只被
+    # uart_frame.c 用(查表是编译期 const，不需要初始化)，uart_frame 目前还没有调用方，
+    # 所以 --gc-sections 会把它们整个删掉 —— 属正常，上层接上自动回来。
+    libs/soft_crc/soft_crc.c
+    libs/uart_frame/uart_frame.c
+    # 串口的传输层(DMA 收发 + .RAM_D1 缓冲都封在它里面，上层不用管内存段)。
+    # 目前唯一的调用方是回环测试；测试关掉(TEST_UART_LOOPBACK_ENABLE=0)时它同样没有
+    # 调用方、会被 --gc-sections 摘掉 —— 属正常，有真实业务接上就回来了。
+    libs/uart/bsp_uart.c
 
     # NOTE: Core/Src/freertos.c and the FreeRTOS kernel (cmsis_os2, port, heap_4)
     # are added by cmake/stm32cubemx/CMakeLists.txt, which CubeMX regenerates.
@@ -139,6 +149,13 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/move_plan/curves
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/move_plan/move_plan
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/rc
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/soft_crc
+    # 串口传输层(BSP)。只有它自己的 .c include uart_config.h，但上层要调 BSP_UART_*，
+    # 所以这个目录必须在 include path 里。
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/uart
+    # uart_frame.c 里 include 的是 "soft_crc.h" 这种裸文件名，两个目录都要在
+    # include path 里(同 libs/move_plan 那两条注释说的道理)。
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/uart_frame
 )
 
 # Add project symbols (macros)

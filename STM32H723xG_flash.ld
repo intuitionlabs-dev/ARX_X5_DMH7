@@ -243,6 +243,34 @@ SECTIONS
 
 
 
+  /* DMA 缓冲区专用段：把缓冲区挂到 DMA 够得着的地方。
+   *
+   * 为什么需要它：STM32H7 的 DMA1/DMA2 是 D2 域的总线主设备，**访问不到 DTCM/ITCM**
+   * (TCM 只挂在 Cortex-M7 核上，不在 AXI/AHB 总线矩阵上)。而本工程上面所有段
+   * (.data/.tdata/.tbss/.bss/栈/堆) 全都是 >DTCMRAM(0x20000000)。所以任何走 DMA 的
+   * 缓冲区都必须显式放到 RAM_D1(AXI SRAM, 0x24000000) 这类 DMA 能访问的 RAM 里，
+   * 否则流一使能就报传输错：HAL_GetError() 里出现 0x10(HAL_UART_ERROR_DMA)。
+   *
+   * 用法：__attribute__((section(".RAM_D1"))) uint8_t buf[N];
+   *
+   * 注意本段是 NOLOAD —— 启动代码不会清零它，挂进来的变量**不能假设初值为 0**。
+   * (本工程没开 D-Cache，所以放这里也不需要在 DMA 前后做 cache 维护；
+   *  哪天 main.c 里加了 SCB_EnableDCache()，这些缓冲区就得配 MPU 非缓存区
+   *  或者在收发前后 SCB_Clean/InvalidateDCache_by_Addr。)
+   *
+   * 别删：App/test/uart_loopback_test.c 的 s_rx_dma / s_tx_frame 靠它。段被冲掉之后
+   * 那两个变量变成孤儿段、被默认放回 DTCM，症状是回环测试 tx_fail 满天飞、hal_err=0x10
+   * —— 测试代码里有 uart_lb_dma_mem_bad 兜底报这个，不用重新查一遍。 */
+  .RAM_D1 (NOLOAD) :
+  {
+    . = ALIGN(32);
+    _sram_d1 = .;
+    *(.RAM_D1)
+    *(.RAM_D1*)
+    . = ALIGN(32);
+    _eram_d1 = .;
+  } >RAM_D1
+
   /* Remove information from the standard libraries */
   /DISCARD/ :
   {

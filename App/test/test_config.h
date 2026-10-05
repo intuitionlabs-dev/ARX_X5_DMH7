@@ -21,6 +21,10 @@
 /* CAN1 -> CAN2 自机通信(回环)测试，见 App/test/can_loopback_test.c */
 #define TEST_CAN_LOOPBACK_ENABLE 0
 
+/* USART2 <-> USART3 自机通信(回环)测试，见 App/test/uart_loopback_test.c
+ * 跑之前要先把两路的 RS485 挂到同一条总线上(A2↔A3、B2↔B3)，接线表在头文件里。 */
+#define TEST_UART_LOOPBACK_ENABLE 0
+
 /* 以后新增测试，照抄下面这两行(宏名和文件名自己改)：
  * #define TEST_XXX_ENABLE 1
  */

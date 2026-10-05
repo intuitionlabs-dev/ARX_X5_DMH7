@@ -19,7 +19,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "FreeRTOS.h"
-#include "bsp_buzzer.h"
 #include "cmsis_os2.h"
 #include "adc.h"
 #include "dma.h"
@@ -37,10 +36,12 @@
 #include "w25q64.h"
 #include <stdio.h>
 #include "bsp_can.h"
+#include "bsp_uart.h"  /* libs/uart: 串口传输层(DMA 收发 + .RAM_D1 缓冲都在它里面) */
 #include "DM_motor.h"
 #include "ENCOS_motor.h"
 #include "monitor.h"
 #include "can_loopback_test.h"
+#include "uart_loopback_test.h"
 #include "cmd.h"
 #include "rc.h"
 /* USER CODE END Includes */
@@ -260,6 +261,12 @@ int main(void)
   Monitor_Init();
   /* CAN1->CAN2 自机通信测试：登记 RX 滤波器+回调（同样需要在 BSP_CAN_Init 之后）。 */
   CanLoopbackTest_Init();
+  /* 串口传输层(libs/uart)。必须在 MX_USART2/3_UART_Init() 之后(句柄得已经初始化好)、
+   * 调度器启动之前(单线程，没有并发问题)。它会把 USART2/3 的 DMA 接收常驻武装起来，
+   * 此后收发都由它管 —— 上层不用再碰 HAL 的 UART DMA 接口，也不用管缓冲区在哪个内存段。
+   * 注意顺序：BSP_UART_Init() 会清空回调表，所以注册回调的 UartLoopbackTest_Init() 必须在它后面。 */
+  BSP_UART_Init();
+  UartLoopbackTest_Init();
   /* 遥控器 PWM 输入捕获(TIM1/TIM2)，必须在 MX_TIM1_Init()/MX_TIM2_Init() 之后 */
   Rc_Init();
 //    OSPI_W25Qxx_Init();     // ��ʼ��OSPI��W25Q64
