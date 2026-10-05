@@ -11,18 +11,19 @@
  *   → Motor_Angle_Limit → Ctrl_Post_Process → Arm_Ref_Set → Rfid_Handle → Send_Data
  *
  * 斜的那些全删了 —— 它们分别是板间 socket/拓展板 uart、图传键鼠/自定义控制器、
- * RFID、一键模式(arm_auto)、正逆运动学(arm_kinematics_calc)、pub_sub/service，
- * 本工程一个都没有。剩下的这条管线是：
+ * RFID、正逆运动学(arm_kinematics_calc)、pub_sub/service，本工程一个都没有。
+ * **一键模式搬回来了**，但只实现复位(Arm_Reset)，动作本体在 App/arm_auto.c，
+ * 本层只留分派(Auto_Mode_Update)和规划状态检查(Plan_Running_Check)。
+ * 剩下的这条管线是：
  *
- *     输入 → ctrl_src(关节控制源) → 软限位 → TD 平滑 → Gimbal.arm_control_data
- *          → (下一句) Gimbal_Update()
+ *     输入 → 一键模式 → 规划状态检查 → ctrl_src(关节控制源) → 软限位 → TD 平滑
+ *          → Gimbal.arm_control_data → (下一句) Gimbal_Update()
  *
- * **当前状态：输入侧是空的。** 遥控器的输入逻辑按用户要求先不做，所以
- * Gimbal_Cmd_Update() 每拍恒把 mode 定成 arm_stop —— 目标跟随反馈、机械臂不动，
- * 但上面这条管线每拍都在跑。将来接输入时，只需要在 Gimbal_Cmd_Update() 里改 mode
- * 的来源、在 Remote_Mode_Update() 里写摇杆→关节的映射，骨架不用动。
+ * 一键模式的**触发**目前没接：`auto_mode` 恒为 arm_auto_none，要跑复位得由上层输入
+ * 或者调试器直接写它(见下面结构体里那段注释)。
  *
- * 板级标定量(角度软限位)在 App/inc/gimbal_cmd_def.h，只给 gimbal_cmd.c include。
+ * 板级标定量(角度软限位、规划速度前馈系数)在 App/inc/gimbal_cmd_def.h，只给
+ * gimbal_cmd.c include。
  *
  * 挂载方式：
  *   gimbal = Gimbal_Create();           // freertos.c 的 StartCmdTask 里
@@ -33,9 +34,10 @@
 
 #include <stdint.h>
 
-#include "robot_def.h"   /* Arm_mode / Arm_control_data / Arm_feedback_data / JOINTn */
+#include "robot_def.h"   /* Arm_mode / Arm_auto_mode / Arm_*_data / JOINTn */
 #include "adrc.h"        /* TD_t —— 关节角跟踪微分器 */
 #include "gimbal_arm.h"  /* Gimbal —— 机械臂驱动本体 */
+#include "plan_group.h"  /* Plan_group_temp / Plan_group —— 一键模式的临时规划组 */
 
 /* 机械臂控制源类型(源工程 robot_def.h 的 Arm_ctrl_type)。
  * 笛卡尔空间控制和自定义控制器腕点控制都要 arm_kinematics_calc(逆运动学)，本工程
@@ -73,6 +75,20 @@ typedef struct Gimbal_cmd_t {
     /* 关节角跟踪微分器：Ctrl_Post_Process() 把解算出来的目标角过一遍 TD，
      * Arm_Ref_Set() 取它的 v1/v2 当位置/速度，免得阶跃目标直接砸到位置环上。 */
     TD_t joint_angle_td[ARM_JOINT_NUM];
+
+    /* ================= 一键模式(源工程 gimbal_cmd.h 的"一键相关"那一段) =================
+     * 加在结构体**末尾**，不插到中间 —— 免得挪动上面那些成员的偏移(调试器里存着旧偏移)。
+     * 动作本体在 App/arm_auto.c，本工程只实现一键复位(Arm_Reset)。 */
+    Arm_auto_mode auto_mode;      // 当前一键模式
+    Arm_auto_mode last_auto_mode; // 上一拍的模式；两者不等 = 刚进入这个模式，auto_step 清零
+    uint8_t auto_step;            // 当前步骤
+
+    /* 运动规划。规划在跑的时候 Arm_Ref_Set() 会绕过 TD，直接用规划器给的量：
+     * 位置用 ctrl_src.joint_angle_solved，速度/加速度用下面这两个数组。 */
+    Plan_group_temp temp_group;            // 临时规划组(ARM_JOINT_NUM 个)
+    float plan_joint_vel[ARM_JOINT_NUM];   // 规划得到的关节速度
+    float plan_joint_acc[ARM_JOINT_NUM];   // 规划得到的关节加速度
+    uint8_t plan_running;                  // 规划运行标志(Plan_Running_Check() 每拍更新)
 } Gimbal_cmd;
 
 /* 命令层对象，Gimbal_Cmd_Create() 之后有效；全局 gimbal 为 NULL 时它也是 NULL。 */

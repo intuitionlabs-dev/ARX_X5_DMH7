@@ -15,8 +15,8 @@
 /* 角度限位，deg */
 CONSTEXPR float JOINT_ANGLE_MIN[ARM_JOINT_NUM] = {
     -115,
-    5.72,
-    5.72,
+    0.5,
+    0.5,
     -90,
     -90,
     -112.87,
@@ -33,3 +33,13 @@ CONSTEXPR float JOINT_ANGLE_MAX[ARM_JOINT_NUM] = {
 
 CONSTEXPR float GRIPPER_ANGLE_MAX = 0;  // 夹爪闭合
 CONSTEXPR float GRIPPER_ANGLE_MIN = -284;  // 夹爪张开
+
+/* 规划速度前馈系数，一键模式跑规划时用（Arm_Ref_Set()）。*/
+CONSTEXPR float PLAN_SPEED_COMP_COEF[ARM_JOINT_NUM] = {
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+};

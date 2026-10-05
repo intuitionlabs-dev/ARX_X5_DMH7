@@ -26,6 +26,18 @@
 /* 机械臂工作模式 */
 typedef enum { arm_stop = 0, arm_run } Arm_mode;
 
+/* 机械臂一键模式（源工程 robot_def.h 里的 Arm_auto_mode）。
+ * 那边一共 12 个：reset / stretch / store / upstairs / protect / pop /
+ * fetch_down / fetch_up / first_ore / gripper_down / turn_around，本工程只做**复位**。
+ * 剩下的那些要么依赖 Plan_pkg(存矿/弹矿/取家矿)、要么依赖底盘(上台阶)、要么依赖图传
+ * (一键转身)，本工程一个都没有，所以只留名字在这儿备查。
+ * 枚举值和源工程一致（arm_auto_reset 在那边也是 1），以后按名字补回来不会串值。 */
+typedef enum {
+    arm_auto_none = 0,  // 待命
+    arm_auto_reset,     // 复位
+    ARM_AUTO_MODE_NUM,
+} Arm_auto_mode;
+
 /* 机械臂电机索引。GRIPPER 故意和 ARM_JOINT_NUM 同值：它是第 7 个电机，但不属于 6 个
  * 关节，所以以关节数结尾的循环不会碰到它，以电机数结尾的循环会。 */
 // NOLINTBEGIN

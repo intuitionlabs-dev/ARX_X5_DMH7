@@ -1,8 +1,11 @@
 #include "gimbal_cmd.h"
 #include <stdlib.h>         /* malloc */
 #include <string.h>         /* memcpy / memset */
+#include "arm_auto.h"       /* Arm_Reset() 等一键模式的动作本体 */
 #include "common.h"         /* fclip */
-#include "gimbal_cmd_def.h" /* JOINT_ANGLE_MIN/MAX(角度软限位) */
+#include "gimbal_cmd_def.h" /* JOINT_ANGLE_MIN/MAX、PLAN_SPEED_COMP_COEF */
+#include "move_plan.h"      /* move_plan_run(判规划是否在跑) */
+#include "plan_group.h"     /* Plan_Group_Temp_Create() */
 #include "rc.h"
 
 /* ===================== 相对于源工程砍掉了什么 =====================
@@ -21,17 +24,19 @@
  *   Arm_Fdb_Calc          ★ 要正运动学 Serial_Link_FKine()，arm_serial_link 没移植
  *   reset_time_calc       ★ 同上(要腕点位置)，而且只服务一键复位
  *   reset_j3_min_calc     ★ 同上(要末端/腕点位置)，只服务一键复位
- *   模式分派              ★ 图传键鼠模式 / DT7 遥控器模式。保留 switch 骨架，输入侧先空着
+ *   模式分派              ★ 图传键鼠模式 / DT7 遥控器模式。本工程换成"遥控器(rc)的
+ *                           sw_a 启停 + 摇杆点动"，只剩 arm_stop / arm_run 两支
  *   Custom_Update         ★ 自定义控制器(图传链路)
- *   一键模式(arm_auto)    ★ arm_auto.c / fetch_home.c 整块
- *   Plan_Running_Check    ★ 依赖 Plan_pkg / auto_mode，本工程 libs/move_plan 里没有
- *                           Plan_pkg 这个类型，是**编不过**而不是"不必要"
+ *   一键模式(arm_auto)    保留(**动作本体在 App/arm_auto.c**，本工程只做复位)，
+ *                           这里只留分派 Auto_Mode_Update()
+ *   Plan_Running_Check    保留(源工程两个来源，本工程只剩临时规划组 temp_group 那一个；
+ *                           另一半在遍历 obj->pkg.plan_group_list，本工程没有 Plan_pkg)
  *   Ctrl_Src_Calc         保留(只剩关节控制源那一支)
- *   Motor_Angle_Limit     保留(关节软限位 + j2j3 联动限位)
- *   Ctrl_Post_Process     保留(只剩 TD)
- *   Arm_Ref_Set           保留(只剩 TD 那一支)
+ *   Motor_Angle_Limit     保留(单关节软限位)
+ *   Ctrl_Post_Process     保留(TD，外加"规划在跑就跟着对齐")
+ *   Arm_Ref_Set           保留(现在是两支：规划在跑用规划量，否则用 TD)
  *   Rfid_Handle           ★ RFID
- *   杂项(go_on/skip/温度报警) ★ 都靠上游那些输入
+ *   杂项(go_on/skip/温度报警) ★ 都靠上游那些输入；只留 last_auto_mode 的更新
  *   Send_Data             ★ 板间 socket + 拓展板 uart + pub_sub publish；本工程没有发送
  *                           这一步，直接写 gimbal->arm_control_data 就完了
  *
@@ -56,8 +61,10 @@ Gimbal_cmd* gimbal_cmd = NULL;
 /* 私有函数(顶层) */
 // NOLINTBEGIN
 static void Stop_Mode_Update(Gimbal_cmd* obj);    // 停机模式
-static void Remote_Mode_Update(Gimbal_cmd* obj);  // 遥控器控制模式(输入逻辑未做)
+static void Remote_Mode_Update(Gimbal_cmd* obj);  // 遥控器控制模式(sw_a 启停 + 摇杆点动)
 static void Set_Ctrl_Default(Gimbal_cmd* obj);    // 部分控制默认值设置
+static void Auto_Mode_Update(Gimbal_cmd* obj);    // 一键模式分派
+static void Plan_Running_Check(Gimbal_cmd* obj);  // 规划运行状态检查
 static void Ctrl_Src_Calc(Gimbal_cmd* obj);       // 解算各数据源
 static void Motor_Angle_Limit(Gimbal_cmd* obj);   // 软限位
 static void Ctrl_Post_Process(Gimbal_cmd* obj);   // 控制量后处理
@@ -95,6 +102,11 @@ Gimbal_cmd* Gimbal_Cmd_Create(void) {
         };
         TD_Init(&obj->joint_angle_td[i], &td_config);
     }
+
+    /* 一键模式的临时规划组：ARM_JOINT_NUM 根轴各一个名额，一次 plan_temp() 就占满。
+     * 规划本体是 malloc 出来的，跑完由 500 Hz 的 Move_Plan_Update() 回收
+     * (Core/Src/freertos.c 的 HAL_Moveplan_Thread_Create())。 */
+    obj->temp_group = Plan_Group_Temp_Create((uint8_t)ARM_JOINT_NUM);
     return obj;
 }
 
@@ -127,6 +139,15 @@ void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
         break;
     }
 
+    /* 一键模式(和模式无关，无条件跑一遍分派；臂停了由 Stop_Mode_Update() 把它清 0)。
+     * 位置和源工程一致：模式分派之后、控制源解算之前 —— 一键模式写的是 ctrl_src，
+     * 后面的 Ctrl_Src_Calc/Motor_Angle_Limit 要能看见它。 */
+    Auto_Mode_Update(obj);
+
+    /* 规划运行状态检查：plan_running 决定后面 Arm_Ref_Set() 走规划那一支还是 TD 那一支，
+     * 所以必须放在 Ctrl_Post_Process()/Arm_Ref_Set() 之前。 */
+    Plan_Running_Check(obj);
+
     /* 控制源解算 */
     Ctrl_Src_Calc(obj);
 
@@ -139,6 +160,11 @@ void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
     /* 机械臂控制值设置 */
     Arm_Ref_Set(obj);
 
+    /* 收尾：一键模式的"上一拍模式"在这里更新 —— 每个动作都靠
+     * last_auto_mode != auto_mode 判"刚进入"，所以必须放在**所有**动作函数调完之后，
+     * 而且每拍都要更新(动作里自己改 auto_mode 也在这之后才被记下来)。 */
+    obj->last_auto_mode = obj->auto_mode;
+
     /* 到此为止 arm_control_data 已经写好了 —— 上面每一步都是**直接写** obj->gimbal 里
      * 那一份，没有中间副本要发。
      * 源工程这里是 Send_Data()：发板间 socket、拓展板 uart，再 publish 到
@@ -149,6 +175,11 @@ void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
 static void Stop_Mode_Update(Gimbal_cmd* obj) {
     // 停止
     obj->gimbal->arm_control_data.mode = arm_stop;
+
+    /* 一键模式直接取消(源工程同款)。副作用要知道：**停机档位下 auto_mode 每拍都被清 0**，
+     * 所以要用一键复位必须把 rc.sw_a 打在 arm_run 档，否则写进去也活不过一拍。 */
+    obj->auto_mode = arm_auto_none;
+    obj->auto_step = 0;
 
     /* 停机控制量保护：目标跟随反馈，保持命令与反馈一致，防止切回运行时跳变。
      * 顺带还有个"自播种"的效果：joint_src 一直跟着反馈走，所以将来第一次进 arm_run 时
@@ -185,13 +216,13 @@ static void Stop_Mode_Update(Gimbal_cmd* obj) {
  * 3 个比例轴 rc.rx / rc.ry / rc.lx 加一个二值开关 rc.sw_a，拨轮、四向按键、swB 都没接
  * (见 libs/rc/rc_config.h 那张接线表) —— 上游那套档位语义在这里铺不开。
  *
- * 所以按用户要求，**遥控器的输入逻辑先不做**，这个函数先空着：Gimbal_Cmd_Update() 里
- * mode 恒为 arm_stop，根本走不到这里。将来接的时候，这里要写的就是"rc 的几个轴 →
- * ctrl_src.joint_src.joint_angle[] 的增量点动"，步长可以照源工程 operating_parameter.h
- * 那组(j1 0.15 / j2 0.3 / j3 0.15 / j4 0.2 / j5 0.3 / j6 0.5 deg 每拍)。
+ * 所以这里**只做了最小的一套**：sw_a 当启停开关(见 Gimbal_Cmd_Update() 的模式分派)，
+ * 三个摇杆各管一根轴 —— 右摇杆左右 j1、右摇杆上下 j2、左摇杆左右 j3，按**边沿**点动
+ * (Etc_Get：一直按着只动一次)，每拍 30 deg。左摇杆上下、swB、拨轮、四向按键都没接线，
+ * j4~j6 目前没有手控入口。
  *
- * 留这个空函数是为了让 switch 的形状和源工程一致(arm_stop / arm_run 两支)，将来只补
- * 函数体、不用动骨架。 */
+ * 源工程那套档位语义(j1 0.15 / j2 0.3 / ... 的连续点动、拨轮键一键模式)在这里铺不开，
+ * 但骨架(mode 分派 arm_stop / arm_run 两支)是照它留的，将来补功能不用动结构。 */
 static void Remote_Mode_Update(Gimbal_cmd* obj) {
     obj->gimbal->arm_control_data.mode = arm_run;
 
@@ -208,6 +239,47 @@ static void Remote_Mode_Update(Gimbal_cmd* obj) {
     // 左摇杆左右控制 j3
     if (Etc_Get(rc.trig.lx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT3] += 30;
     if (Etc_Get(rc.trig.lx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT3] -= 30;
+}
+
+/* 一键模式分派(源工程 Gimbal_Cmd_Update() 里那个 switch (obj->auto_mode)，位置一样)。
+ * 动作本体全在 App/arm_auto.c，这里只做"哪个模式调哪个函数"。
+ *
+ * **触发没接**：这个 switch 只认 obj->auto_mode 的值，而本工程没有任何地方去写它
+ * (遥控器没有空闲按键)，所以正常跑起来恒是 arm_auto_none、什么都不做。要跑一键复位
+ * 得由上层输入或者调试器直接写 obj->auto_mode = arm_auto_reset —— 注意 arm_stop 档位下
+ * Stop_Mode_Update() 每拍都会把它清 0。 */
+static void Auto_Mode_Update(Gimbal_cmd* obj) {
+    switch (obj->auto_mode) {
+    case arm_auto_reset:
+        Arm_Reset(obj);
+        break;
+        /* 源工程这里还有 10 个：arm_auto_stretch / store / upstairs / pop /
+         * fetch_down / fetch_up / protect / first_ore / gripper_down / turn_around。
+         * 本工程没做，枚举成员在 robot_def.h 里注释着，加的时候在这里补 case。 */
+    case arm_auto_none:
+    case ARM_AUTO_MODE_NUM:
+    default:
+        break;
+    }
+}
+
+/* 规划运行状态检查：决定后面 Arm_Ref_Set() 走规划那一支还是 TD 那一支。
+ * 源工程有两个来源 —— 临时规划组 obj->temp_group，和规划包 obj->pkg.plan_group_list
+ * (存矿/弹矿/取家矿那些动作组)。本工程只有前者。 */
+static void Plan_Running_Check(Gimbal_cmd* obj) {
+    /* 当前没有一键模式 -> 认定没有规划在跑(源工程第一句就是这么写的，省得去翻规划表) */
+    if (obj->auto_mode == arm_auto_none) {
+        obj->plan_running = 0;
+        return;
+    }
+
+    /* 同步规划组，每根轴同时起同时停，看第一根即可 */
+    if (obj->temp_group != NULL && obj->temp_group[0] != NULL
+        && obj->temp_group[0]->status == move_plan_run) {
+        obj->plan_running = 1;
+    } else {
+        obj->plan_running = 0;
+    }
 }
 
 static void Set_Ctrl_Default(Gimbal_cmd* obj) {
@@ -274,17 +346,23 @@ static void Motor_Angle_Limit(Gimbal_cmd* obj) {
 
 static void Ctrl_Post_Process(Gimbal_cmd* obj) {
     /* 关节角跟踪微分器：用解算出来的目标角当输入，输出的 v1/v2 就是限了速度和加速度
-     * 之后的位置/速度，Arm_Ref_Set() 直接拿去用。
+     * 之后的位置/速度，Arm_Ref_Set() 直接拿去用(规划没在跑的时候)。
      *
-     * 源工程这里还有两件事，都删了：
-     *   - td_accel_estimate()：由 TD 微分 + 低通滤波估计加速度，写进 joint_td_accel[i].v3。
-     *     本工程的 TD_t 里根本没有 v3 这个字段，那套估计器也就没搬；
-     *   - plan_running 时的 joint_angle_td_follow() + td_accel_follow()：让 TD 直接对齐
-     *     规划器、避免速度拍零时微分跳变。规划路径依赖 arm_auto，删了。 */
+     * 源工程这里还有 td_accel_estimate()：由 TD 微分 + 低通滤波估计加速度，写进
+     * joint_td_accel[i].v3。本工程的 TD_t 里根本没有 v3 这个字段，那套估计器没搬。 */
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         // 使用控制源的关节角目标值作为微分器的输入
         obj->joint_angle_td[i].ref = obj->ctrl_src.joint_angle_solved[i];
         TDFunction_independent(&obj->joint_angle_td[i]);
+    }
+
+    /* 规划在跑的时候让 TD 直接对齐规划值（v1 = ref、v2 清零）。
+     * Arm_Ref_Set() 这时不用 TD 的输出，所以这里喂的是**给规划结束那一拍准备的**：
+     * 规划一停、plan_running 回 0，下一拍就切回用 TD 的 v1/v2 —— 如果 TD 还停在起规划
+     * 之前的旧位置，切换瞬间目标值会跳回去。先对齐就没有这个跳变。
+     * （源工程这里还跟着对齐加速度估计器 td_accel_follow()，本工程没有那个估计器。） */
+    if (obj->plan_running) {
+        joint_angle_td_follow(obj, obj->ctrl_src.joint_angle_solved);
     }
 }
 
@@ -292,15 +370,27 @@ static void Arm_Ref_Set(Gimbal_cmd* obj) {
     /* 使用后处理的目标值：关节位置、速度和加速度(源工程还有关节力矩前馈，本工程
      * 在 gimbal_arm.c 的 Set_Motor_ref() 里算)。
      *
-     * 源工程分两支——规划没在跑就用 TD 的 v1/v2/v3，规划在跑就直接用规划器给的速度和
-     * 加速度、位置用原始解算值。本工程没有规划那一路(arm_auto 没搬)，只剩 TD 这一支。
-     *
-     * 加速度：源工程用 joint_td_accel[i].v3(TD 微分 + LPF 估计)，本工程没有加速度估计器，
-     * 恒置 0 —— 反正 gimbal_arm.c 现在也没读 joint_acc。 */
-    for (int i = 0; i < ARM_JOINT_NUM; i++) {
-        obj->gimbal->arm_control_data.joint_angle[i] = obj->joint_angle_td[i].v1;
-        obj->gimbal->arm_control_data.joint_vel[i] = obj->joint_angle_td[i].v2;
-        obj->gimbal->arm_control_data.joint_acc[i] = 0;
+     * 分两支，和源工程一致：
+     *   - **规划没在跑**：用 TD 的 v1/v2。加速度源工程用 joint_td_accel[i].v3
+     *     (TD 微分 + LPF 估计)，本工程没有那个估计器，恒置 0 —— 反正 gimbal_arm.c
+     *     现在也没读 joint_acc。
+     *   - **规划在跑**(一键模式)：位置用 ctrl_src.joint_angle_solved(规划器给的**原始**
+     *     值，故意不过 TD —— 轨迹本身就是五次样条，再叠一层 TD 反而把加减速削掉)，
+     *     速度用规划器的速度乘 PLAN_SPEED_COMP_COEF(j1 那一路要压到 0.7，理由见
+     *     gimbal_cmd_def.h)，加速度直接用规划器的。 */
+    if (!obj->plan_running) {
+        for (int i = 0; i < ARM_JOINT_NUM; i++) {
+            obj->gimbal->arm_control_data.joint_angle[i] = obj->joint_angle_td[i].v1;
+            obj->gimbal->arm_control_data.joint_vel[i] = obj->joint_angle_td[i].v2;
+            obj->gimbal->arm_control_data.joint_acc[i] = 0;
+        }
+    } else {
+        for (int i = 0; i < ARM_JOINT_NUM; i++) {
+            obj->gimbal->arm_control_data.joint_angle[i] = obj->ctrl_src.joint_angle_solved[i];
+            obj->gimbal->arm_control_data.joint_vel[i] =
+                obj->plan_joint_vel[i] * PLAN_SPEED_COMP_COEF[i];
+            obj->gimbal->arm_control_data.joint_acc[i] = obj->plan_joint_acc[i];
+        }
     }
 }
 
