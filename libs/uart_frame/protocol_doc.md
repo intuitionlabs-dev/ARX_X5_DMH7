@@ -1,0 +1,424 @@
+# 串口协议说明
+
+本文是 `libs/uart_frame` 这一层的线协议说明，面向**上位机/对端**（写 PC 端、写另一个板子的人）。
+这里的每一个字节都以代码为准：帧格式在 `uart_frame.h`，码表和 payload 在 `type_id.h`，
+版本串在 `uart_frame_config.h`，校验多项式在 `libs/soft_crc/soft_crc.c`。
+
+这一层**只管切帧、校验、把 `type_id` 和 payload 交出去**，不认识任何码值的含义；
+本工程 App 侧的真实上层是 **`App/robot_state.c`（机器人总模式状态机）**，跑在 USART1 上，
+第 4 节的流程就是它实现的。板子侧的报文行文都是"已经实现"的，标了「约定」的地方才是
+两端商量出来的、板上不检查的。
+
+## 适用版本
+
+| 项 | 值 |
+| --- | --- |
+| 协议版本串 | `Intuition-ARX-X5-2023-v0.1` |
+| 版本码 | `0xF61DCF10` |
+| 版本码算法 | FNV-1a 32 |
+| 帧格式版本 | 见第 2 节（当前是第一版，格式常量无第二套） |
+
+版本串是**协议版本的身份**，也是版本码的唯一源头，定义在
+`libs/uart_frame/uart_frame_config.h` 的 `UART_FRAME_VERSION_STRING`。板上取当前值用
+`UartFrameVersionCode()`，**不要在两端硬写 `0xF61DCF10` 这个数字** —— 改串它自己就变。
+
+上位机要算同一个值（任何语言三行，不必移植我们的实现）：
+
+```
+h = 2166136261
+for b in s.encode():
+    h = ((h ^ b) * 16777619) & 0xFFFFFFFF
+```
+
+注意 `s.encode()` 是按 **UTF-8 字节**异或、算到 `'\0'` 为止（`'\0'` 本身不算）。
+当前这个串是纯 ASCII，所以按 GBK 或 UTF-8 编码结果一样。
+
+## 串口帧格式
+
+### 总布局
+
+```
+偏移   长度   字段
+0      2      帧头 0xAA 0x55
+2      1      包类型码 type_id      见第 3 节
+3      1      datalen              0..255，payload 字节数
+4      1      crc8                 覆盖偏移 0..3 这 4 个字节
+5      N      data                 payload，N = datalen
+5+N    2      crc16                覆盖偏移 0..(4+N)，低字节在前
+```
+
+整帧长度 = `7 + datalen`，**最短 7 字节，最长 262 字节**。
+常量：`UART_FRAME_OVERHEAD` = 7、`UART_FRAME_HEADER_LEN` = 5、
+`UART_FRAME_TRAILER_LEN` = 2、`UART_FRAME_MAX_DATA` = 255、`UART_FRAME_MAX_LEN` = 262。
+
+### 字节序与数制
+
+1. **小端**。帧里的所有多字节整数、浮点都按小端排。本工程跑在 Cortex-M7（本身就是小端），
+   结构体直接按内存序搬上线就是对的。
+2. **角度用 deg、角速度用 deg/s**，和 `Arm_control_data` 一个口径，**不是 rad**。
+   （`libs/gravity_compensation` 那套 URDF 是 rad，接的时候别混。）
+3. **全部 float32 单精度**，没有 double、没有定点。
+
+### 校验
+
+| | 算法 | 多项式 | 初值 | 覆盖范围 | 参考值 |
+| --- | --- | --- | --- | --- | --- |
+| crc8 | CRC-8/MAXIM（Modbus 那套） | `0x31` | `0xFF` | 偏移 0..3（含帧头，不含它自己） | `"123456789"` → `0x0B` |
+| crc16 | CRC-16/MODBUS | `0x8408`（= bit-reverse 过的 CCITT `0x1021`） | `0xFFFF` | 偏移 0..(4+N)（含 crc8 和全部 payload） | `"123456789"` → `0x6F91` |
+
+两个都是**反射（reflected）**算法，实现见 `libs/soft_crc/soft_crc.c`（查表，表是编译期 const，
+不需要初始化）。上层调 `CRC8_Modbus_calc()` / `CRC16_Modbus_calc()` 即可。
+
+**为什么两层 CRC**：`crc8` 只盖帧头，所以收完 5 个字节就能判 `datalen` 有没有被干扰，
+不用等数据收完 —— 长度字段错一个字节，整帧就会错位地吃掉后面一大段。
+
+### 收帧状态机
+
+解析器是**逐字节流式**的（`UartFrameParserFeed()`），5 个状态：
+
+```
+WAIT_SYNC0 --0xAA--> WAIT_SYNC1 --0x55--> HEADER --(够 5 字节)--> 校验 crc8
+                                                                  |
+                                       datalen == 0 ? CRC : DATA --+--> CRC --> OK
+```
+
+几个约定：
+
+- 返回值可直接 `switch`：`UART_FRAME_INCOMPLETE`(0) 继续喂 / `UART_FRAME_OK`(1) 解出一帧 /
+  `UART_FRAME_ERR_CRC8`(2) / `UART_FRAME_ERR_CRC16`(3)。两个 ERR 之后解析器**已自动复位**，
+  且**出错的那个字节会被重新喂一遍**（它可能是下一帧的帧头）。
+- `AA AA 55` 这种重复帧头：第二个 `0xAA` 当作新的首字节重新锁存，不会漏掉真帧。
+- **数据区里不搜帧头**。二进制 payload 本来就可能包含 `0xAA 0x55`，在数据区里找会把真帧切碎。
+- **丢帧发现不了**。线上出现一个假的 `0xAA 0x55`（噪声或丢字节导致错位）时，
+  后面 3 个字节会被当成本帧帧头吃掉，真帧的 `0xAA 0x55` 就一起丢了 —— 表现是丢一帧、
+  下一帧恢复。这是所有"匹配到帧头就开始消费"的协议的固有代价。要判丢帧，**得让上层在
+  payload 里自己放递增计数或时间戳**（`type_id` 不递增，同一个值会连续出现，帮不上忙）。
+
+## 串口帧类型详解
+
+`type_id` 就是帧头偏移 2 的那个字节，用一个字节取值（`typedef uint8_t UartFrameTypeId`）。
+
+**码表：**
+
+| type_id | 名称 | 方向 | payload 长 | 整帧长 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `0x00` | `NONE` | — | 0 | 7 | **保留**，表示"没有类型"（解析器复位后的初值）。编码方不要主动用 |
+| `0x01` | `VERSION` | 双向 | 4 | 11 | 版本匹配包，握手 |
+| `0x02` | `ARM_INIT` | 下发 | 0 | 7 | 初始化命令，放行"一键复位 → 一键夹爪找零" |
+| `0x03`~`0x0F` | — | — | — | — | **预留**：以后的高优先级/短包（心跳、ACK 之类） |
+| `0x10` | `MOTOR_SET_ZERO` | 下发 | 0 | 7 | 触发一轮电机设零 |
+| `0x11` | `MOTOR_SET_ZERO_ACK` | 上报 | 12 | 19 | 设零结束上报结果 |
+| `0x12` | `ARM_START` | 下发 | 0 | 7 | 切 `arm_run`（使能电机、位置控制） |
+| `0x13` | `ARM_GRAVITY` | 下发 | 0 | 7 | 切 `arm_only_gravity_comp`（只顶重力） |
+| `0x14` | `ARM_STOP` | 下发 | 0 | 7 | 切 `arm_stop`（失能电机） |
+| `0x15` | `ARM_DAMPING` | 下发 | 0 | 7 | 切 `arm_damping`（被动阻尼） |
+| `0x16` | `ARM_CTRL_POS` | 下发 | 28 | 35 | 纯位置指令（角度 + 夹爪） |
+| `0x17` | `ARM_CTRL_POS_VEL` | 下发 | 52 | 59 | 位置 + 速度前馈（角度 + 角速度 + 夹爪） |
+| `0x80` | `ARM_FEEDBACK` | 上报 | 63 | 70 | 机械臂反馈帧，握手后固定 **250 Hz** |
+
+方向：「下发」= 上位机 → 板子，「上报」= 板子 → 上位机。
+低段 `0x0x` 是"链路控制"类短包（握手、放行），中段 `0x1x` 是机械臂指令，高段 `0x8x`
+是板子往上发的（现在只有反馈帧一个）。`0x03`~`0x0F` 空着，留给以后的高优先级短包。
+
+线上的关节/电机个数是**协议定死的**，不由 App 的宏决定：
+`UART_FRAME_PKT_JOINT_NUM` = 6、`UART_FRAME_PKT_MOTOR_NUM` = 7（六个关节 + 夹爪）。
+两个数现在和 App 的 `ARM_JOINT_NUM`/`ARM_MOTOR_NUM` 正好相等。
+
+### 0x01 版本匹配包（双向）
+
+```c
+typedef struct { uint32_t code; } UartPktVersion;   /* 4 字节 */
+```
+
+`code` = `FNV-1a 32(版本串)`，算到 `'\0'` 为止。**两边相等才认为协议对得上、可以继续通信。**
+
+**双向同码同布局**：上位机发过来是"我是什么版本"，板子发出去是自报家门。不做请求/回复
+两个码 —— 那是设零包才需要的（它的回复里带了状态机结果，语义不同）。
+
+### 0x10 / 0x11 电机设置零点包
+
+`0x10`（下发）**空 payload**，整包语义就是"开始设零"，没有参数。
+
+`0x11`（上报）在一轮设零结束后上报：
+
+```c
+typedef struct {
+    uint8_t  state;                        /* 1  */
+    uint8_t  result[UART_FRAME_PKT_MOTOR_NUM]; /* 7  */
+    uint32_t elapsed_ms;                   /* 4  */
+} UartPktMotorSetZeroAck;                  /* 共 12 字节 */
+```
+
+- `state`：本轮结束时的状态机状态，取值是 `App/inc/arm_zero.h` 的 `Arm_zero_state`。
+  `DONE` / `TIMEOUT` 是终态；跑到一半来问会看到中间态。
+- `result[i]`：第 `i` 台的结果码，取值是同一个头的 `Arm_zero_result`。
+  **索引同 `Arm_Motor_Index`：0..5 = j1..j6，6 = 夹爪。**
+- `elapsed_ms`：本轮从触发到结束的毫秒数。
+
+字段特意声明成 `uint8_t` 而不是直接引 `arm_zero.h` 的枚举 —— 这个头**不 include App 的任何东西**，
+取值含义对上就行，接上层时按枚举用。
+
+没放进来的两个诊断量：`arm_zero_retry[]`（每台重发几次）、`arm_zero_wake_mask`
+（哪几台失能后要靠使能帧唤醒才读得到位置）。上位机拿这两个也没法做什么，需要时再扩包。
+
+**警告**：设零把"当前位姿"定义成零点，会**覆盖电机里的原零点**。下发这条指令前必须先让
+机械臂摆到基准位姿。
+
+### 0x02 初始化命令包（下发）
+
+```c
+typedef UartPktEmpty UartPktArmInit;   /* 0 字节，线上 datalen = 0 */
+```
+
+整包语义就是"**开始初始化**"，没有参数。板子收到后的动作是"一键复位 → 一键夹爪找零
+→ 正常运行（默认阻尼）"。
+
+**只能从「待初始化模式」发**（见第 4 节的状态机）。板子收到后先做三件事，任何一条不满足
+就**拒绝、不回包**（停在待初始化模式不动）：
+
+1. 当前必须是待初始化模式，且 7 台电机全在线；
+2. 遥控器离线（遥控器在线时它覆盖所有串口指令）；
+3. **姿态合格**：当前 6 个关节的反馈角与预设初始化位置逐个比，偏差不超过
+   `ROBOT_INIT_POSE_TOL_DEG`（板子上是 20°）。**夹爪不参与这个判据。**
+
+被拒的上位机怎么知道？看反馈帧：`robot_state` 还是"待初始化"、`mode` 没变，就是被拒了。
+协议里**没有**"拒绝"的回包，别等。
+
+**和 `0x12 ARM_START` 的区别**：`0x12` 是**运行中**把臂从别的模式切到 `arm_run`
+（正常运行模式下用）；`0x02` 是**上电流程**里那个一次性的放行闸门。两个码，语义不同。
+
+### 0x12 / 0x13 / 0x14 / 0x15 四个空包（下发）
+
+四个都是 `UartPktEmpty`（**0 字节**，线上 `datalen` = 0），作用完全在 `type_id` 上：
+
+| 码 | 包 | 语义 |
+| --- | --- | --- |
+| `0x12` | `ARM_START` | 使能电机、进常规控制 |
+| `0x13` | `ARM_GRAVITY` | 进重力补偿模式 —— `libs/gravity_compensation` 算出的静态重力力矩顶在前馈上，位置环 Kp 通常要放松 |
+| `0x14` | `ARM_STOP` | 失能电机。**不是"停在这不动"，是松劲** |
+| `0x15` | `ARM_DAMPING` | 进阻尼/保护模式 |
+
+空包的结构体是 GCC 的零长度结构体（`-std=gnu11` 下合法，`sizeof` 为 0），放进来只是为了让
+union 里的成员和码表一一对上、`payload.arm_start` 这种写法能编过。**它们没有任何字段可读**，
+收的时候只判 `p->type_id`。
+
+### 0x16 机械臂控制包（角度 + 夹爪，下发）
+
+```c
+typedef struct {
+    float joint_angle[UART_FRAME_PKT_JOINT_NUM];  /* 24 字节，deg */
+    float gripper_angle;                          /*  4 字节      */
+} UartPktArmCtrlPos;                              /* 共 28 字节   */
+```
+
+- `joint_angle[]`：单位 **deg**，和 `Arm_control_data.joint_angle` 一个口径。
+- `gripper_angle`：夹爪开合，对应 `Arm_control_data.gripper_oc_angle`。
+
+### 0x17 机械臂控制包（角度 + 角速度 + 夹爪，下发）
+
+```c
+typedef struct {
+    float joint_angle[UART_FRAME_PKT_JOINT_NUM];  /* 24 字节，deg   */
+    float joint_vel[UART_FRAME_PKT_JOINT_NUM];    /* 24 字节，deg/s */
+    float gripper_angle;                          /*  4 字节        */
+} UartPktArmCtrlPosVel;                           /* 共 52 字节     */
+```
+
+位置 + 速度前馈。`joint_vel[]` 喂 `Arm_control_data.joint_vel`（那一项经
+`JOINT_SPEEDCOMP_COEF` 变成 `controller.speed_comp`）。
+
+**两个控制包的 `gripper_angle` 目前没有作用**：命令层会把它收下并夹在
+`GRIPPER_ANGLE_MIN/MAX` 之间，但驱动侧 `gimbal_arm.c` 的 `Set_Motor_ref()` 里夹爪那一段
+还是 `// TODO:`，值到不了电机。上位机可以照发（协议不会变），但**别指望夹爪会动**。
+
+### 0x80 机械臂反馈帧（上报）
+
+```c
+typedef struct {
+    uint8_t mode;               /*  1  Arm_mode：0=stop 1=run 2=damping 3=only_gravity_comp */
+    uint8_t robot_state;        /*  1  Robot_state，见第 4 节的状态表 */
+    uint8_t motor_lost_mask;    /*  1  bit i = 第 i 台掉线，bit0=j1 … bit5=j6, bit6=夹爪 */
+    uint8_t motor_inited_mask;  /*  1  bit i = 第 i 台已完成初始化，索引同上 */
+    float   joint_angle[6];     /* 24  deg */
+    float   joint_vel[6];       /* 24  deg/s */
+    float   gripper_angle;      /*  4  deg，口径同 Gripper 反馈角 */
+    uint8_t motor_temp[7];      /*  7  ℃，索引同上 */
+} UartPktArmFeedback;           /* 共 63 字节，整帧 70 */
+```
+
+- **方向**：板子 → 上位机，**握手通过之后无论机器人处于什么总模式都以 250 Hz 固定发送**
+  （`ROBOT_FEEDBACK_PERIOD_MS` = 5 ms）。握手通过之前、以及版本码不符被锁之后**不发**。
+- 这是**唯一的周期上报**，也是上位机判断"链路还在不在 / 板子现在在干什么"的唯一手段
+  （协议里没有心跳包，见本节末尾）。
+- `mode` 报的是**电机层真实在用的那一档**，不一定是上位机最近发的那一档：
+  `Motor_Lost_Handle()` 会在有电机掉线时把 `arm_mode` 打回 `arm_stop`；遥控器在线时它也反映
+  遥控器选的档。所以 `mode` 和 `motor_lost_mask` 要**一起看** —— 「我发了 `0x12` 但 `mode`
+  还是 0」通常对着 `motor_lost_mask` 就能看出原因。
+- `robot_state` 就是主状态机的当前态（第 4 节的 7 个值），用来判断初始化/校准有没有被接受。
+- `motor_lost_mask` / `motor_inited_mask` 是**位图不是数组**：7 台电机压进 1 个字节，
+  bit0 = j1 … bit5 = j6、**bit6 = 夹爪**，bit7 恒 0。判"是不是全在线"就是 `mask == 0`。
+- 角度 deg、角速度 deg/s，和第 2 节的口径一致。
+- `motor_temp` 是整机温度回传量：达妙本来就是整型，ENCOS 是 float 且**收到第一帧反馈前是
+  NAN**，板上按 0 处理（"没读到"和"0℃"在这里不区分）。
+
+**没放进来**的东西：`arm_zero_state` / `arm_zero_result[]` 那套设零诊断量。那套走 `0x11`
+的 ACK 包（设零结束时上报一次），不占反馈帧的带宽。手爪力控、电机电流这些目前也不在。
+
+### 加新包的步骤
+
+1. 在 `type_id.h` 的码表里加一个 `#define`（别和已用的撞）；
+2. 同文件在 `#pragma pack(push, 1)` / `(pop)` **这一对里面**加一个 packed struct；
+3. 在 `uart_frame.h` 的 `UartFramePayload` union 里挂上成员 —— **这一处漏了就不会被解包**；
+4. 如果包长固定，在 `uart_frame.c` 里加一条 `_Static_assert(sizeof(...) == N)`。
+
+`payload` 从帧的**偏移 5** 开始，不是 4 的倍数，所以包里的 float 成员天生非对齐。
+所有包结构体都压到 **1 字节对齐**，编译器才会生成逐字节访问的代码（Cortex-M7 的 LDR/STR
+按对齐访问，不告诉它在非对齐地址上会出错）。`uart_frame.c` 里有一组 `_Alignof == 1` 的静态断言守着，
+所以**新结构体必须定义在 pack 区里面**，否则断言立刻红。
+
+## 通信流程
+
+### 一次收发的字节级流程
+
+**发送方**（`UartFrameEncode(out, out_size, type_id, data, data_len)`）：
+
+1. 先全部校验完再动手写 —— `out` 为 NULL、或 `data` 为 NULL 但 `data_len > 0` 返回
+   `UART_FRAME_ENC_ERR_NULL`(-1)；`out_size` 不够返回 `UART_FRAME_ENC_ERR_SIZE`(-2)。
+   **失败时 `out` 一个字节都不会被写。**
+2. 写 `AA 55`、`type_id`、`datalen`；
+3. `crc8 = CRC8_Modbus_calc(out, 4)` 写进偏移 4；
+4. 拷 `data_len` 字节 payload；
+5. `crc16 = CRC16_Modbus_calc(out, 5 + data_len)`，低字节写 `5+N`、高字节写 `5+N+1`。
+6. 返回写入字节数 `7 + data_len`（失败返回负数）。
+
+**接收方**：把收到的每个字节喂进 `UartFrameParserFeed()`，一直喂到它返回 `UART_FRAME_OK`。
+
+### 零拷贝解包
+
+`UartFrameBuf` 是一个 union，"一串字节"和"一个结构体"是**同一块内存**：
+
+```c
+union {
+    uint8_t raw[262];
+    struct { uint8_t header[5]; UartFramePayload payload; uint8_t trailer[2]; } f;
+} UartFrameBuf;
+```
+
+所以校验通过的那一刻，`raw[5..5+N-1]` 已经**原地**就是 payload 了，不用 memcpy、不用逐字段拼：
+
+```c
+if (UartFrameParserFeed(&parser, byte) == UART_FRAME_OK) {
+    if (parser.type_id == UART_FRAME_TYPE_ID_ARM_CTRL_POS) {
+        const UartPktArmCtrlPos *c = &parser.buf.f.payload.arm_ctrl_pos;
+        /* c->joint_angle[0] ... c->gripper_angle */
+    }
+}
+```
+
+三件事要知道：
+
+- **必须用 union，不能把 `raw` 强转成结构体指针**。C 标准 6.5.2.3 规定读 union 的非当前成员是
+  按对象表示重新解释，这是定义良好的；而 `*(UartPktArmCtrlPos *)buf.raw` 这种指针强转会踩
+  strict aliasing，优化开起来就可能被编歪。（C++ 里 union type punning 反而是 UB，这个头是给 C 用的。）
+- **取值的时机**：`UART_FRAME_OK` 返回后、**下一帧的字节进来之前**要把要用的值取走。
+  解析器会接着解下一帧，下一帧的帧头字节会覆盖 `raw[0..4]`，那个值就没了。
+- 原始字节也一直在 `parser.buf.raw[0 .. 6+data_len-1]`（从 `0xAA` 起），要转发整帧可以直接用它。
+
+`UartFrameParser` 约 270 字节，**放文件作用域或全局，别放栈上**。零初始化等价于
+`UartFrameParserReset()`（`INCOMPLETE` 和 `WAIT_SYNC0` 都是 0）。
+
+### 会话流程（板上已实现）
+
+上面这一整段流程由 `App/robot_state.c` 的**总模式状态机**实现，跑在 USART1（PA9/PA10）上。
+上位机必须按这个顺序走；跳步的包板子会**丢掉**（多半是静默丢弃，见每条的说明）。
+
+```
+上电 → ① 等待握手 ──0x01 版本码相等──→ ② 离线等待 ──7 台电机全部上线──→ ③ 待初始化
+          │                                   (机械臂 stop)                  │
+          └─0x01 版本码不等─→ 静默锁死，直到复位                              │
+                                                                              │
+                                         ┌──── 0x02 ARM_INIT 且 6 关节姿态合格 ─┘
+                                         ↓
+                                     ④ 初始化 ──一键复位 → 一键夹爪找零 都跑完──→ ⑤ 正常运行
+                                                                                    (默认 damping)
+                                     ③ 待初始化 ──0x10 MOTOR_SET_ZERO──→ ⑥ 校准零点
+                                                                             └─设零跑完─→ ③
+
+   握手通过之后**任意状态**：500 ms 收不到任何有效帧 → ⑦ 通信离线(damping)
+   ⑦ 通信离线：收到**任意一个**有效帧 → ② 离线等待（**不要求重新握手**）
+```
+
+| # | 总模式 | 反馈帧里的 `robot_state` | 机械臂 `mode` | 说明 |
+| --- | --- | --- | --- | --- |
+| ① | 等待握手 | 0 | `arm_stop` | **只认 `0x01`**，其他包一律不解析（也不回） |
+| ② | 离线等待 | 1 | `arm_stop` | 等 7 台电机全上线（`motor_lost_mask == 0`），自动进 ③ |
+| ③ | 待初始化 | 2 | `arm_stop` | 等 `0x02` 或 `0x10` |
+| ④ | 初始化 | 3 | **`arm_run`** | 两步一键动作，跑完自动进 ⑤ |
+| ⑤ | 正常运行 | 4 | **`arm_damping`** | 只有在这个状态才接受模式切换帧和控制帧 |
+| ⑥ | 校准零点 | 6 | `arm_stop` | 设零要求电机失能；跑完回 ③ 并回一个 `0x11` |
+| ⑦ | 通信离线 | 5 | `arm_damping` | 掉线兜底：位置环关掉，只有关节阻尼 |
+
+一次正常会话：
+
+```
+1. 握手   上位机 ──0x01 VERSION(code=自己的版本码)──→ 板子
+          板子   ──0x01 VERSION(code=UartFrameVersionCode())──→ 上位机   (①→②)
+          两边比对 code；不等就别继续发指令了 —— 见下面的警告。
+
+2. 等电机 板子自己等 7 台全部上线（②→③），上位机不用做什么，看反馈帧的
+          robot_state 从 1 变 2 即可。
+
+3. 初始化 上位机 ──0x02 ARM_INIT(空)──→ 板子                     (③→④→⑤)
+          前提：6 个关节的反馈角都在预设初始化位置 ROBOT_INIT_POSE_TOL_DEG(20°) 以内，
+          且遥控器离线。不满足 → **拒绝且不回包**，robot_state 停在 2。
+          跑完（复位 + 夹爪找零）自动进 ⑤ 正常运行，默认 damping。
+
+4. 上电    上位机 ──0x12 ARM_START(空)──→ 板子                    (⑤ 内切档)
+          之后可以随时 0x13 ARM_GRAVITY 切重力补偿、0x15 ARM_DAMPING 切阻尼、
+          0x14 ARM_STOP 松劲。**这些只在正常运行模式下有效**，别的状态下发进来会被丢掉。
+
+5. 控制   上位机 ──0x16 ARM_CTRL_POS(位置+夹爪)──→ 板子
+          或 0x17 ARM_CTRL_POS_VEL(位置+速度+夹爪)──→ 板子       (周期性下发)
+          **只在正常运行 + mode==run(1) + 遥控器离线**时接受。
+          这里是唯一有"内容"的下行包，也是最该按周期发的一个 —— 它就是链路保活的依据。
+
+6. 下电   上位机 ──0x14 ARM_STOP(空)──→ 板子              (电机松劲)
+
+旁路     上位机 ──0x10 MOTOR_SET_ZERO(空)──→ 板子
+          板子   ──0x11 MOTOR_SET_ZERO_ACK──→ 上位机    (一轮结束后上报一次)
+          只能从待初始化模式进；注意设零会覆盖电机原零点，下发前必须先摆到基准位姿。
+```
+
+**版本码不符 = 静默锁死，必须复位才能恢复。** 板子收下 `0x01` 后发现两边 code 不等，
+会置上锁标志，此后**一个字节都不回、也不解析任何包**（包括再发一次正确的 `0x01`），
+只有复位板子才解锁。这样做的代价是上位机**看不出自己被拒了**（没有任何回包、没有反馈帧），
+排查时先自己算一遍版本码。要判断板子是不是锁着，只能读它的观测量
+（`robot_locked`）—— 或者干脆先确认两端的版本串一模一样。
+
+**遥控器优先于一切串口指令。** 遥控器在线时，板子照常收帧、照常跑状态机、照常发 250 Hz
+反馈（反馈只看握没握手，和遥控器无关），但它的**输出**全被闸住：
+- 总模式对应的 `Arm_mode` **被遥控器的 `sw_a` 覆盖**，串口说什么都不算
+  —— 反馈帧里的 `mode` 会跟着遥控器走，这是个能看出来的信号；
+- 进初始化、进校准零点被**拒绝**（停在待初始化）；
+- 控制帧不写入（`mode != run` 时本来也不接）。
+
+所以遥控器一开，上位机这边所有指令都等于没发。要做串口调试**先把遥控器关掉/拿远**。
+
+### 心跳与超时
+
+**协议里没有心跳包。** 保活是**隐式**的，按整个帧流算：
+
+- 握手通过之后，**500 ms 没收到任何有效帧** → 进通信离线模式（⑦），机械臂切 `damping`；
+- 之后**收到任意一个有效帧**（哪个码都行，不用重新握手）→ 回到离线等待模式（②），
+  再按"电机全在线"自动往③走。**所以状态会被打回待初始化，初始化要重做** —— 别以为
+  断一下就接着跑。
+- 「有效帧」= CRC 过、且过了两道闸门（没被锁、已握手）的帧。`0x01` 也算。
+- 控制帧**没有单独的看门狗**：`0x16/0x17` 停发只让最新目标冻住（而且 `valid` 会在任何
+  模式/状态切换时清零），整臂停下靠的是上面那条 500 ms 总超时。用户没要求更细的策略。
+
+上位机**握完手就闲置**（不发心跳、也不发控制帧）会怎么样：500 ms 后进 ⑦，然后**一直停在 ⑦**
+（反馈帧是板子自己发的，不算"收到的帧"，救不了场）。想回来只能自己主动发一帧，
+而回来的落点是 ②，不是原来的地方 —— 要重新走一遍到 ⑤。所以**要维持 ⑤ + `run` 就得持续
+下发控制帧**（`0x16`/`0x17`，按需要的控制周期发即可，它同时兼任保活）。
+
+`0x03`~`0x0F` 那一段仍然是空着的，留给以后真要加显式心跳/ACK 的时候用。

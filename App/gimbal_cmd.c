@@ -7,6 +7,7 @@
 #include "move_plan.h"      /* move_plan_run(判规划是否在跑) */
 #include "plan_group.h"     /* Plan_Group_Temp_Create() */
 #include "rc.h"
+#include "robot_state.h"    /* 串口总模式状态机：离线时的模式来源 + 控制帧来源 */
 
 /* ===================== 相对于源工程砍掉了什么 =====================
  *
@@ -24,8 +25,10 @@
  *   Arm_Fdb_Calc          ★ 要正运动学 Serial_Link_FKine()，arm_serial_link 没移植
  *   reset_time_calc       ★ 同上(要腕点位置)，而且只服务一键复位
  *   reset_j3_min_calc     ★ 同上(要末端/腕点位置)，只服务一键复位
- *   模式分派              ★ 图传键鼠模式 / DT7 遥控器模式。本工程换成"遥控器(rc)的
- *                           sw_a 启停 + 摇杆点动"，只剩 arm_stop / arm_run 两支
+ *   模式分派              ★ 图传键鼠模式 / DT7 遥控器模式。本工程换成**遥控器优先、
+ *                           串口兜底**：遥控器在线时 sw_a 启停 + 摇杆点动(与改之前逐位
+ *                           一致)，离线时模式由串口总模式状态机(App/robot_state.c)决定。
+ *                           分支按 Arm_mode 分三支：stop / run / 被动(阻尼+仅重力)
  *   Custom_Update         ★ 自定义控制器(图传链路)
  *   一键模式(arm_auto)    保留(**动作本体在 App/arm_auto.c**，本工程只做复位)，
  *                           这里只留分派 Auto_Mode_Update()
@@ -58,10 +61,16 @@
 /* 命令层对象，Gimbal_Cmd_Create() 之后有效 */
 Gimbal_cmd* gimbal_cmd = NULL;
 
+/* 遥控器是否在线 —— 判据就一句：100 ms 内收到过遥控帧(见 libs/rc 的 is_Offline)。
+ * 抽成函数是因为它在本文件里要用两处(模式判定、run 档挑输入源)，两处必须同源；
+ * App/robot_state.c 里也用同一个判据(那边自己 include rc.h，不跨模块耦合)。 */
+static uint8_t Rc_Online(void) { return (uint8_t)(!is_Offline(rc.monitor)); }
+
 /* 私有函数(顶层) */
 // NOLINTBEGIN
 static void Stop_Mode_Update(Gimbal_cmd* obj);    // 停机模式
-static void Remote_Mode_Update(Gimbal_cmd* obj);  // 遥控器控制模式(sw_a 启停 + 摇杆点动)
+static void Passive_Mode_Update(Gimbal_cmd* obj); // 被动模式(阻尼 / 仅重力补偿)
+static void Run_Mode_Update(Gimbal_cmd* obj);     // 运行模式(遥控器点动 或 串口控制帧)
 static void Set_Ctrl_Default(Gimbal_cmd* obj);    // 部分控制默认值设置
 static void Auto_Mode_Update(Gimbal_cmd* obj);    // 一键模式分派
 static void Plan_Running_Check(Gimbal_cmd* obj);  // 规划运行状态检查
@@ -113,14 +122,19 @@ Gimbal_cmd* Gimbal_Cmd_Create(void) {
 void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
     if (obj == NULL || obj->gimbal == NULL) return;
 
-    /* ---- 模式判定 ----*/
-    obj->mode = arm_stop;
-    if (is_Offline(rc.monitor))
-        obj->mode = arm_stop;
-    else if (rc.sw_a == 1)
-        obj->mode = arm_run;
-    else
-        obj->mode = arm_stop;
+    /* ---- 模式判定 ----
+     * 两个来源，**遥控器优先**：
+     *
+     *   遥控器在线  → 完全照旧：sw_a 定 arm_run/arm_stop。这是"覆盖所有串口指令"的
+     *                 落点之一(另一个是下面 run 档挑输入源) —— 在线时遥控器眼里
+     *                 就像串口不存在。注意在线时**永远到不了被动模式**：那两档遥控器
+     *                 上没法选，和改之前的行为逐位一致。
+     *   遥控器离线  → 交给串口总模式状态机(App/robot_state.c)决定，它给什么就是什么。
+     *
+     * 总模式状态机**照常在跑**(握手/反馈/状态迁移都不受遥控器影响)，只是它的输出在
+     * 这里被盖掉。这样不需要在状态机里维护"冻结/解冻"的第二套状态。 */
+    obj->mode = Rc_Online() ? ((rc.sw_a == 1) ? arm_run : arm_stop)
+                            : Robot_State_Arm_Mode();
     /* 控制类型：源工程有 关节 / 笛卡尔 / 自定义腕点 三种(靠遥控器或图传切)，本工程
      * 只剩下关节空间这一种(见 gimbal_cmd.h 的 Arm_ctrl_type)。 */
     obj->ctrl_type = arm_ctrl_joint;
@@ -128,10 +142,16 @@ void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
     /* 控制默认值设置 */
     Set_Ctrl_Default(obj);
 
-    /* 不同模式控制 */
+    /* 不同模式控制。
+     * 三个分支按"电机怎么出力"分，不是按"机器人现在在干什么"分 —— 后者是
+     * robot_state 的事，到这里已经变成上面的 obj->mode 了。 */
     switch (obj->mode) {
     case arm_run:
-        Remote_Mode_Update(obj);
+        Run_Mode_Update(obj);
+        break;
+    case arm_damping:
+    case arm_only_gravity_comp:
+        Passive_Mode_Update(obj);
         break;
     case arm_stop:
     default:
@@ -177,7 +197,13 @@ static void Stop_Mode_Update(Gimbal_cmd* obj) {
     obj->gimbal->arm_control_data.mode = arm_stop;
 
     /* 一键模式直接取消(源工程同款)。副作用要知道：**停机档位下 auto_mode 每拍都被清 0**，
-     * 所以要用一键复位必须把 rc.sw_a 打在 arm_run 档，否则写进去也活不过一拍。 */
+     * 所以要用一键复位必须把 rc.sw_a 打在 arm_run 档，否则写进去也活不过一拍。
+     *
+     * 串口初始化流程(App/robot_state.c)不受这个影响：它在 robot_state_initing 期间
+     * 把 Arm_mode 定成 arm_run，压根不会走到 Stop_Mode_Update()。真正的风险是**初始化
+     * 途中遥控器上线** —— 那时模式被遥控器打成 arm_stop/arm_run，一旦停在 stop 档，
+     * 这行就会把正在跑的复位打断。robot_state 对这种情况的处理是"判定复位中止、
+     * 退回 wait_init"，**不能当成复位已完成**(见 robot_state.c 里 initing 的说明)。 */
     obj->auto_mode = arm_auto_none;
     obj->auto_step = 0;
 
@@ -207,51 +233,115 @@ static void Stop_Mode_Update(Gimbal_cmd* obj) {
      *   - gimbal_send_data.robot_mode / auto_mode / auto_step：底盘那一套，删了。 */
 }
 
-/* 遥控器控制模式。
+/* 被动模式：阻尼 / 仅重力补偿。
+ *
+ * 这两个模式下**电机是使能的**(见 gimbal_arm.c 的使能分支：只有 arm_stop 失能)，
+ * 但位置环被关了，力矩只由 kd(阻尼)或重力前馈(仅重力)出 —— 具体在 gimbal_arm.c 的
+ * set_pid_damping() / set_pid_zero() / Set_Motor_ref() 的被动分支里。
+ *
+ * 这一层要做的事就一件：**把目标值对齐到反馈**，别让位置环"虽然关了但目标还挂着旧值"
+ * —— 位置环关了不代表 ref_position 不重要，`ref_speed = pid_pos.output + speed_comp`
+ * 里 pid_pos.output 因为 config 全零确实是 0，但如果哪天配置改回来，或者某个驱动的
+ * 位置环不是纯 PID，一个陈旧目标就会当场变成力矩。做法和 Stop_Mode_Update() 一模一样。
+ *
+ * **和 Stop_Mode_Update 唯一的区别：这里不清 auto_mode。** 因为初始化流程
+ * (robot_state_initing)期间臂就是 arm_run，而一键动作跑完前后可能经过被动模式；
+ * 清了 auto_mode 会把正在跑的复位拦腰打断。 */
+static void Passive_Mode_Update(Gimbal_cmd* obj) {
+    obj->gimbal->arm_control_data.mode = obj->mode;
+
+    /* 目标跟随反馈 —— 和 Stop_Mode_Update() 里那段同款，理由见那里的注释
+     * (防跳变 + 自播种：切回 arm_run 时 joint_src 已经在当前位姿上)。 */
+    memcpy(obj->gimbal->arm_control_data.joint_angle,
+        obj->gimbal->arm_feedback_data.joint_angle,
+        sizeof(obj->gimbal->arm_feedback_data.joint_angle));
+    memset(obj->gimbal->arm_control_data.joint_vel, 0,
+        sizeof(obj->gimbal->arm_control_data.joint_vel));
+    memset(obj->gimbal->arm_control_data.joint_acc, 0,
+        sizeof(obj->gimbal->arm_control_data.joint_acc));
+
+    joint_src_follow(obj);
+    joint_angle_td_follow(obj, obj->gimbal->arm_feedback_data.joint_angle);
+}
+
+/* 运行模式。输入源有**两个**，按遥控器是否在线二选一：
+ *
+ *   - **遥控器在线**：完全照旧 —— 三个摇杆各管一根轴，按**边沿**点动
+ *     (Etc_Get：一直按着只动一次)，每拍 30 deg。串口控制帧在这条路上**被忽略**
+ *     (连读都不读)，这就是"遥控器覆盖所有串口指令"的落点。
+ *   - **遥控器离线**：用串口控制帧(App/robot_state.c 收的 0x16/0x17)写目标。
+ *
+ * 文件名里那个 Remote_Mode_Update 改名成 Run_Mode_Update 就是因为这个：它不再只是
+ * "遥控器模式"，而是"运行模式"这一个大类的输入选择。
  *
  * 源工程这份逻辑是围着 DT7 写的：右拨杆三档选"停 / 控底盘 / 控云台"，左拨杆三档再选
  * 具体控哪几个关节，另外还有拨轮(一键模式)、四向按键(夹爪开合 / j6 重初始化)、摇杆点动。
- *
  * 本工程的遥控器驱动是 libs/rc/(PWM 输入捕获，不是 DBUS/串口 DT7)，实测接线只有
  * 3 个比例轴 rc.rx / rc.ry / rc.lx 加一个二值开关 rc.sw_a，拨轮、四向按键、swB 都没接
- * (见 libs/rc/rc_config.h 那张接线表) —— 上游那套档位语义在这里铺不开。
+ * (见 libs/rc/rc_config.h 那张接线表)，上游那套档位语义在这里铺不开 —— 所以遥控器这一支
+ * 只留了最小的一套，j4~j6 没有手控入口。
  *
- * 所以这里**只做了最小的一套**：sw_a 当启停开关(见 Gimbal_Cmd_Update() 的模式分派)，
- * 三个摇杆各管一根轴 —— 右摇杆左右 j1、右摇杆上下 j2、左摇杆左右 j3，按**边沿**点动
- * (Etc_Get：一直按着只动一次)，每拍 30 deg。左摇杆上下、swB、拨轮、四向按键都没接线，
- * j4~j6 目前没有手控入口。
- *
- * 源工程那套档位语义(j1 0.15 / j2 0.3 / ... 的连续点动、拨轮键一键模式)在这里铺不开，
- * 但骨架(mode 分派 arm_stop / arm_run 两支)是照它留的，将来补功能不用动结构。 */
-static void Remote_Mode_Update(Gimbal_cmd* obj) {
+ * 注意分支里的 `if (rc.sw_a == 0) return;`：**只在遥控器在线时有意义**。它管的是
+ * "sw_a 在 stop 档时不要动目标值"。因为模式判定那里 sw_a == 0 会把 mode 打成 arm_stop、
+ * 根本走不到这个函数，所以这行其实是给"同一拍里模式刚变"留的保险，保留原样。 */
+static void Run_Mode_Update(Gimbal_cmd* obj) {
     obj->gimbal->arm_control_data.mode = arm_run;
 
-    if (rc.sw_a == 0) {
+    if (Rc_Online()) {
+        /* ---- 遥控器在线：和改之前逐位一致 ---- */
+        if (rc.sw_a == 0) {
+            return;
+        }
+
+        // 右摇杆左右控制 j1，
+        if (Etc_Get(rc.trig.rx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT1] += 30;
+        if (Etc_Get(rc.trig.rx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT1] -= 30;
+        // 右摇杆上下控制 j2
+        if (Etc_Get(rc.trig.ry_up)) obj->ctrl_src.joint_src.joint_angle[JOINT2] += 30;
+        if (Etc_Get(rc.trig.ry_down)) obj->ctrl_src.joint_src.joint_angle[JOINT2] -= 30;
+        // 左摇杆左右控制 j3
+        if (Etc_Get(rc.trig.lx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT3] += 30;
+        if (Etc_Get(rc.trig.lx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT3] -= 30;
         return;
     }
 
-    // 右摇杆左右控制 j1，
-    if (Etc_Get(rc.trig.rx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT1] += 30;
-    if (Etc_Get(rc.trig.rx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT1] -= 30;
-    // 右摇杆上下控制 j2
-    if (Etc_Get(rc.trig.ry_up)) obj->ctrl_src.joint_src.joint_angle[JOINT2] += 30;
-    if (Etc_Get(rc.trig.ry_down)) obj->ctrl_src.joint_src.joint_angle[JOINT2] -= 30;
-    // 左摇杆左右控制 j3
-    if (Etc_Get(rc.trig.lx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT3] += 30;
-    if (Etc_Get(rc.trig.lx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT3] -= 30;
+    /* ---- 遥控器离线：串口控制帧 ----
+     * 只认**标记为 valid 的最新一帧**。valid 由 robot_state 在每次模式/状态切换时清零，
+     * 所以"run → stop → run"不会把停机前的旧目标重新灌进来把臂拽回去。
+     *
+     * 没有帧（或帧已失效）就什么都不做 —— 此时 joint_src 保持上一拍的值。这是有意的：
+     * 上位机**周期性**下发，两帧之间本来就该保持；真正"上位机死了"由 robot_state 的
+     * 500 ms 超时判，判到就把模式切成 arm_damping，值就无所谓了。
+     *
+     * 位置走 joint_src，后面 Ctrl_Src_Calc → 软限位 → TD 照常过一遍（和遥控器点动
+     * 走的是同一条路）；速度前馈不走这里，在 Arm_Ref_Set() 里单独覆盖。 */
+    const Robot_ctrl_cmd* cmd = Robot_State_Ctrl();
+    if (cmd == NULL || !cmd->valid) return;
+
+    for (int i = 0; i < ARM_JOINT_NUM; i++) {
+        obj->ctrl_src.joint_src.joint_angle[i] = cmd->joint_angle[i];
+    }
+    obj->gimbal->arm_control_data.gripper_oc_angle = cmd->gripper_angle;
 }
 
 /* 一键模式分派(源工程 Gimbal_Cmd_Update() 里那个 switch (obj->auto_mode)，位置一样)。
  * 动作本体全在 App/arm_auto.c，这里只做"哪个模式调哪个函数"。
  *
- * **触发没接**：这个 switch 只认 obj->auto_mode 的值，而本工程没有任何地方去写它
- * (遥控器没有空闲按键)，所以正常跑起来恒是 arm_auto_none、什么都不做。要跑一键复位
- * 得由上层输入或者调试器直接写 obj->auto_mode = arm_auto_reset —— 注意 arm_stop 档位下
- * Stop_Mode_Update() 每拍都会把它清 0。 */
+ * 谁写 auto_mode：**遥控器写不了**(没有空闲按键)，现在是串口总模式状态机
+ * (App/robot_state.c 的 robot_state_initing) 在写 —— 初始化流程就靠这两步：
+ * 先 arm_auto_reset、等它跑完回 none，再 arm_auto_gripper_zero、再等回 none。
+ * 调试器也可以直接写(见 arm_auto.h 的说明)，但注意 **arm_stop 档位下
+ * Stop_Mode_Update() 每拍都会把它清 0**。 */
 static void Auto_Mode_Update(Gimbal_cmd* obj) {
     switch (obj->auto_mode) {
     case arm_auto_reset:
         Arm_Reset(obj);
+        break;
+    case arm_auto_gripper_zero:
+        /* **空壳**：现在就一句 auto_mode = arm_auto_none，不会真的对夹爪做动作。
+         * 但必须在这儿接上 —— 初始化流程等的就是"它自己回到 none"，不接的话会永远
+         * 卡在第二步。详见 App/arm_auto.c 里 Arm_Gripper_Zero() 的说明。 */
+        Arm_Gripper_Zero(obj);
         break;
         /* 源工程这里还有 10 个：arm_auto_stretch / store / upstairs / pop /
          * fetch_down / fetch_up / protect / first_ore / gripper_down / turn_around。
@@ -310,8 +400,12 @@ static void Ctrl_Src_Calc(Gimbal_cmd* obj) {  // 无论模式都解算各数据�
     /* 控制源跟随：源工程那三行 if 的意思是"当前没在用的控制源跟着反馈走，防止切过去时
      * 跳变"。本工程只剩 arm_ctrl_joint 一个源，另外两个源已经删了，所以这里没有内容。 */
 
-    /* 停机保护 */
-    if (obj->mode == arm_stop) {
+    /* 停机保护。判据是 `!= arm_run` 而不是 `== arm_stop`：**两个被动模式也要走这里**。
+     * 被动模式下位置环是关的（gimbal_arm.c 的 set_pid_damping/set_pid_zero），目标值
+     * 不会被位置环拿来算力矩，但把它对齐到反馈仍然是对的 —— 万一上位机在阻尼模式里
+     * 发了几帧控制包，那些值会留在 joint_src 里，一切成 arm_run 就会被当成"目标"猛地
+     * 执行。这里每拍覆盖成反馈就没有这个隐患。 */
+    if (obj->mode != arm_run) {
         for (int i = 0; i < ARM_JOINT_NUM; i++) {
             obj->ctrl_src.joint_angle_solved[i] =
                 obj->gimbal->arm_feedback_data.joint_angle[i];
@@ -379,9 +473,20 @@ static void Arm_Ref_Set(Gimbal_cmd* obj) {
      *     速度用规划器的速度乘 PLAN_SPEED_COMP_COEF(j1 那一路要压到 0.7，理由见
      *     gimbal_cmd_def.h)，加速度直接用规划器的。 */
     if (!obj->plan_running) {
+        /* 串口控制帧的速度前馈：只在 arm_run + 遥控器离线 + 收到的是 0x17 时覆盖。
+         * 位置不动 —— 上面已经经过软限位和 TD 了，不能在这里绕过它们。
+         *
+         * 为什么要覆盖：TD 的 v2 是"位置目标的微分"，它只知道位置在往哪走，不知道
+         * 上位机打算走多快。0x17 带的速度是上位机自己的规划速度，直接当前馈用可以让
+         * 速度环提前出力，跟得上；用 TD 的 v2 会有明显滞后（尤其起停那一下）。 */
+        const Robot_ctrl_cmd* cmd = Robot_State_Ctrl();
+        const uint8_t use_ff =
+            (obj->mode == arm_run && !Rc_Online() && cmd != NULL && cmd->valid && cmd->has_vel);
+
         for (int i = 0; i < ARM_JOINT_NUM; i++) {
             obj->gimbal->arm_control_data.joint_angle[i] = obj->joint_angle_td[i].v1;
-            obj->gimbal->arm_control_data.joint_vel[i] = obj->joint_angle_td[i].v2;
+            obj->gimbal->arm_control_data.joint_vel[i] =
+                use_ff ? cmd->joint_vel[i] : obj->joint_angle_td[i].v2;
             obj->gimbal->arm_control_data.joint_acc[i] = 0;
         }
     } else {

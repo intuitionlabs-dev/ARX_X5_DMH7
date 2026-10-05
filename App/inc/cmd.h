@@ -4,8 +4,12 @@
  *
  *   Cmd_Loop()
  *     ├─ Rc_Loop()            遥控器驱动(libs/rc)的服务：换算/判丢信号/喂狗
+ *     ├─ Robot_State_Loop()   串口总模式状态机(App/robot_state.c)：收帧/迁移/250 Hz 反馈
  *     ├─ Gimbal_Cmd_Update()  命令层(App/gimbal_cmd.c)：输入 → Arm_control_data
  *     └─ Gimbal_Update()      机械臂驱动(App/gimbal_arm.c)：按 Arm_control_data 跑电机
+ *
+ * Robot_State_Loop() 排在命令层前面：命令层的模式判定要从它拿 Robot_State_Arm_Mode()
+ * (遥控器离线时的模式来源)，同一拍里先算好再用。
  *
  * 这里原来挂着 cmd_motor(单个达妙电机，参数写在 App/cmd.c 的 cmd_motor_config 里)和
  * Cmd_Init()，机械臂云台接进来之后那段逻辑删掉了 —— 电机对象现在由 gimbal_arm.c 的

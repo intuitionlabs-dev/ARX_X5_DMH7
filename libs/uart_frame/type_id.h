@@ -44,9 +44,11 @@ typedef uint8_t UartFrameTypeId;
 #define UART_FRAME_PKT_MOTOR_NUM 7U /* 六个关节 + 夹爪 */
 
 /* ==================== 码表 ==================== */
-/* 0x01 单独放低段：握手必须最先发生，而且它最短。0x02..0x0F 预留给以后的高优先级/
- * 短包（心跳、ACK 之类）。 */
+/* 低段（0x0x）放"链路控制"类短包，必须最先发生的握手和初始化命令都在这里；
+ * 0x03..0x0F 还空着，留给以后的高优先级短包（心跳、NACK 之类）。
+ * 中段（0x1x）放"机械臂指令"；高段（0x8x）是板子往上发的。 */
 #define UART_FRAME_TYPE_ID_VERSION 0x01U /* 版本匹配包 · 双向 */
+#define UART_FRAME_TYPE_ID_ARM_INIT 0x02U /* 初始化命令包 · 下发 */
 #define UART_FRAME_TYPE_ID_MOTOR_SET_ZERO 0x10U     /* 电机设置零点包 · 下发 */
 #define UART_FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK 0x11U /* 电机设置零点回复包 · 上报 */
 #define UART_FRAME_TYPE_ID_ARM_START 0x12U          /* 机械臂启动包 · 下发 */
@@ -55,6 +57,7 @@ typedef uint8_t UartFrameTypeId;
 #define UART_FRAME_TYPE_ID_ARM_DAMPING 0x15U        /* 机械臂阻尼包 · 下发 */
 #define UART_FRAME_TYPE_ID_ARM_CTRL_POS 0x16U       /* 机械臂控制包(角度+夹爪) · 下发 */
 #define UART_FRAME_TYPE_ID_ARM_CTRL_POS_VEL 0x17U   /* 机械臂控制包(角度+角速度+夹爪) · 下发 */
+#define UART_FRAME_TYPE_ID_ARM_FEEDBACK 0x80U       /* 机械臂反馈帧 · 上报 */
 
 /* ==================== 各包的 payload ====================
  *
@@ -100,6 +103,16 @@ typedef struct {
  * 写法能编过。**它们没有任何字段可读**，用的时候只判 p->type_id。 */
 typedef struct {
 } UartPktEmpty;
+
+/* 「初始化命令包」：让机械臂进入初始化流程（一键复位 → 一键夹爪找零 → 正常运行）。
+ *
+ * 空 payload —— 整包语义就是"开始初始化"。**只能从「待初始化模式」发**：板子收到后先比
+ * 当前 6 个关节的反馈角和预设初始化位置，偏差过大就拒绝（保持待初始化，不回包），
+ * 合格才进初始化模式并把臂切到 run。
+ *
+ * 和「机械臂启动包」(0x12) 的区别：0x12 是**运行中**把臂从别的模式切到 run（正常运行
+ * 模式下用），0x02 是**上电流程**里那个一次性的放行闸门。两者语义不同，所以是两个码。 */
+typedef UartPktEmpty UartPktArmInit;
 
 /* 「电机设置零点包」：触发一轮设零，参与集固定是全部 7 台（由 libs 那边的
  * arm_zero_encos_enable 决定 j1~j3 是真参与还是占位跳过）。整包的语义就是
@@ -157,5 +170,42 @@ typedef struct {
   float joint_vel[UART_FRAME_PKT_JOINT_NUM];
   float gripper_angle;
 } UartPktArmCtrlPosVel;
+
+/* 「机械臂反馈帧」：板子 -> 上位机，**握手通过后固定 250 Hz 持续上报**，不管当前
+ * 处在哪个总模式。上位机拿它当"我看到的状态到底是不是我想要的状态"的唯一依据 ——
+ * 所以下发指令的**回执不是单独的回包，而是下一帧反馈**：比如发了阻尼包，看
+ * mode 变成 arm_damping 就算生效了。这样协议里不需要为每个模式包再做一套 ACK。
+ *
+ *   mode              Arm_mode 的当前值：stop / run / damping / only_gravity_comp。
+ *                     注意这是**电机怎么出力**，不是总模式。
+ *   robot_state       Robot_state 的当前值（等待握手/离线等待/待初始化/初始化/
+ *                     正常运行/通信离线/校准零点）。**和 mode 一起看才完整**：
+ *                     比如 normal + damping 才是"正常运行、但默认阻尼"这个状态。
+ *   motor_lost_mask   bit i = is_motor_lost[i]，bit0 = j1 … bit5 = j6、bit6 = 夹爪。
+ *                     1 表示这台离线/没反馈。上位机判断"能不能下发初始化"就看这个
+ *                     是不是 0（要和 robot_state 一起用：wait_init 本身就是等它变 0）。
+ *   motor_inited_mask bit i = motor_inited[i]，索引同上。1 = 这台已经在跑（上过电、
+ *                     被使能过至少一次）。掉线后再上线会清掉（见 App 的看门狗逻辑）。
+ *   joint_angle[6]    六个关节的实际角，deg。
+ *   joint_vel[6]      六个关节的实际角速度，deg/s（上位机做速度前馈规划时用得上：
+ *                     发 0x17 之前先拿这个对齐一下起点速度，不然从 0 起规划会顿一下）。
+ *   gripper_angle     夹爪的实际开合角，deg，口径同 Arm_control_data.gripper_oc_angle。
+ *   motor_temp[7]     七台电机的温度，℃，索引 0..5 = j1..j6、6 = 夹爪。
+ *
+ * 4 + 24 + 24 + 4 + 7 = 63 字节，整帧 70。**故意没放** arm_zero_* 那类诊断量：那些
+ * 是"设零那一轮"才关心的，走 0x11 ACK 就够，塞进 250 Hz 的常流里纯属浪费带宽。
+ *
+ * 全部按 1 字节对齐（上面那对 pack 管着），所以 uint8_t 段和 float 段之间**不会**
+ * 被编译器插填充 —— 上位机按顺序读 63 个字节就行，别自作主张按 4 对齐去解析。 */
+typedef struct {
+  uint8_t mode;
+  uint8_t robot_state;
+  uint8_t motor_lost_mask;
+  uint8_t motor_inited_mask;
+  float joint_angle[UART_FRAME_PKT_JOINT_NUM];
+  float joint_vel[UART_FRAME_PKT_JOINT_NUM];
+  float gripper_angle;
+  uint8_t motor_temp[UART_FRAME_PKT_MOTOR_NUM];
+} UartPktArmFeedback;
 
 #pragma pack(pop)

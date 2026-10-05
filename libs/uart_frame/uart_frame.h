@@ -100,6 +100,7 @@ typedef union {
   uint8_t raw[UART_FRAME_MAX_DATA]; /* 当普通字节用 */
   UartPktEmpty empty;               /* 对照用，同下 */
   UartPktVersion version;
+  UartPktArmInit arm_init;
   UartPktMotorSetZero motor_set_zero;
   UartPktMotorSetZeroAck motor_set_zero_ack;
   UartPktArmStart arm_start;
@@ -108,6 +109,7 @@ typedef union {
   UartPktArmDamping arm_damping;
   UartPktArmCtrlPos arm_ctrl_pos;
   UartPktArmCtrlPosVel arm_ctrl_pos_vel;
+  UartPktArmFeedback arm_feedback;
 } UartFramePayload;
 
 /* 整帧视图：头和尾留在结构体里，payload 夹在中间。

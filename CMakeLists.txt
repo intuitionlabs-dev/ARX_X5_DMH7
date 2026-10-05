@@ -50,6 +50,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/cmd.c
     App/gimbal_arm.c
     App/gimbal_cmd.c
+    App/robot_state.c
     App/test/can_loopback_test.c
     App/test/uart_echo_test.c
     App/test/uart_loopback_test.c
@@ -112,13 +113,13 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     libs/move_plan/move_plan/plan_group.c
     libs/rc/rc.c
     # 串口帧协议 + 它依赖的 Modbus CRC8/CRC16。两个库都是新加的：soft_crc 只被
-    # uart_frame.c 用(查表是编译期 const，不需要初始化)，uart_frame 目前还没有调用方，
-    # 所以 --gc-sections 会把它们整个删掉 —— 属正常，上层接上自动回来。
+    # 串口协议层(切帧/CRC/码表) + 它依赖的查表 CRC。
+    # 两层的真实调用方是 App/robot_state.c(总模式状态机)；测试关掉时它也在跑，
+    # 所以 --gc-sections 现在**不会**再摘掉它们(以前会，那时只有回环测试在用)。
     libs/soft_crc/soft_crc.c
     libs/uart_frame/uart_frame.c
     # 串口的传输层(DMA 收发 + .RAM_D1 缓冲都封在它里面，上层不用管内存段)。
-    # 目前唯一的调用方是回环测试；测试关掉(TEST_UART_LOOPBACK_ENABLE=0)时它同样没有
-    # 调用方、会被 --gc-sections 摘掉 —— 属正常，有真实业务接上就回来了。
+    # 调用方：App/robot_state.c(USART1) + 回环测试(USART2/3，测试关掉时没有)。
     libs/uart/bsp_uart.c
 
     # NOTE: Core/Src/freertos.c and the FreeRTOS kernel (cmsis_os2, port, heap_4)

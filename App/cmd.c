@@ -2,8 +2,9 @@
 
 #include "rc.h" /* Rc_Loop()：遥控器驱动的服务，Cmd_Loop() 里带跑一遍 */
 
-#include "gimbal_arm.h" /* gimbal / Gimbal_Update() */
-#include "gimbal_cmd.h" /* gimbal_cmd / Gimbal_Cmd_Update() */
+#include "gimbal_arm.h"    /* gimbal / Gimbal_Update() */
+#include "gimbal_cmd.h"    /* gimbal_cmd / Gimbal_Cmd_Update() */
+#include "robot_state.h"   /* Robot_State_Loop()：串口总模式状态机 */
 
 void Cmd_Loop(void) {
     /* 遥控器输入先在这里服务：换算成 µs/频率、判丢信号、推逻辑层、喂看门狗。
@@ -12,6 +13,13 @@ void Cmd_Loop(void) {
      * 注意现在只是"服务"它 —— 值还没人用：遥控器→关节角的映射(输入逻辑)按用户要求
      * 先不做，见 App/gimbal_cmd.c 的 Remote_Mode_Update()。 */
     Rc_Loop();
+
+    /* 串口总模式状态机(App/robot_state.c)：收上位机的帧、跑状态迁移、发 250 Hz 反馈。
+     * 放在 gimbal == NULL 判断**之前** —— 和 Rc_Loop() 一个道理：它是"输入服务"，
+     * 而后面 Gimbal_Cmd_Update() 每拍都要读它给的模式(Robot_State_Arm_Mode())，
+     * 遥控器在线时读它给的 rc_online 判据。gimbal 没建起来(内存不够)时它也照跑：
+     * 握手、状态机、反馈帧都不依赖电机，方便单独排查串口链路。 */
+    Robot_State_Loop();
 
     /* gimbal / gimbal_cmd 都在 StartCmdTask 进循环前建好；建失败(内存不够)时是 NULL */
     if (gimbal == NULL) return;

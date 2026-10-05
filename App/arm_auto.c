@@ -21,7 +21,16 @@
  * 一字不改地留着 —— 以后要加动作就照 Arm_Reset 这副骨架抄。
  */
 
-CONSTEXPR float RESET_ANGLE[ARM_JOINT_NUM] = {
+/* 复位姿态（也是"预设初始化位置"）。
+ *
+ * **原来这里是 CONSTEXPR(=static const)**，现在去掉了 static：总模式状态机
+ * (App/robot_state.c) 拿它当"初始化前该在哪儿"的基准，收到初始化命令帧时要拿当前反馈角
+ * 和它逐个比，偏差太大就拒绝。声明在 arm_auto.h 的 extern，与 C 相比 `const` 全局在
+ * .rodata(Flash)里，只读、线程安全。
+ *
+ * 值是用户定的口径：j2/j3 压到各自的**软限位下限**（最收拢的姿态），其余回 0。
+ * 比源工程那套"j2 打满 206°"温和得多。 */
+const float ARM_RESET_ANGLE[ARM_JOINT_NUM] = {
     0, JOINT_ANGLE_MIN[JOINT2], JOINT_ANGLE_MIN[JOINT3], 0, 0, 0};
 
 /* 起一段临时规划：从**当前反馈关节角**走到 end，用五次样条，时长 t 秒。
@@ -80,7 +89,7 @@ void Arm_Reset(Gimbal_cmd* obj) {
 
     switch (obj->auto_step) {
     case 0:  // 起一段从当前位姿到复位姿态的规划
-        plan_temp(obj, RESET_ANGLE, ARM_AUTO_RESET_TIME_S);
+        plan_temp(obj, ARM_RESET_ANGLE, ARM_AUTO_RESET_TIME_S);
         obj->auto_step++;
         break;
     case 1:  // 每拍把规划器的当前点喂进控制源，等这段规划跑完
@@ -95,4 +104,26 @@ void Arm_Reset(Gimbal_cmd* obj) {
         obj->auto_step = 0;
         break;
     }
+}
+
+/* 一键夹爪找零 —— **目前是空壳**，用户明确要求"先空着，稍后实现"。
+ *
+ * 现在只做一件事：立刻让 auto_mode 回到 arm_auto_none，让总模式状态机
+ * (App/robot_state.c 的 robot_state_initing) 以为这一步已经完成、接着往下走。
+ * **不这么做的话初始化流程会永远卡在第二步** —— 状态机等的就是 auto_mode 回 none。
+ *
+ * ⚠ 也就是说：**夹爪现在不会真的被找零**，初始化跑完夹爪还在上电时的位置。
+ * 这是已知的、有意的空缺，别把它当成"已实现"。
+ *
+ * 真正的实现要做什么（将来补的时候照 Arm_Reset 的骨架抄）：
+ *   1. 给夹爪一个位置指令通道 —— Set_Motor_ref() 里"设置夹爪电机目标位置"还是 TODO，
+ *      现在 arm_control_data.gripper_oc_angle 根本没接到电机上，夹爪只有 kp/kd 在出力；
+ *   2. 让夹爪慢慢闭到机械限位（或电流/位置不再变化），把那一刻的 motor 位置设成零点；
+ *   3. 最后仍然要 auto_mode = arm_auto_none 退出。
+ *
+ * 参数 obj 现在用不上，但接口先按"每个动作都是 void(Gimbal_cmd*)"的框架留着，
+ * 补实现时不用改调用方。 */
+void Arm_Gripper_Zero(Gimbal_cmd* obj) {
+    obj->auto_mode = arm_auto_none;
+    obj->auto_step = 0;
 }

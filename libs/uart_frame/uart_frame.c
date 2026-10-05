@@ -23,6 +23,9 @@ _Static_assert(offsetof(UartFrameBuf, f.trailer) == UART_FRAME_MAX_LEN - UART_FR
 _Static_assert(sizeof(UartPktMotorSetZeroAck) == 12U, "电机设置零点回复包不是 12 字节");
 _Static_assert(sizeof(UartPktArmCtrlPos) == 28U, "控制包(角度+夹爪)不是 28 字节");
 _Static_assert(sizeof(UartPktArmCtrlPosVel) == 52U, "控制包(角度+角速度+夹爪)不是 52 字节");
+/* 反馈帧是 250 Hz 常流里最长的一包，63 是**协议承诺给上位机**的数（两端按这个预留
+ * 缓冲），改结构体就得同步改协议文档，不能让它在编译期悄悄漂移。 */
+_Static_assert(sizeof(UartPktArmFeedback) == 63U, "机械臂反馈帧不是 63 字节");
 /* 空包必须是 0 字节：线上 datalen 就靠它。sizeof 万一变成 1，空包会多带一个字节。 */
 _Static_assert(sizeof(UartPktEmpty) == 0U, "空包结构体不是 0 字节");
 
@@ -50,6 +53,9 @@ _Static_assert(_Alignof(UartPktVersion) == 1U, "版本匹配包不是 1 字节�
 _Static_assert(_Alignof(UartPktMotorSetZeroAck) == 1U, "设零回复包不是 1 字节对齐");
 _Static_assert(_Alignof(UartPktArmCtrlPos) == 1U, "控制包(角度+夹爪)不是 1 字节对齐");
 _Static_assert(_Alignof(UartPktArmCtrlPosVel) == 1U, "控制包(角度+角速度+夹爪)不是 1 字节对齐");
+/* 反馈帧里有 4 个 uint8_t 开头，4 字节之后紧跟 float[6] —— 要是没压成 1 对齐，
+ * 编译器会在那 4 个字节后面插 0 字节填充看着没事，但整个包会变成 64 字节。 */
+_Static_assert(_Alignof(UartPktArmFeedback) == 1U, "机械臂反馈帧不是 1 字节对齐");
 _Static_assert(_Alignof(UartFramePayload) == 1U, "payload union 不是 1 字节对齐");
 _Static_assert(_Alignof(UartFrameBuf) == 1U, "帧 union 不是 1 字节对齐");
 

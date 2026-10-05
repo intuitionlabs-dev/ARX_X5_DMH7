@@ -15,8 +15,10 @@
 #include "pub_sub.h"                          指令来源，现由命令层直接写 arm_control_data
 */
 
-// 使pid不输出，只使用前馈，便于调试
-// #define JOINT_ONLY_COMP
+/* 原来的 JOINT_ONLY_COMP 开关**已删除**：它只有"位置环 PID 全关、只留前馈"这一种
+ * 用法，编译期二选一。现在这个选择变成了**运行期的 arm_only_gravity_comp 模式**
+ * （见 Gimbal_Update() 里的 set_pid_* 分派），调试时直接切模式就行，不用重编。
+ * 别把它加回来 —— 加回来会和 arm_damping 打架（那个也要关位置环，但 kd 留着）。 */
 // 打印关节角
 // #define PRINT_ANGLE   /* 本工程 printf 是坏的(__io_putchar 没定义)，别开 */
 
@@ -54,6 +56,7 @@ static void Set_Motor_ref(Gimbal* obj);  // 电机控制
 static void pid_init(Gimbal* obj);                            // 初始化pid参数
 static void set_pid_normal(Gimbal* obj);                      // 给pid赋值
 static void set_pid_zero(Gimbal* obj);                        // 给pid置0
+static void set_pid_damping(Gimbal* obj);                     // 阻尼：位置环关、只留 kd
 static uint8_t encos_joint_init(Gimbal* obj, uint8_t joint);  // j1~j3 建完之后的公共收尾+判空
 static float lowpass_filter(float current_speed, float a, uint8_t index);  // 低通滤波器
 // 低通滤波后堵转检测
@@ -353,9 +356,9 @@ Gimbal* Gimbal_Create(void) {
     /* 杂项 */
     PID_SetConfig_Pos(&zero_config, 0, 0, 0, 0, 0);
 
-#ifdef JOINT_ONLY_COMP
-    set_pid_zero(obj);
-#endif
+    /* 建完之后**不在这里挑 PID 配置**：每拍 Gimbal_Update() 都会按当前 arm_mode
+     * 重设一遍（set_pid_normal / set_pid_damping / set_pid_zero），这里设了立刻被盖掉。
+     * 原来这里有个 #ifdef JOINT_ONLY_COMP 的一次性 set_pid_zero()，随那个开关一起删了。 */
     return obj;
 }
 
@@ -386,15 +389,37 @@ void Gimbal_Update(Gimbal* obj) {
     Get_Motor_Fdb(obj);
 
     /* 重力前馈：填 obj->tau_comp[]。必须在 Get_Motor_Fdb() 之后(用反馈角)。
-     * 只在 arm_run 里才有下文 —— Set_Motor_ref() 在 arm_stop 分支会把 output_comp
-     * 归零，所以这里算出来也不会让电机出力。 */
+     *
+     * 无条件算，但**只有两个模式会让它真的出力**（Set_Motor_ref() 里）：
+     *   arm_run                → 和粘性项一起进 output_comp
+     *   arm_only_gravity_comp  → 单独进 output_comp
+     * arm_stop / arm_damping 的 output_comp 被清 0，算了也不用。
+     * 反正 6 个关节一次矩阵乘法，比按模式条件调用省心，也不差这点时间。 */
     Joint_Gravity_Comp_Calc(obj);
 
-#ifdef JOINT_ONLY_COMP
-    set_pid_zero(obj);
-#else
-    set_pid_normal(obj);
-#endif
+    /* 按模式挑 PID 配置 / kp / kd。**每拍都重设**，所以模式一换下一拍就生效，
+     * 不需要在切换处做任何额外动作。
+     *
+     * 四种模式在这里分成三档：
+     *   arm_run                          位置环正常，kp/kd 正常；
+     *   arm_damping                      位置环全关，kp=0，kd=JOINT_DAMPING_MODE_KD；
+     *   arm_only_gravity_comp            位置环全关，kp=kd=0；
+     *   arm_stop / 其它                   走 normal —— 失能态下这些值用不上（电机不发
+     *                                    力矩），但让它和 run 一致最省心：万一哪天从
+     *                                    stop 直接使能，配置不会是"上一个模式的残留"。 */
+    switch (obj->arm_mode) {
+        case arm_damping:
+            set_pid_damping(obj);
+            break;
+        case arm_only_gravity_comp:
+            set_pid_zero(obj);
+            break;
+        case arm_run:
+        case arm_stop:
+        default:
+            set_pid_normal(obj);
+            break;
+    }
 
     /* 电机状态。
      * j1~j3 是 ENCOS：**只改 enable 标志位，不调 ENCOSmotor_Disable()**。
@@ -508,6 +533,44 @@ static void Set_Motor_ref(Gimbal* obj) {
         return;
     }
 
+    /* 被动模式（arm_damping / arm_only_gravity_comp）：位置环已经关了，这里只需要
+     * 保证三件事不**额外**出力。
+     *
+     * 和 arm_stop 分支的区别：arm_stop 里电机是失能的，这些量怎么写都无所谓；这两个
+     * 模式电机**使能**，所以写的每个值都会真的变成力矩。
+     *
+     * ⚠ arm_damping 的 output_comp 必须是 0，**不能叠重力**。本工程
+     * libs/gravity_compensation 的零点/符号还没在真机上对过（见 memory
+     * gravity-comp-integrated），而阻尼模式是通信掉线时的兜底状态：这时候如果顶上一个
+     * 方向可能反的重力补偿，臂会自己弹起来或者往下砸，比"带阻尼缓慢下沉"危险得多。
+     * 要试重力补偿请用 arm_only_gravity_comp —— 那个模式的存在意义就在这儿。
+     *
+     * 夹爪在这两个模式里也一并置 0、位置跟随反馈（含在下面的 ARM_MOTOR_NUM 循环里），
+     * 理由同 set_pid_damping()：被动模式要整臂一致。 */
+    if (obj->arm_mode == arm_damping || obj->arm_mode == arm_only_gravity_comp) {
+        const uint8_t gravity_on = (obj->arm_mode == arm_only_gravity_comp);
+        for (int i = 0; i < ARM_MOTOR_NUM; i++) {
+            // 电机位置跟随，防止跳变
+            motor_controller_list[i]->ref_position = motor_controller_list[i]->fdb_position;
+            // 电机速度前馈置零
+            motor_controller_list[i]->speed_comp = 0;
+            // 电机输出补偿：先全清，要重力的话下面单独给 6 个关节补
+            motor_controller_list[i]->output_comp = 0;
+        }
+        for (int i = 0; i < ARM_JOINT_NUM; i++) {
+            // 关节粘性摩擦前馈置零（被动模式不用它：它是给位控"削峰"用的，
+            // 没有位置环就没有要削的峰，留着只是白白发热）
+            obj->damp_comp[i] = 0;
+            if (gravity_on) {
+                /* 量纲照抄下面 run 那支的 525-527 行，只是去掉了 damp_comp 那一项。
+                 * tau_comp[] 只有 6 个关节，夹爪那格保持上面清出来的 0。 */
+                motor_controller_list[i]->output_comp = MOTOR_DIR[i] * obj->tau_comp[i]
+                    * JOINT_TORQUE_TRANS[i] * JOINT_TORQUE_TRANS_COEF[i];
+            }
+        }
+        return;
+    }
+
     /* 设置关节电机目标位置、速度和力矩前馈 */
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         // 位置
@@ -540,13 +603,30 @@ static uint8_t Motor_Temp_U8(float t) {
 }
 
 static void Get_Motor_Fdb(Gimbal* obj) {
-    // TODO: 添加关节速度反馈，并考虑对反馈进行滤波
-    /* 关节角 */
+    // TODO: 考虑对反馈进行滤波
+    /* 关节角 + 关节角速度。
+     * fdb_speed 的单位已经是 deg/s：达妙那边 DM_Speed_Fdb_Calc() 乘了 RAD2DEG，
+     * ENCOS 那边 ENCOSmotor_Calc_Send() 乘了 180/pi，两个驱动都归一化了，所以这里
+     * 只用做 电机->关节 的减速比/方向换算，**不要再乘 RAD2DEG**。
+     * 减速比和方向目前都是 1/{1,1,1}，speed_to_vel 出来就等于原值；写全是为了以后
+     * 真加了减速比不用回来改这里。 */
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         obj->arm_feedback_data.joint_angle[i] =
             pos_to_angle(motor_controller_list[i]->fdb_position, obj->motor_pos_init[i],
                 MOTOR_DIR[i], MOTOR_REDUCTION[i]);
+        obj->arm_feedback_data.joint_vel[i] = speed_to_vel(
+            motor_controller_list[i]->fdb_speed, MOTOR_DIR[i], MOTOR_REDUCTION[i]);
     }
+
+    /* 夹爪实际角：直接用电机反馈角（已经是 deg，见 DM_motor.c 里 fdb_position 乘的
+     * RAD2DEG），**不做 pos_to_angle 换算** —— MOTOR_DIR/MOTOR_REDUCTION 那两张表
+     * 只有 6 个关节，夹爪不在里面（它没有减速比、也没有 JOINT_ANGLE_INIT 那种零点
+     * 标定），硬套关节的公式只能拿别的关节的值凑，反而错。
+     *
+     * 现在这两个表全 1，所以数值上等同；等真给关节加了减速比，这一行**不应该**跟着变。
+     * 注：Set_Motor_ref() 里"设置夹爪电机目标位置"还是 TODO，也就是夹爪目前没有位置
+     * 指令通道，这个反馈是纯观测量。 */
+    obj->arm_feedback_data.gripper_angle = motor_controller_list[GRIPPER]->fdb_position;
 
     /* 电机温度 */
     obj->arm_feedback_data.motor_temp[JOINT1] = Motor_Temp_U8(obj->joint1->t_rotor);
@@ -762,6 +842,57 @@ MAYBE_UNUSED static void set_pid_normal(Gimbal* obj) {
     // obj->joint6->kd *= j6_coeff_w;
 }
 
+/* arm_damping 用：位置环全关，只留 kd。
+ *
+ * **不能拿 set_pid_zero() 来复用** —— 那个函数末尾会把夹爪恢复成正常 PID
+ * （见下面 set_pid_zero 的注释，那是给 arm_only_gravity_comp 用的语义：整臂"松劲但不
+ * 失能"，夹爪还能被上位机控制着开合）。阻尼模式要的是**整臂一致**的被动：位置环
+ * 全关、kd 拉上、夹爪也一样。夹爪在阻尼模式里继续跟位置指令的话，通信掉线时它会自己
+ * 夹下去或弹开，正是要避免的。
+ *
+ * kd 取 JOINT_DAMPING_MODE_KD[]（gimbal_arm_def.h，含夹爪那台）。 */
+MAYBE_UNUSED static void set_pid_damping(Gimbal* obj) {
+    obj->joint1->motor_controller->pid_pos_data.config = zero_config;
+    obj->joint1->motor_controller->pid_speed_data.config = zero_config;
+    obj->joint1->kp = 0;
+    obj->joint1->kd = JOINT_DAMPING_MODE_KD[JOINT1];
+
+    obj->joint2->motor_controller->pid_pos_data.config = zero_config;
+    obj->joint2->motor_controller->pid_speed_data.config = zero_config;
+    obj->joint2->kp = 0;
+    obj->joint2->kd = JOINT_DAMPING_MODE_KD[JOINT2];
+
+    obj->joint3->motor_controller->pid_pos_data.config = zero_config;
+    obj->joint3->motor_controller->pid_speed_data.config = zero_config;
+    obj->joint3->kp = 0;
+    obj->joint3->kd = JOINT_DAMPING_MODE_KD[JOINT3];
+
+    obj->joint4->motor_controller->pid_pos_data.config = zero_config;
+    obj->joint4->motor_controller->pid_speed_data.config = zero_config;
+    obj->joint4->kp = 0;
+    obj->joint4->kd = JOINT_DAMPING_MODE_KD[JOINT4];
+
+    obj->joint5->motor_controller->pid_pos_data.config = zero_config;
+    obj->joint5->motor_controller->pid_speed_data.config = zero_config;
+    obj->joint5->kp = 0;
+    obj->joint5->kd = JOINT_DAMPING_MODE_KD[JOINT5];
+
+    obj->joint6->motor_controller->pid_pos_data.config = zero_config;
+    obj->joint6->motor_controller->pid_speed_data.config = zero_config;
+    obj->joint6->kp = 0;
+    obj->joint6->kd = JOINT_DAMPING_MODE_KD[JOINT6];
+
+    // 夹爪同样处理（这里就是和 set_pid_zero 唯一的区别）
+    obj->gripper->motor_controller->pid_pos_data.config = zero_config;
+    obj->gripper->motor_controller->pid_speed_data.config = zero_config;
+    obj->gripper->kp = 0;
+    obj->gripper->kd = JOINT_DAMPING_MODE_KD[GRIPPER];
+}
+
+/* arm_only_gravity_comp 用：位置环、kp、kd 全关，力矩**只有**重力前馈。
+ *
+ * 夹爪**故意不关**（下面留的是正常 PID）：这个模式是"整臂松劲、靠重力补偿悬停"，
+ * 夹爪跟着松掉的话会自己滑开、把夹着的东西丢了 —— 松劲的是臂，不是手。 */
 MAYBE_UNUSED static void set_pid_zero(Gimbal* obj) {
     obj->joint1->motor_controller->pid_pos_data.config = zero_config;
     obj->joint1->motor_controller->pid_speed_data.config = zero_config;
@@ -796,6 +927,12 @@ MAYBE_UNUSED static void set_pid_zero(Gimbal* obj) {
     // 夹爪正常使用
     obj->gripper->motor_controller->pid_pos_data.config = obj->pid_cfgs[GRIPPER][0];
     obj->gripper->motor_controller->pid_speed_data.config = obj->pid_cfgs[GRIPPER][1];
+    /* kp/kd 也要显式恢复 —— 达妙是 MIT 模式，力矩里有 kp/kd 这两项，光恢复 PID
+     * config 不够。原来这里没写，是因为 JOINT_ONLY_COMP 是个编译期开关、且进这个模式
+     * 之前 kp/kd 一定还是 Gimbal_Create() 设的正常值；现在模式能在运行期互相切，
+     * 从 arm_damping 切过来时夹爪 kp 已经被打成 0 了，不补回来夹爪会松掉。 */
+    obj->gripper->kp = obj->pid_mit_kpkd[GRIPPER][0];
+    obj->gripper->kd = obj->pid_mit_kpkd[GRIPPER][1];
     // obj->gripper->motor_controller->pid_pos_data.config = zero_config;
     // obj->gripper->motor_controller->pid_speed_data.config = zero_config;
 }
