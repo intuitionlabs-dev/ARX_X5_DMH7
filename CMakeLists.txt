@@ -50,6 +50,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/gimbal_arm.c
     App/gimbal_cmd.c
     App/test/can_loopback_test.c
+    App/test/uart_echo_test.c
     App/test/uart_loopback_test.c
 
     # Board support

@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "bsp_uart.h" /* BSP_UART_CNT：下面那些"按路"的数组就是照它开的 */
 #include "test_config.h"
 
 /* USART2 <-> USART3 自机通信(回环)测试
@@ -45,9 +46,12 @@
  *
  * 结果不走串口，全部记在下面的全局变量里，直接用调试器(JLink/gdb)读地址。
  * 接线正确时:uart_lb_ok_cnt 稳定增长，bad/lost/crc8/crc16/tx_fail 恒为 0，
- * dir_ok[0] 和 dir_ok[1] 同步增长(两个方向都通)，case_ok[] 每一项都非 0
- * (每个包类型都走通了)。另外 uart_lb_dma_mem_bad 必须是 0，
- * byte_dir[0] 和 byte_dir[1] 应该**完全相等**(每个用例被两个方向各收一次)。
+ * dir_ok[1] 和 dir_ok[2] 同步增长(两个方向都通)，case_ok[] 每一项都非 0
+ * (每个包类型都走通了)。另外 uart_lb_dma_mem_bad 和 uart_lb_no_dma 都必须是 0，
+ * byte_dir[1] 和 byte_dir[2] 应该**完全相等**(每个用例被两个方向各收一次)。
+ *
+ * 按路的数组下标是 BSP 端口号：**1 = USART2，2 = USART3，0 = USART1 一格没用**
+ * (所以 byte_dir[0]/dir_ok[0]/ok_dir[0] 恒 0 是对的)。
  *
  * ---- 实测过的坑，先看这条再对着计数器猜 ----
  *
@@ -142,15 +146,19 @@
  */
 
 /* ---- 可调参数 ---------------------------------------------------------- */
-#define UART_LB_U2 0u           /* USART2 在内部索引里的编号 */
-#define UART_LB_U3 1u           /* USART3 在内部索引里的编号 */
+/* 本测试只用 USART2/3 这两路，编号就是 BSP 的端口号（必须一致，.c 里有 _Static_assert
+ * 守着）。**下面所有"按路"的数组都是 [BSP_UART_CNT] 开的** —— BSP 现在管 3 路(含 USART1)，
+ * 所以下标 0 = USART1 那一格会**恒为 0**（本测试不碰它），别当成 USART1 坏了；
+ * 要看的是 1=USART2 和 2=USART3 这两格。 */
+#define UART_LB_U2 1u           /* USART2 的 BSP 端口号 */
+#define UART_LB_U3 2u           /* USART3 的 BSP 端口号 */
 #define UART_LB_PERIOD_MS 10u   /* 一轮的周期, ms */
 
 /* 用例数:**每两轮**换一个(不是每轮),循环走。第 5 个是 255 字节的边界帧。
  * 为什么是两轮:方向每轮换一次,用例要是也每轮加一,方向就和用例锁死了 ——
  * 偶数轮永远 U2 收、奇数轮永远 U3 收,于是 U2 一辈子只收到偶数码的包,
  * 262 字节的边界帧永远轮不到 U2 收。两轮一换才能让每个用例被两个方向各收一次
- * (判据很好认:uart_lb_byte_dir[0] 和 [1] 应该**完全相等**)。 */
+ * (判据很好认:uart_lb_byte_dir[UART_LB_U2] 和 [UART_LB_U3] 应该**完全相等**)。 */
 #define UART_LB_CASE_CNT 6u
 
 #if TEST_UART_LOOPBACK_ENABLE
@@ -167,7 +175,7 @@ extern volatile uint32_t uart_lb_crc16_err;   /* 整帧 crc16 校验失败(见�
 extern volatile uint32_t uart_lb_encode_err;  /* UartFrameEncode 返回负值,不该发生 */
 
 /* 下面这三个是**搬运值**:BSP 的统计每轮被搬进这几个变量，好让 JLink 读的地址习惯不变
- * (真正的源头是 BSP_UART_GetStat(0/1)，也可以直接读那边)。 */
+ * (真正的源头是 BSP_UART_GetStat(UART_LB_U2/U3)，也可以直接读那边)。 */
 extern volatile uint32_t uart_lb_rearm_fail;  /* 两路合计的接收重装失败次数 */
 
 /* 非 0 = BSP 的 DMA 缓冲区没落在 DMA 够得着的 RAM 里(链接脚本的 .RAM_D1 段丢了)。
@@ -175,16 +183,22 @@ extern volatile uint32_t uart_lb_rearm_fail;  /* 两路合计的接收重装失�
  * 先把 .ld 里的 .RAM_D1 段补回来。见下面"DTCM 陷阱"那条。 */
 extern volatile uint32_t uart_lb_dma_mem_bad;
 
+/* **按位**表示哪一路在 CubeMX 里没配 DMA 流(bit N = BSP 端口号 N)：值来自
+ * BSP_UART_GetStat(id)->no_dma。位 1(USART2)/位 2(USART3) 有值就是配置漏了,
+ * 那一路收发全无、和接线没关系；bit 0 是 USART1 —— 它没配流是**当前预期**的,
+ * 不影响本测试,只说明它还没法当第三个数据口用。 */
+extern volatile uint32_t uart_lb_no_dma;
+
 /* ---- 分类统计 ---------------------------------------------------------- */
 extern volatile uint32_t uart_lb_case_ok[UART_LB_CASE_CNT]; /* 每个用例各自的成功数 */
-extern volatile uint32_t uart_lb_dir_ok[2];                 /* 每个接收方向各自的成功数 */
-extern volatile uint32_t uart_lb_hal_err[2];  /* 两路 UART 见过的 HAL 错误码(按位 OR 累积) */
+extern volatile uint32_t uart_lb_dir_ok[BSP_UART_CNT]; /* 接收方是这一路时的成功数(= ok_dir) */
+extern volatile uint32_t uart_lb_hal_err[BSP_UART_CNT]; /* 各路 UART 见过的 HAL 错误码(按位 OR 累积) */
 
-/* ---- 按路分开的诊断量(索引同 UART_LB_U2/U3) --------------------------- */
-extern volatile uint32_t uart_lb_byte_dir[2]; /* 每一路各收到多少字节：某一路恒 0 就是硬/配置问题 */
-extern volatile uint32_t uart_lb_rx_dir[2];   /* 每一路各自解出完整合法帧的次数 */
-extern volatile uint32_t uart_lb_ok_dir[2];   /* 每一路各自"解出且内容全对"的次数 */
-extern volatile uint32_t uart_lb_ore_cnt[2];  /* 每一路各自的 ORE 次数(不是 OR 累积，是计数) */
+/* ---- 按路分开的诊断量(下标 = BSP 端口号，见上面的 UART_LB_U2/U3) ------- */
+extern volatile uint32_t uart_lb_byte_dir[BSP_UART_CNT]; /* 每一路各收到多少字节：某一路恒 0 就是硬/配置问题 */
+extern volatile uint32_t uart_lb_rx_dir[BSP_UART_CNT];   /* 每一路各自解出完整合法帧的次数 */
+extern volatile uint32_t uart_lb_ok_dir[BSP_UART_CNT];   /* 每一路各自"解出且内容全对"的次数 */
+extern volatile uint32_t uart_lb_ore_cnt[BSP_UART_CNT];  /* 每一路各自的 ORE 次数(不是 OR 累积，是计数) */
 
 /* 非本轮接收方那一路收到的**字节数** —— 全部被丢弃，不计进 byte_dir、不喂解析器。
  *

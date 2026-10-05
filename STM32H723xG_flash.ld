@@ -258,9 +258,12 @@ SECTIONS
    *  哪天 main.c 里加了 SCB_EnableDCache()，这些缓冲区就得配 MPU 非缓存区
    *  或者在收发前后 SCB_Clean/InvalidateDCache_by_Addr。)
    *
-   * 别删：App/test/uart_loopback_test.c 的 s_rx_dma / s_tx_frame 靠它。段被冲掉之后
-   * 那两个变量变成孤儿段、被默认放回 DTCM，症状是回环测试 tx_fail 满天飞、hal_err=0x10
-   * —— 测试代码里有 uart_lb_dma_mem_bad 兜底报这个，不用重新查一遍。 */
+   * 别删：libs/uart/bsp_uart.c 的 s_rx_dma / s_tx_frame 靠它（串口传输层的收发缓冲）。
+   * 段被冲掉之后那两个变量变成孤儿段、被默认放回 DTCM，症状是那一层 tx_fail 满天飞、
+   * hal_err 出现 0x10；BSP_UART_LayoutOk() 会报出来，不用重新查一遍。
+   *
+   * (2026-10-05 实测：CubeMX 重新生成代码时这一段**留下来了**。但 .ld 是纯手写的、
+   *  这里没有 CubeMX 的 USER CODE 标记，所以每次重新生成后还是扫一眼这三行保险。) */
   .RAM_D1 (NOLOAD) :
   {
     . = ALIGN(32);

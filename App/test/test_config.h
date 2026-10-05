@@ -25,6 +25,14 @@
  * 跑之前要先把两路的 RS485 挂到同一条总线上(A2↔A3、B2↔B3)，接线表在头文件里。 */
 #define TEST_UART_LOOPBACK_ENABLE 0
 
+/* USART1 <-> PC 连通性(回显)测试，见 App/test/uart_echo_test.c
+ * 单片机在 USART1 上把 PC 发来的字节原样发回去，一个回环同时验收发两个方向。
+ * 跑之前要把 PC 的 USB 转 TTL 接到 USART1(下面是适配器侧看的方向)：
+ *   适配器 TX -> 单片机 PA10(USART1_RX)，适配器 RX -> 单片机 PA9(USART1_TX)，
+ *   GND <-> GND。端对端(不是同名对接)。
+ * 2026-10-05 用它验证过：921600 8N1，4 组不同长度的包 4/4 原样回显。 */
+#define TEST_UART_ECHO_ENABLE 0
+
 /* 以后新增测试，照抄下面这两行(宏名和文件名自己改)：
  * #define TEST_XXX_ENABLE 1
  */

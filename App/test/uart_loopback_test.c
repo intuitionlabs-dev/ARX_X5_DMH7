@@ -27,14 +27,16 @@ volatile uint32_t uart_lb_crc16_err;
 volatile uint32_t uart_lb_encode_err;
 volatile uint32_t uart_lb_rearm_fail;
 
+/* 按路的数组一律照 BSP_UART_CNT 开、用 **BSP 端口号**当下标（本测试只用 U2/U3 两格，
+ * 下标 0 的 USART1 那一格恒 0）。别写成 [2] —— 端口号现在最大是 2，写小了就是越界写。 */
 volatile uint32_t uart_lb_case_ok[UART_LB_CASE_CNT];
-volatile uint32_t uart_lb_dir_ok[2];
-volatile uint32_t uart_lb_hal_err[2];
+volatile uint32_t uart_lb_dir_ok[BSP_UART_CNT];
+volatile uint32_t uart_lb_hal_err[BSP_UART_CNT];
 
-volatile uint32_t uart_lb_byte_dir[2];
-volatile uint32_t uart_lb_rx_dir[2];
-volatile uint32_t uart_lb_ok_dir[2];
-volatile uint32_t uart_lb_ore_cnt[2];
+volatile uint32_t uart_lb_byte_dir[BSP_UART_CNT];
+volatile uint32_t uart_lb_rx_dir[BSP_UART_CNT];
+volatile uint32_t uart_lb_ok_dir[BSP_UART_CNT];
+volatile uint32_t uart_lb_ore_cnt[BSP_UART_CNT];
 volatile uint32_t uart_lb_offdir_cnt;
 volatile uint32_t uart_lb_offdir_size;
 
@@ -62,6 +64,7 @@ volatile uint32_t uart_lb_lost_short[UART_LB_SHORT_BINS];
 volatile uint32_t uart_lb_lost_state_hist[UART_LB_STATE_BINS];
 
 volatile uint32_t uart_lb_dma_mem_bad; /* 非 0 = DMA 缓冲区没落在 DMA 够得着的 RAM 里，见 Init() */
+volatile uint32_t uart_lb_no_dma;      /* 按位：哪一路没配 DMA 流(bit N = BSP 端口号 N) */
 
 volatile uint32_t uart_lb_tx_bytes;
 volatile uint32_t uart_lb_rx_bytes;
@@ -85,8 +88,9 @@ volatile uint32_t uart_lb_round;
  */
 
 /* 每路一个解析器(UartFrameParser 约 270 字节)。**普通静态即可** —— 解析器是上层
- * 自己的变量，从来不参与 DMA，不需要任何段属性；只有 BSP 的收发缓冲才需要。 */
-static UartFrameParser s_parser[2];
+ * 自己的变量，从来不参与 DMA，不需要任何段属性；只有 BSP 的收发缓冲才需要。
+ * 照 BSP_UART_CNT 开、用端口号当下标（同上，下标 0 那格不用）。 */
+static UartFrameParser s_parser[BSP_UART_CNT];
 
 /* 本轮接收方刚解出一整帧。中断里置，任务里读并清。 */
 static volatile uint8_t s_rx_ready;
@@ -99,7 +103,7 @@ static uint8_t s_tx_frame[UART_FRAME_MAX_LEN];
 static UartFrameTypeId s_tx_type_id;
 static uint8_t s_tx_len;
 
-static uint8_t s_rx_idx;  /* 本轮的接收方，0/1 */
+static uint8_t s_rx_idx;  /* 本轮的接收方，**BSP 端口号**(UART_LB_U2/U3)，不是 0/1 */
 static uint8_t s_pending; /* 有一轮发出去了还没结算 */
 static uint32_t s_round;
 
@@ -340,6 +344,7 @@ static void UartLoopbackTest_OnRx(uint8_t id, const uint8_t *data, uint16_t len)
 static void UartLoopbackTest_RefreshStat(void) {
     const BspUartStat *s2 = BSP_UART_GetStat(UART_LB_U2);
     const BspUartStat *s3 = BSP_UART_GetStat(UART_LB_U3);
+    uint8_t i;
 
     if ((s2 == NULL) || (s3 == NULL)) {
         return;
@@ -350,6 +355,16 @@ static void UartLoopbackTest_RefreshStat(void) {
     uart_lb_ore_cnt[UART_LB_U2] = s2->ore;
     uart_lb_ore_cnt[UART_LB_U3] = s3->ore;
     uart_lb_rearm_fail = s2->rearm_fail + s3->rearm_fail;
+
+    /* 哪一路在 CubeMX 里没配 DMA 流。**BSP 管的所有路都扫**，包括本测试不用的 USART1 ——
+     * 这一位就是"我在 CubeMX 里配了没"的探针，省得事后猜"为什么这个口没反应"。 */
+    uart_lb_no_dma = 0U;
+    for (i = 0U; i < BSP_UART_CNT; i++) {
+        const BspUartStat *st = BSP_UART_GetStat(i);
+        if ((st != NULL) && (st->no_dma != 0U)) {
+            uart_lb_no_dma |= (1UL << i);
+        }
+    }
 }
 
 /* ==================== 结算 ==================== */
@@ -422,8 +437,12 @@ static void UartLoopbackTest_Verify(void) {
 }
 
 static void UartLoopbackTest_RunOneRound(void) {
-    uint8_t rx_idx = (uint8_t)(s_round & 1U);
-    uint8_t tx_idx = (uint8_t)(1U - rx_idx);
+    /* 方向每轮翻一次。**必须写成"轮次 → 端口号"的映射，不能写成 `s_round & 1`** ——
+     * BSP 端口号里 USART2=1、USART3=2，不再是 0/1；照老写法会去索引下标 0(USART1)
+     * 和 1(USART2)，整个测试的收发方向就错位了，现象只是 ok_cnt 不涨。 */
+    uint8_t u3_turn = (uint8_t)(s_round & 1U);
+    uint8_t rx_idx = (u3_turn != 0U) ? UART_LB_U3 : UART_LB_U2;
+    uint8_t tx_idx = (u3_turn != 0U) ? UART_LB_U2 : UART_LB_U3;
     int32_t n;
 
     UartLoopbackTest_Build(s_round);
@@ -492,6 +511,10 @@ void UartLoopbackTest_Init(void) {
     s_rx_idx = UART_LB_U2;
     s_tx_type_id = UART_FRAME_TYPE_ID_NONE;
     s_tx_len = 0U;
+
+    /* 顺手把 BSP 的统计搬一遍：这样**调度器还没起来**时用 JLink 读 uart_lb_no_dma /
+     * uart_lb_hal_err 这些就已经是有意义的值了（不然要等第一轮 Loop 跑过）。 */
+    UartLoopbackTest_RefreshStat();
 }
 
 void UartLoopbackTest_Loop(void) {

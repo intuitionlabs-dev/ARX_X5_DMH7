@@ -7,16 +7,20 @@
 
 #include "usart.h" /* huart1 / huart2 / huart3 / huart7 / huart10 */
 
-/* 本层管几路，以及分别是谁。数组顺序就是 BSP_UART_U2/U3 这些下标。
+/* 本层管几路，以及分别是谁。**数组顺序就是端口编号**（BSP_UART_U1/U2/U3 那些下标）。
  *
- * **只列挂了 DMA 的两路**：USART2 = DMA1_Stream1(RX)/Stream2(TX)，
- * USART3 = DMA2_Stream0(RX)/Stream1(TX)（见 Core/Src/usart.c 里的 __HAL_LINKDMA）。
- * 本层收发都走 DMA，没挂流的串口放进来只会一直 HAL_ERROR。
+ * 本层收发都走 DMA，所以**只有挂了 DMA 流的串口能放进来** —— 没挂的放进来只会一直
+ * HAL_ERROR（`BSP_UART_Init()` 会把它记进该路的 `stat.no_dma`，不会静默）。
  *
- * 以后要接 USART1 / UART7 / USART10：先在 CubeMX 里给那一路的 RX 和 TX 各配一条 DMA 流
- * （NORMAL 模式、Byte 对齐、优先级随意），重新生成代码，再把名字加进下面这个数组。 */
-#define BSP_UART_CNT 2
-#define BSP_UART_PORT_ARRAY {&huart2, &huart3}
+ * USART2 = DMA1_Stream1(RX)/Stream2(TX)，USART3 = DMA2_Stream0(RX)/Stream1(TX)
+ * （见 Core/Src/usart.c 里的 __HAL_LINKDMA）。
+ * USART1(DMA1_Stream3 RX / Stream4 TX)在 CubeMX 里补好之后才有效 —— 补之前它的
+ * `stat.no_dma` 会是 1、rearm_fail 一路涨，串口本身是死的，别以为是接线问题。
+ *
+ * 以后要接 UART7 / USART10：先在 CubeMX 里给那一路的 RX 和 TX 各配一条 DMA 流
+ * （NORMAL 模式、Byte 对齐、优先级 5），重新生成代码，再把名字加进下面这个数组。 */
+#define BSP_UART_CNT 3
+#define BSP_UART_PORT_ARRAY {&huart1, &huart2, &huart3}
 
 /* 接收落地缓冲的长度。
  *

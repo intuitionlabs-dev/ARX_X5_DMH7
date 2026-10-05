@@ -33,6 +33,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "vofa.h"
+#include "bsp_buzzer.h"
 #include "w25q64.h"
 #include <stdio.h>
 #include "bsp_can.h"
@@ -42,6 +43,7 @@
 #include "monitor.h"
 #include "can_loopback_test.h"
 #include "uart_loopback_test.h"
+#include "uart_echo_test.h"
 #include "cmd.h"
 #include "rc.h"
 /* USER CODE END Includes */
@@ -267,6 +269,8 @@ int main(void)
    * 注意顺序：BSP_UART_Init() 会清空回调表，所以注册回调的 UartLoopbackTest_Init() 必须在它后面。 */
   BSP_UART_Init();
   UartLoopbackTest_Init();
+  /* USART1 接 PC 的连通性(回显)测试：同样必须在 BSP_UART_Init() 之后(回调表会被清空)。 */
+  UartEchoTest_Init();
   /* 遥控器 PWM 输入捕获(TIM1/TIM2)，必须在 MX_TIM1_Init()/MX_TIM2_Init() 之后 */
   Rc_Init();
 //    OSPI_W25Qxx_Init();     // ��ʼ��OSPI��W25Q64

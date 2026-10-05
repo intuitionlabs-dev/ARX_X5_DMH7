@@ -32,15 +32,25 @@
  * ---- 用法 ----
  *
  *     // main.c 的 USER CODE 2，在 MX_USARTx_UART_Init() 之后、调度器启动之前
- *     BSP_UART_Init();                        // 常驻武装两路接收
+ *     BSP_UART_Init();                        // 把 BSP_UART_CNT 路接收全常驻武装起来
  *     BSP_UART_RegisterRxCallback(BSP_UART_U2, OnRx);
  *
  * 结果和统计都记在 BSP_UART_GetStat() 里（不用串口打印，JLink 直接读）。
+ *
+ * ---- 加新串口要做什么 ----
+ *
+ * 1. CubeMX 里给那一路上 RX+TX 两条 DMA 流（NORMAL / 逐字节 / MINC / FIFO disable /
+ *    优先级 5），重新生成；2. 写进 uart_config.h 的 BSP_UART_PORT_ARRAY（加在后面）；
+ * 3. 在 bsp_uart.h 里给它一个编号宏。**步骤 1 漏了不会编译报错** —— 那一路的
+ *    `stat.no_dma` 会是 1、`rearm_fail` 一路涨，现象是"这一路收发全无"。
  */
 
-/* 两路的编号。顺序同 uart_config.h 的 BSP_UART_PORT_ARRAY。 */
-#define BSP_UART_U2 0u /* USART2 */
-#define BSP_UART_U3 1u /* USART3 */
+/* 各路的编号 = 它在 uart_config.h 的 BSP_UART_PORT_ARRAY 里的下标。
+ * **加口就是加在数组后面**，别插到中间 —— 插进去会把已有编号全挪位，
+ * 所有按编号索引的东西（比如回环测试那些 uart_lb_*_dir[] 数组）都会静默错位。 */
+#define BSP_UART_U1 0u /* USART1  PA9/PA10，普通异步口（不是 RS485） */
+#define BSP_UART_U2 1u /* USART2  RS485 */
+#define BSP_UART_U3 2u /* USART3  RS485 */
 
 #define BSP_UART_OK        0
 #define BSP_UART_ERR_PARAM (-1) /* id 越界 / 指针为空 / 长度为 0 / 超过发送缓冲 */
@@ -89,6 +99,7 @@ typedef struct {
     uint32_t hal_err;    /* 见过的 HAL 错误码，按位 OR 累积 */
                          /*   0x01 PE 校验错  0x02 NE 噪声  0x04 FE 帧错  0x08 ORE 溢出 */
     uint32_t ore;        /* overrun error 次数（是计数，不是累积 —— 一个就毁掉一整帧） */
+    uint32_t no_dma;     /* 1 = 这一路没有 DMA 句柄（CubeMX 里没给 RX/TX 配流） */
 } BspUartStat;
 
 /* id 越界返回 NULL。 */
@@ -99,5 +110,9 @@ const BspUartStat *BSP_UART_GetStat(uint8_t id);
  * 非 0 的时候，上面那些 tx_fail 满天飞、hal_err 里出现 0x10 都是**必然的**，
  * 别去查接线、也别去换 DMA 流号 —— 是链接脚本里手加的 .RAM_D1 段没了
  * （CubeMX 重新生成链接脚本会把它冲掉）。补回来就好，见 STM32H723xG_flash.ld 里
- * 那段注释，或者本文件上面"为什么要单独一层"那段。 */
+ * 那段注释，或者本文件上面"为什么要单独一层"那段。
+ *
+ * 这个只管"缓冲区在不在 DMA 够得着的 RAM 里"，**不管有没有 DMA 流** —— 后者看每路的
+ * `stat.no_dma`。两个都可能让串口全哑，症状却不一样：这个出问题 hal_err 里有 0x10，
+ * no_dma 出问题则连 HAL 都进不去。 */
 uint8_t BSP_UART_LayoutOk(void);

@@ -35,7 +35,7 @@ static int32_t BspUart_Find(const UART_HandleTypeDef *huart) {
             return (int32_t)i;
         }
     }
-    return -1; /* 不是本层管的串口(huart1/huart7/huart10)，一律不管 */
+    return -1; /* 不是本层管的串口(huart7/huart10)，一律不管 */
 }
 
 /* 武装(或重新武装)某一路的接收。
@@ -46,6 +46,14 @@ static int32_t BspUart_Find(const UART_HandleTypeDef *huart) {
  * 收完同样是 READY。 */
 static void BspUart_Arm(uint8_t idx) {
     UART_HandleTypeDef *huart = s_port[idx];
+
+    /* 没配 DMA 流就到此为止。HAL 自己也会返回 HAL_ERROR，但那样这一路和"真的重装失败"
+     * 混在同一个 rearm_fail 里，分不出是配置漏了还是偶发；no_dma 是配置问题的一次性标志，
+     * 见 BSP_UART_Init()。 */
+    if (huart->hdmarx == NULL) {
+        s_stat[idx].rearm_fail++;
+        return;
+    }
 
     if (HAL_UARTEx_ReceiveToIdle_DMA(huart, s_rx_dma[idx], BSP_UART_RX_BUF_LEN) != HAL_OK) {
         s_stat[idx].rearm_fail++;
@@ -70,6 +78,14 @@ void BSP_UART_Init(void) {
     for (i = 0U; i < BSP_UART_CNT; i++) {
         s_rx_cb[i] = NULL;
         memset(&s_stat[i], 0, sizeof s_stat[i]);
+
+        /* 进来先查一眼这一路到底有没有 DMA 流。uart_config.h 里加了口、但 CubeMX 那边
+         * 忘了给 RX/TX 配流，是**最容易漏、又最不报错**的一种坏法 —— 编译链接全过，
+         * 现象只是"这个串口收发全无"。所以在这儿记一个一次性标志，JLink 读得到。 */
+        if ((s_port[i]->hdmarx == NULL) || (s_port[i]->hdmatx == NULL)) {
+            s_stat[i].no_dma = 1U;
+        }
+
         BspUart_Arm(i);
     }
 }
@@ -138,7 +154,7 @@ uint8_t BSP_UART_LayoutOk(void) {
  *
  * 这两个是 HAL 的全局弱回调(Drivers 里是 __weak)，本层覆盖它们。
  * **本层因此占住了"ReceiveToIdle + DMA"这条接收路径** —— 以后别的模块要用
- * huart1/huart7/huart10 走同样的接收方式，得把口加进 uart_config.h 的
+ * huart7/huart10 走同样的接收方式，得把口加进 uart_config.h 的
  * BSP_UART_PORT_ARRAY(而不是再定义一个同名回调，那会重复符号)。
  *
  * 都在中断上下文：只做统计、回调、重装，绝不阻塞、绝不打印。 */
