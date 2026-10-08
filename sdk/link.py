@@ -46,7 +46,8 @@ FORBIDDEN_HINTS = ("segger", "j-link", "jlink")
 
 # 链路类型 → 人话。板子那侧对应 `App/inc/robot_state.h` 的 ROBOT_LINK。
 # 两边选反了的现象是"一切都对但一个字节都没有"，所以选中了哪种要写出来。
-KIND_NAMES = {"USB": "板子 USB CDC", "RS485": "USB 转 RS485 适配器"}
+KIND_NAMES = {"USB": "板子 USB CDC", "RS485": "USB 转 RS485 适配器",
+              "FAKE": "假板子（sdk.sim，不接硬件）"}
 
 
 def _read_sys(path):
@@ -412,7 +413,6 @@ class Link:
     # ---- 收包线程 ----
 
     def _reader(self):
-        ps = self.parser
         while self._alive:
             try:
                 chunk = self.ser.read(4096)
@@ -424,38 +424,53 @@ class Link:
             if not chunk:
                 continue
             try:
-                frames = ps.feed(chunk)
+                self.inject_bytes(chunk)
             except Exception as e:
                 with self._chan_lock:
                     self.link_up = False
                     self.link_err = "解析失败: %s" % e
                 return
-            now = time.monotonic()
-            for tid, arm_id, payload in frames:
-                self.n_rx += 1
-                if arm_id >= board_defs.ARM_NUM:
-                    # 越界 arm_id：和板子同一个口径 —— 丢弃、计数、不报错
-                    self.n_bad_arm += 1
-                    continue
-                if tid == protocol.TID_ARM_FEEDBACK and len(payload) == protocol.FB_LEN:
-                    try:
-                        self.channel(arm_id).put_feedback(
-                            protocol.decode_feedback(payload), now)
-                    except ValueError:
-                        pass
-                elif tid == protocol.TID_MOTOR_SET_ZERO_ACK and \
-                        len(payload) == protocol.SET_ZERO_ACK_LEN:
-                    try:
-                        self.channel(arm_id).put_ack(
-                            protocol.decode_setzero_ack(payload), now)
-                    except ValueError:
-                        pass
-                elif tid == protocol.TID_VERSION and len(payload) == 4:
-                    self.board_version = protocol.decode_version(payload)
-                    self.version_seen = True
-                else:
-                    # 认不出来的 tid：计数，不报错、不丢弃连接 —— 板子以后加包不该让老上位机炸
-                    self.channel(arm_id).note_unknown(tid)
+
+    def inject_bytes(self, chunk):
+        """把**已经到手的字节**喂进解析器并按 `arm_id` 分流。
+
+        真链路上这是收包线程调用的（`_reader` 就剩「读串口 + 交给这里」两件事）；
+        假链路（`sdk.sim.SimLink`、自测里的回环替身）也走这一条 —— 切帧、分流、统计
+        的口径因此完全一致，不会出现"模拟板子上好、真板子上坏"。
+        """
+        try:
+            frames = self.parser.feed(chunk)
+        except Exception as e:
+            with self._chan_lock:
+                self.link_up = False
+                self.link_err = "解析失败: %s" % e
+            return
+        now = time.monotonic()
+        for tid, arm_id, payload in frames:
+            self.n_rx += 1
+            if arm_id >= board_defs.ARM_NUM:
+                # 越界 arm_id：和板子同一个口径 —— 丢弃、计数、不报错
+                self.n_bad_arm += 1
+                continue
+            if tid == protocol.TID_ARM_FEEDBACK and len(payload) == protocol.FB_LEN:
+                try:
+                    self.channel(arm_id).put_feedback(
+                        protocol.decode_feedback(payload), now)
+                except ValueError:
+                    pass
+            elif tid == protocol.TID_MOTOR_SET_ZERO_ACK and \
+                    len(payload) == protocol.SET_ZERO_ACK_LEN:
+                try:
+                    self.channel(arm_id).put_ack(
+                        protocol.decode_setzero_ack(payload), now)
+                except ValueError:
+                    pass
+            elif tid == protocol.TID_VERSION and len(payload) == 4:
+                self.board_version = protocol.decode_version(payload)
+                self.version_seen = True
+            else:
+                # 认不出来的 tid：计数，不报错、不丢弃连接 —— 板子以后加包不该让老上位机炸
+                self.channel(arm_id).note_unknown(tid)
 
     # ---- 等待 ----
 

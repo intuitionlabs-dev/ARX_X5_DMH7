@@ -13,10 +13,13 @@
 3. **SDK 语义** —— 单位换算往返、夹爪标定模型（含未标定抛异常）、
    以及**闸门矩阵**：每个命令在什么状态下该被客户端预检挡下、该发出什么 tid 和 payload、
    `force=True` 会不会真的绕过、以及"**构造完什么都不发**"（证明 SDK 不自动保心跳）。
+4. **假板子的模拟状态机**（`sdk.sim.SimLink`）—— 握手闸门（版本码不符就一个字节都不回）、
+   `0→1→2` 时序、`0x02/0x10/0x18` 的闸门与时序、两台互不串台、500 ms 看门狗（全链路一份）、
+   `--fake-lost`。
 
-第 3 类用 `LoopbackLink`（继承 `Link`、只覆盖收发那三个方法）当替身 —— 不抄一个完整假板子：
-SDK 要测的是切帧、分流、单位、闸门预检，全是包级可测的；完整状态机在板侧已经存在，
-再抄一份只会双份维护。
+第 3 类用 `LoopbackLink`（继承 `Link`、只覆盖收发那三个方法）当替身：SDK 要测的是切帧、
+分流、单位、闸门预检，全是包级可测的，不需要状态机。第 4 类才用完整假板子 —— 它现在也是
+`--fake` 用的那一份（`sdk/sim.py`），所以不存在"测试的假板子和用户看的假板子不一样"。
 """
 
 import math
@@ -84,15 +87,12 @@ class Checker:
 def feedback_payload(mode=board_defs.MODE_RUN, robot_state=board_defs.STATE_NORMAL,
                      lost=0x00, inited=0x7F, joint_deg=None, jvel_deg=None,
                      gripper_deg=-100.0, temps=None):
-    """按 0x80 的布局拼 63 字节 payload（和板上 FramePktArmFeedback 一一对应）。"""
+    """按 0x80 的布局拼 63 字节 payload —— 布局定义在 `protocol.encode_feedback`。"""
     joint_deg = joint_deg if joint_deg is not None else list(board_defs.RESET_POSE_DEG)
     jvel_deg = jvel_deg if jvel_deg is not None else [0.0] * 6
     temps = temps if temps is not None else list(range(36, 43))
-    return (struct.pack("<4B", mode, robot_state, lost, inited)
-            + struct.pack("<6f", *joint_deg)
-            + struct.pack("<6f", *jvel_deg)
-            + struct.pack("<f", gripper_deg)
-            + bytes(temps))
+    return protocol.encode_feedback(mode, robot_state, lost, inited,
+                                    joint_deg, jvel_deg, gripper_deg, temps)
 
 
 class LoopbackLink(Link):
@@ -127,33 +127,7 @@ class LoopbackLink(Link):
         return protocol.OVERHEAD + len(payload)
 
     # ---- 灌帧：走**真的**分帧 / 判别路径，只是字节不是从串口进来的 ----
-
-    def inject_bytes(self, data):
-        """把一段字节当串口收到的喂进去（真的过 FrameParser + 分流）。"""
-        now = time.monotonic()
-        for tid, arm_id, payload in self.parser.feed(data):
-            self.n_rx += 1
-            if arm_id >= board_defs.ARM_NUM:
-                self.n_bad_arm += 1
-                continue
-            if tid == protocol.TID_ARM_FEEDBACK and len(payload) == protocol.FB_LEN:
-                try:
-                    self.channel(arm_id).put_feedback(
-                        protocol.decode_feedback(payload), now)
-                except ValueError:
-                    pass
-            elif tid == protocol.TID_MOTOR_SET_ZERO_ACK and \
-                    len(payload) == protocol.SET_ZERO_ACK_LEN:
-                try:
-                    self.channel(arm_id).put_ack(
-                        protocol.decode_setzero_ack(payload), now)
-                except ValueError:
-                    pass
-            elif tid == protocol.TID_VERSION and len(payload) == 4:
-                self.board_version = protocol.decode_version(payload)
-                self.version_seen = True
-            else:
-                self.channel(arm_id).note_unknown(tid)
+    # `inject_bytes` 直接继承 `Link` 的真实现（切帧 + 分流 + 计数），不在这里另抄一份。
 
     def inject_feedback(self, arm_id=0, ts=None, **kw):
         """直接投一帧反馈进某个 arm_id 的收包槽（`ts` 可以给一个旧时间戳造"陈旧"）。"""
@@ -849,8 +823,152 @@ def _enum_names(text, enum_name):
     return [p.split("=")[0].strip() for p in body.split(",") if p.strip()]
 
 
+# ==================== 9. 假板子 ====================
+
+def _sim_pump(arms, seconds, extra=None):
+    """按真实时间泵保活。假板子的看门狗走的是**它的**虚拟时钟，`speed>1` 时真实等待很短。"""
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < seconds:
+        for a in arms:
+            a.keepalive()
+        if extra is not None:
+            extra()
+        time.sleep(0.005)
+
+
+def _sim_wait(arms, pred, timeout=2.0, extra=None):
+    """泵保活直到 `pred()` 为真；超时再判一次并返回结果。"""
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
+        for a in arms:
+            a.keepalive()
+        if extra is not None:
+            extra()
+        if pred():
+            return True
+        time.sleep(0.005)
+    return pred()
+
+
+def test_sim(c, tmpdir):
+    """`sdk.sim` 的模拟状态机：闸门、时序、两台互不串台、看门狗、--fake-lost。"""
+    c.section("9. 假板子（sdk.sim，不接硬件）")
+    from .sim import SimLink
+
+    BD = board_defs
+    link = SimLink(speed=8.0)      # speed=8：虚拟时钟 8× 真实时间，自测不用真等 3 秒
+    link.open()
+    try:
+        a, b = link.arm(0), link.arm(1)
+
+        # ---- 握手：真板子握手前一个字节都不发，这里照抄 ----
+        # **这一段不能泵保活** —— keepalive() 发的就是 0x01 版本包，泵了就等于握手了。
+        time.sleep(0.3)
+        c.check("没收到版本包之前一帧反馈都不发（板子握手前不发）",
+                a.n_feedback == 0 and b.n_feedback == 0,
+                "实际 A=%d B=%d" % (a.n_feedback, b.n_feedback))
+        link.send(TID_VERSION, struct.pack("<I", 0xDEADBEEF), 0)
+        time.sleep(0.3)
+        c.check("版本码不符 → 静默锁死、一个字节都不回",
+                a.n_feedback == 0 and link.board_version is None,
+                "实际 A=%d 板子版本 %r" % (a.n_feedback, link.board_version))
+
+        a.send_version()
+        b.send_version()
+        ok = _sim_wait([a, b], lambda: a.robot_state == BD.STATE_WAIT_INIT
+                       and b.robot_state == BD.STATE_WAIT_INIT, 2.0)
+        c.check("版本码对上 → 等待握手→离线等待→待初始化，两台都到",
+                ok and a.n_feedback > 0 and b.n_feedback > 0,
+                "A=%s B=%s" % (a.robot_state_name, b.robot_state_name))
+
+        # ---- 0x02 初始化 ----
+        a.init_arm()
+        ok = _sim_wait([a, b], lambda: a.robot_state == BD.STATE_NORMAL, 2.0)
+        c.check("0x02 → 初始化中 → 正常运行，收尾停在 damping、inited 回 0x7F",
+                ok and a.mode == BD.MODE_DAMPING and a.motor_inited_mask == 0x7F,
+                "state=%s mode=%s inited=0x%02X" % (a.robot_state_name, a.mode_name,
+                                                    a.motor_inited_mask))
+        c.check("另一台不受影响（还在待初始化/stop）",
+                b.robot_state == BD.STATE_WAIT_INIT and b.mode == BD.MODE_STOP,
+                "B=%s/%s" % (b.robot_state_name, b.mode_name))
+
+        # ---- 0x10 设零：只在待初始化受理，结果走 0x11 ----
+        try:
+            a.set_zero()
+            rejected = False
+        except GateRejected:
+            rejected = True
+        c.check("0x10 在正常运行态被预检挡下（板子也只认待初始化）", rejected)
+        b.set_zero()
+        ok = _sim_wait([a, b], lambda: b.last_setzero_ack is not None, 2.0)
+        ack = b.last_setzero_ack
+        c.check("0x10 → 校准零点 → 回待初始化，并收到 0x11 反馈帧",
+                ok and b.robot_state == BD.STATE_WAIT_INIT and ack is not None
+                and ack.state == BD.ZERO_STATE_DONE,
+                "ack=%r state=%s" % (ack, b.robot_state_name))
+        c.check("0x11 的 result 逐台给出（夹爪 1=未确认、其它 2/5）",
+                ack is not None and ack.result == (5, 5, 5, 2, 2, 2, 1),
+                "result=%r" % ((ack.result if ack else None),))
+
+        # ---- 0x16 位控：只在正常运行 + run 档被受理，之后按一阶追目标 ----
+        a.start()
+        ok = _sim_wait([a, b], lambda: a.mode == BD.MODE_RUN, 1.0)
+        want = [0.2, 0.5, 0.5, 0.0, 0.0, 0.0]
+        _sim_wait([a, b], lambda: False, 0.1,
+                  extra=lambda: a.send_ctrl_pos(want, gripper_raw_deg=0.0))
+        c.check("0x16 在 run 档被受理、关节按一阶追到目标角",
+                ok and abs(a.joint_angles[0] - want[0]) < 0.01
+                and abs(a.joint_angles[1] - want[1]) < 0.01,
+                "实际 %s" % ([round(v, 4) for v in a.joint_angles],))
+
+        # ---- 0x18 复位：2 s 轨迹 → 正常运行 + damping，关节落到复位位姿 ----
+        a.reset()
+        ok = _sim_wait([a, b], lambda: a.robot_state == BD.STATE_RESETTING, 1.0)
+        ok = ok and _sim_wait([a, b], lambda: a.robot_state == BD.STATE_NORMAL, 2.0)
+        c.check("0x18 → 复位中 → 正常运行(damping)，关节落到复位位姿",
+                ok and a.mode == BD.MODE_DAMPING
+                and max(abs(x - y) for x, y in zip(a.joint_angles,
+                                                   BD.RESET_POSE_RAD)) < 1e-6,
+                "state=%s mode=%s joints=%s" % (a.robot_state_name, a.mode_name,
+                                                [round(v, 4) for v in a.joint_angles]))
+
+        # ---- 500 ms 看门狗：**全链路一份**，不发帧两台一起掉 ----
+        time.sleep(0.3)      # 不泵保活（虚拟时钟 8× ⇒ 这段抵 2.4 s）
+        c.check("不发帧超 500 ms → 两台一起进通信离线 + damping",
+                a.robot_state == BD.STATE_COMM_LOST and b.robot_state == BD.STATE_COMM_LOST
+                and a.mode == BD.MODE_DAMPING and b.mode == BD.MODE_DAMPING,
+                "A=%s/%s B=%s/%s" % (a.robot_state_name, a.mode_name,
+                                     b.robot_state_name, b.mode_name))
+        ok = _sim_wait([a, b], lambda: a.robot_state == BD.STATE_WAIT_INIT, 2.0)
+        c.check("链路回来落点是**离线等待→待初始化**（不会自己回正常运行）", ok,
+                "A=%s" % a.robot_state_name)
+    finally:
+        link.close()
+
+    # ---- --fake-lost：只有指定的那台掉线 ----
+    link = SimLink(lost_mask=0x41, lost_arm=1, speed=8.0)
+    link.open()
+    try:
+        a, b = link.arm(0), link.arm(1)
+        a.send_version()
+        b.send_version()
+        _sim_wait([a, b], lambda: b.robot_state == BD.STATE_WAIT_INIT, 2.0)
+        b.init_arm()
+        _sim_wait([a, b], lambda: b.robot_state == BD.STATE_NORMAL, 2.0)
+        ok = _sim_wait([a, b], lambda: b.motor_lost_mask != 0, 3.0)
+        c.check("--fake-lost → 指定那台报掉线、mode 被打回 stop",
+                ok and b.mode == BD.MODE_STOP
+                and b.lost_names and a.motor_lost_mask == 0,
+                "B lost=0x%02X %s / A lost=0x%02X"
+                % (b.motor_lost_mask, b.lost_names, a.motor_lost_mask))
+        ok = _sim_wait([a, b], lambda: b.motor_lost_mask == 0, 3.0)
+        c.check("掉线自己恢复（掩码回 0）", ok, "B lost=0x%02X" % b.motor_lost_mask)
+    finally:
+        link.close()
+
+
 def test_headers(c):
-    c.section("9. 固件头文件对拍（仓库在的话）")
+    c.section("10. 固件头文件对拍（仓库在的话）")
     root = repo_root()
     if root is None:
         c.skip("固件头文件对拍", "没找到仓库根（这是打包出去的副本吗？）")
@@ -1014,6 +1132,7 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix="sdk-selftest-") as tmp:
         test_gripper(c, tmp)
         test_gates(c, tmp)
+        test_sim(c, tmp)
 
     test_headers(c)
     return c.summary()

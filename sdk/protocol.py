@@ -203,6 +203,28 @@ def encode_version(code=VERSION_CODE):
     return struct.pack("<I", code & 0xFFFFFFFF)
 
 
+def encode_feedback(mode, robot_state, motor_lost_mask, motor_inited_mask,
+                    joint_deg, jvel_deg, gripper_deg, temps):
+    """0x80 的 payload（63 字节）—— `decode_feedback` 的逆。
+
+    板子只发这一帧，上位机不主动发；这里存在是为了让 **0x80 的布局只有一处定义**：
+    模拟板子（`sim.py`）和离线自测都拿它组帧，字段一挪两边同时错，不会各抄一份。
+    `temps` 要 7 个（板子那边 NAN 写成 0），其余单位同 `Feedback`（deg / deg·s⁻¹ / ℃）。
+    """
+    if len(joint_deg) != PKT_JOINT_NUM or len(jvel_deg) != PKT_JOINT_NUM:
+        raise ValueError("0x80 的关节角和角速度都要 %d 个" % PKT_JOINT_NUM)
+    if len(temps) != PKT_MOTOR_NUM:
+        raise ValueError("0x80 的温度要 %d 个" % PKT_MOTOR_NUM)
+    payload = struct.pack("<4B6f6ff7B",
+                          mode & 0xFF, robot_state & 0xFF,
+                          motor_lost_mask & 0xFF, motor_inited_mask & 0xFF,
+                          *joint_deg, *jvel_deg, gripper_deg,
+                          *[int(t) & 0xFF for t in temps])
+    if len(payload) != FB_LEN:      # 结构体格式写错了就在这里当场炸，别等板子
+        raise AssertionError("0x80 payload 组出 %d 字节，应为 %d" % (len(payload), FB_LEN))
+    return payload
+
+
 # ==================== payload 解包 ====================
 
 @dataclass(frozen=True)
