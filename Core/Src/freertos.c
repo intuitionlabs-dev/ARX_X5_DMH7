@@ -246,7 +246,7 @@ void StartDefaultTask(void *argument)
 /* USER CODE END Header_StartMonitorTask */
 void StartMonitorTask(void *argument)
 {
-    /* USER CODE BEGIN StartMonitorTask */
+  /* USER CODE BEGIN StartMonitorTask */
     /* Infinite loop。100 Hz —— count 一次减 1 就是 10 ms。
      * 这个频率和每个 monitor 注册时给的 count 是绑死的：改这里必须同步改所有
      * Monitor_Register 的 count，否则所有掉线判定的时间一起变(见 monitor.h)。 */
