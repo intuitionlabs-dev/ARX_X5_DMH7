@@ -1,4 +1,4 @@
-"""交互式终端的后端：`uart_frame_cli.py` 里「除 curses 之外的一切」。
+"""交互式终端的后端：`sdk/tui/app.py` 里「除 curses 之外的一切」。
 
 为什么要单独一个文件：面板那几百行只管画和按键；链路、协议、闸门预检、单位换算
 **全部来自 `sdk/`**。这个模块是唯一的接缝，面板只认下面这几样：
@@ -18,21 +18,13 @@
 """
 
 import argparse
-import os
-import sys
 import time
 from collections import deque
 
-# 直接 `python3 scripts/uart_frame_cli.py` 时 sys.path[0] 是 scripts/，**不是仓库根**，
-# 所以 `import sdk` 得自己先铺路（sdk 是仓库根的包，没打包脚手架）。
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-
-from sdk import board_defs, protocol, units                     # noqa: E402
-from sdk.errors import ArError, FeedbackStale, GateRejected     # noqa: E402
-from sdk.link import Link                                       # noqa: E402
-from sdk.sim import SimLink                                     # noqa: E402
+from .. import board_defs, protocol, units
+from ..errors import ArError, FeedbackStale, GateRejected
+from ..link import Link
+from ..sim import SimLink
 
 # ============================================================================
 # A 层：常量与工具（协议 / 限位 / 状态名全部来自 sdk，这里只放"面板要的口径"）

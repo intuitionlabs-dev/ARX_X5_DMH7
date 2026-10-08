@@ -11,22 +11,36 @@
     gripper.py       夹爪两点标定：m ↔ 原始 deg 的映射 + JSON 存取
     selftest.py      离线自测：`python3 -m sdk.selftest`（不接硬件）
     calibrate_gripper.py  夹爪标定小工具
+    tui/             上机控制台（curses 全屏面板）：`python3 -m sdk.tui`，不接硬件用 `--fake`
+                     （`import sdk` 不会把它拉进来 —— curses 只在真要开屏时才 import）
     README.md        **手册：会话流程、每个接口、注意事项 —— 先看它**
 
 最小用法（单台臂，角度是 rad、夹爪是 m）：
 
-    import sdk
+    import sdk, time
 
     arm = sdk.Arm(0)
     arm.connect()                       # 开串口 → 发版本包 → 等第一帧反馈
-    arm.wait_for(lambda a: a.robot_state == 2)      # 等「待初始化」
+
+    def wait_state(want, timeout=10.0):
+        # 等到 state == want。**等的期间要一直保活** —— 板子 500 ms 收不到任何有效帧
+        # 就切阻尼、退回「离线等待」，它自己发的反馈帧不算数。
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            arm.keepalive()
+            if arm.wait_for(lambda a: a.robot_state == want, timeout=0.05):
+                return True
+        return False
+
+    wait_state(2)                       # 等「待初始化」
     arm.init_arm()                      # 一键复位 + 夹爪找零（先确认臂在复位位姿附近）
-    arm.wait_for(lambda a: a.robot_state == 4)
+    wait_state(4)                       # 等「正常运行」（落点是阻尼档）
     arm.start()                         # 进 run 档，才能发控制帧
+    arm.wait_for(lambda a: a.mode == sdk.board_defs.MODE_RUN)   # 等反馈确认切档，
+                                        # 否则紧接着发的第一帧控制帧会被闸门挡下
     while True:
         arm.send_ctrl_pos(arm.joint_angles, gripper_m=0.0)   # 照抄现在的位置、夹爪闭合
-        arm.keepalive()                 # 板子 500 ms 收不到有效帧就进通信离线
-        time.sleep(0.01)
+        time.sleep(0.01)                # 这一帧本身就是保活；停发就要自己 arm.keepalive()
 
 两台臂（**一条链路、两个 Arm** —— 板子只有一条上位机链路）：
 
