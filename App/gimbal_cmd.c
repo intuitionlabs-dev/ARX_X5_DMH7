@@ -229,6 +229,7 @@ static void Stop_Mode_Update(Gimbal_cmd* obj) {
     // 夹爪跟随
     obj->gimbal->arm_control_data.gripper_angle =
         obj->gimbal->arm_feedback_data.gripper_angle;
+    obj->gimbal->arm_control_data.gripper_torque = 0;
 }
 
 /* 被动模式：阻尼 / 仅重力补偿。
@@ -264,6 +265,7 @@ static void Passive_Mode_Update(Gimbal_cmd* obj) {
     // 夹爪跟随
     obj->gimbal->arm_control_data.gripper_angle =
         obj->gimbal->arm_feedback_data.gripper_angle;
+    obj->gimbal->arm_control_data.gripper_torque = 0;
 }
 
 /* 运行模式。输入源有**两个**，按遥控器是否在线二选一：
@@ -305,7 +307,8 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
         // if (Etc_Get(rc.trig.lx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT3] += 30;
         // if (Etc_Get(rc.trig.lx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT3] -= 30;
         // 左摇杆左右控制gripper
-        if (fabsf(rc.lx) > 0.1) obj->gimbal->arm_control_data.gripper_angle += rc.lx * 90/500.0;
+        if (fabsf(rc.lx) > 0.1)
+            obj->gimbal->arm_control_data.gripper_angle += rc.lx * 90 / 500.0;
         return;
     }
 
@@ -342,9 +345,8 @@ static void Auto_Mode_Update(Gimbal_cmd* obj) {
         Arm_Reset(obj);
         break;
     case arm_auto_gripper_zero:
-        /* **空壳**：现在就一句 auto_mode = arm_auto_none，不会真的对夹爪做动作。
-         * 但必须在这儿接上 —— 初始化流程等的就是"它自己回到 none"，不接的话会永远
-         * 卡在第二步。详见 App/arm_auto.c 里 Arm_Gripper_Zero() 的说明。 */
+        /* 推到抵住机械限位(判据是反馈角在窗口里不动) → 退回半个行程 → 在那里设零点；
+         * 设零那一步是叫 arm_zero 跑一轮"只有夹爪"的，见 App/arm_auto.c。 */
         Arm_Gripper_Zero(obj);
         break;
         /* 源工程这里还有 10 个：arm_auto_stretch / store / upstairs / pop /
@@ -381,6 +383,7 @@ static void Set_Ctrl_Default(Gimbal_cmd* obj) {
         obj->gimbal->arm_control_data.joint_vel[i] = 0;
         obj->gimbal->arm_control_data.joint_acc[i] = 0;
     }
+    obj->gimbal->arm_control_data.gripper_torque = 0;
 }
 
 static void Ctrl_Src_Calc(Gimbal_cmd* obj) {  // 无论模式都解算各数据源

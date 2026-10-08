@@ -557,7 +557,7 @@ static void Set_Motor_ref(Gimbal* obj) {
 
     /* 设置夹爪电机目标位置和力矩 */
     motor_controller_list[GRIPPER]->ref_position = obj->arm_control_data.gripper_angle;
-    motor_controller_list[GRIPPER]->output_comp = 0;
+    motor_controller_list[GRIPPER]->output_comp = obj->arm_control_data.gripper_torque;
 }
 
 /* 电机温度 float -> uint8_t(℃) 的转换，专门给 ENCOS 用。
@@ -591,8 +591,10 @@ static void Get_Motor_Fdb(Gimbal* obj) {
      * 标定），硬套关节的公式只能拿别的关节的值凑，反而错。
      *
      * 现在这两个表全 1，所以数值上等同；等真给关节加了减速比，这一行**不应该**跟着变。
-     * 注：Set_Motor_ref() 里"设置夹爪电机目标位置"还是 TODO，也就是夹爪目前没有位置
-     * 指令通道，这个反馈是纯观测量。 */
+     * 注：Set_Motor_ref() 里夹爪的目标位置和力矩前馈**已经接上了**(见上面那两行 + 下面
+     * Set_Motor_ref() 里"设置夹爪电机目标位置和力矩")，deg 由 dm_mit_control.c 的
+     * DM_Mit_Control() 乘 DEG2RAD 进 MIT 帧的。但这条通道**还没在真机上验过**
+     * (protocol_doc.md 里"夹爪不会动"是旧话)，找零(Arm_Gripper_Zero)是它的第一个用户。 */
     obj->arm_feedback_data.gripper_angle = motor_controller_list[GRIPPER]->fdb_position;
 
     /* 电机温度 */

@@ -67,6 +67,13 @@ volatile uint8_t arm_zero_retry[ARM_MOTOR_NUM] = {0};
 volatile uint32_t arm_zero_elapsed_ms = 0;
 volatile uint8_t arm_zero_disable_confirmed = 0;
 uint8_t arm_zero_encos_enable = 0;
+/* 参与集覆盖：**非 0 时这一轮只让这些位参与**(bit = Arm_Motor_Index)，0 = 照旧(达妙 4 台
+ * 恒参与、j1~j3 看 arm_zero_encos_enable)。一键夹爪找零(App/arm_auto.c)用它把一轮设零
+ * 缩到夹爪一台 —— "设零帧和常规控制帧互斥"这条没变(那一轮照样整条总线不发帧)，但 j4~j6
+ * 不再被失能，臂不会当场松掉。
+ * 它是**一次性**的：start() 把它锁进 s_participate_mask 之后就地清 0(和 arm_zero_request
+ * 被消费一个路子)，所以不会漏下"以后每轮都只设夹爪"这种状态。 */
+uint8_t arm_zero_participate_override = 0;
 /* 哪些电机需要在"检查"阶段先被使能帧唤醒才读得到位置(bit = Arm_Motor_Index)。
  * 实测 j5 失能后不再发反馈，就会落到这一位；全是 0 说明 4 台失能后都还继续汇报。 */
 volatile uint8_t arm_zero_wake_mask = 0;
@@ -339,10 +346,17 @@ static void check_current(Gimbal* g, uint32_t now) {
 static void start(Gimbal* g, uint32_t now) {
     /* 先定参与集(见 s_participate_mask 的注释)：达妙 4 台恒参与，ENCOS 那 3 台看开关。
      * 这一轮从头到尾都按这个集子走，中途翻开关不影响本轮。 */
-    s_participate_mask = 0;
-    for (int i = 0; i < ARM_MOTOR_NUM; i++) {
-        if (i <= JOINT3 && !arm_zero_encos_enable) continue; /* j1~j3 占位：只记 SKIP */
-        s_participate_mask |= (uint8_t)(1u << i);
+    s_participate_mask = arm_zero_participate_override;
+    /* 覆盖是**一次性**的：锁进 s_participate_mask 之后就地清掉(和 arm_zero_request 被消费
+     * 一个路子)。这样即使触发的那个上层动作被外部中途打断(比如遥控器上线，robot_state
+     * 会把 auto_mode 直接清掉，那边的收尾代码就跑不到了)，也不会留下一个"以后每次设零
+     * 都只设夹爪"的雷。 */
+    arm_zero_participate_override = 0;
+    if (s_participate_mask == 0) { /* 覆盖为 0 = 照旧(整臂) */
+        for (int i = 0; i < ARM_MOTOR_NUM; i++) {
+            if (i <= JOINT3 && !arm_zero_encos_enable) continue; /* j1~j3 占位：只记 SKIP */
+            s_participate_mask |= (uint8_t)(1u << i);
+        }
     }
     for (int i = 0; i < ARM_MOTOR_NUM; i++) {
         arm_zero_result[i] = participates((uint8_t)i) ? ARM_ZERO_RES_NONE : ARM_ZERO_RES_SKIP;

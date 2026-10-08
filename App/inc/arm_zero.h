@@ -28,6 +28,10 @@
  * 参与集：**全部 7 台**，但 j1~j3(ENCOS) 目前只占位 —— CAN3 现在不通、零点也没标定，
  * 由 arm_zero_encos_enable(默认 0)控制：为 0 时它们不参与失能、不发帧，结果记
  * ARM_ZERO_RES_SKIP；翻成 1 后自动变成真的 7 台。
+ * 另外 arm_zero_participate_override 能把一轮**缩到指定的几台**(一键夹爪找零就这么用)：
+ * 那一轮只失能/设零被点名的电机，其余电机虽然同样收不到帧(见上面"整条总线都不发帧")，
+ * 但不会被失能 —— 对"只想设夹爪"这种用法，这就是避免整条臂松掉的唯一办法。
+ * 注意**一轮设零的价值全在参与集**：finish() 只按参与集判成败，没点名的记 SKIP。
  *
  * 用法（JLink 直接读写内存，本工程就是这么验的）：
  *   写 arm_zero_request = 1  → 目标跑几百 ms → 读 arm_zero_state / arm_zero_result[]
@@ -82,6 +86,13 @@ extern volatile uint8_t arm_zero_wake_mask;
 /* j1~j3 是否真的参与(0=占位，只标记 SKIP)。CAN3 通了、零点标定完之后再翻这个。
  * **在触发那一轮开始时锁定**：运行途中翻它不影响本轮参与集，只影响下一轮。 */
 extern uint8_t arm_zero_encos_enable;
+
+/* 参与集覆盖：非 0 = 这一轮**只让这些位参与**(bit = Arm_Motor_Index)，0 = 照旧(整臂)。
+ * 一键夹爪找零用它把一轮设零缩到夹爪一台(见 App/arm_auto.c 的 case 3)，用完整的设零
+ * 机制(失能确认 / 唤醒读回 / 重发 / 喂狗)但不动 j1~j6。
+ * **一次性**：触发那一轮一开始(start())就锁进参与集并把它清回 0，和 arm_zero_request
+ * 被消费一个路子 —— 所以不会留下"以后每次设零都只设夹爪"的雷。 */
+extern uint8_t arm_zero_participate_override;
 
 /* ---- API ---- */
 /* 状态机步进，在 MotorTask 里每拍调一次(1 kHz)。 */

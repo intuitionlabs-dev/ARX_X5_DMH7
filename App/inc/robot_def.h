@@ -50,7 +50,8 @@ typedef enum { arm_stop = 0, arm_run, arm_damping, arm_only_gravity_comp } Arm_m
 typedef enum {
     arm_auto_none = 0,     // 待命
     arm_auto_reset,        // 复位
-    arm_auto_gripper_zero, // 夹爪找零（**尚是空壳**，见 arm_auto.c）
+    arm_auto_gripper_zero, // 夹爪找零（推到抵住机械限位 → 退回半个行程 → 把那里设成零点，
+                           //   见 App/arm_auto.c 和 arm_auto.h）
     ARM_AUTO_MODE_NUM,
 } Arm_auto_mode;
 
@@ -76,7 +77,9 @@ typedef struct {
     float joint_angle[ARM_JOINT_NUM];  // 关节角度，deg
     float joint_vel[ARM_JOINT_NUM];    // 关节速度，deg/s
     float joint_acc[ARM_JOINT_NUM];    // 关节加速度
-    float gripper_angle;    // 夹爪开合角，deg，范围 GRIPPER_ANGLE_MIN..MAX(-284..0)
+    float gripper_angle;    // 夹爪开合角，deg，范围 GRIPPER_ANGLE_MIN..MAX(-142..+142)，
+                            //   零点在行程中点 —— 这是找零之后的口径，见 gimbal_cmd_def.h
+    float gripper_torque;    // 夹爪力矩，N·m
 } Arm_control_data;
 
 /* arm -> 云台 cmd：反馈 */

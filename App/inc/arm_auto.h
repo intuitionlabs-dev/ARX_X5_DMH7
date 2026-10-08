@@ -1,8 +1,7 @@
 #pragma once
 
 /* 机械臂「一键模式」的动作本体 —— 从源工程 APP/gimbal_cmd/arm_auto.c 搬来的**框架**，
- * 但本工程只有两个动作：**一键复位**(Arm_Reset，已实现) 和
- * **一键夹爪找零**(Arm_Gripper_Zero，**空壳**，见下)。
+ * 本工程实现了两个动作：**一键复位**(Arm_Reset) 和 **一键夹爪找零**(Arm_Gripper_Zero)。
  *
  * 框架长什么样：每个动作都是一个**非阻塞的多步状态机**，靠 Gimbal_cmd 里三个字段驱动 ——
  *   auto_mode       当前在跑哪个动作(arm_auto_none = 没在跑)
@@ -50,6 +49,29 @@ extern const float ARM_RESET_ANGLE[ARM_JOINT_NUM];
  * 由 gimbal_cmd.c 的 Auto_Mode_Update() 在 auto_mode == arm_auto_reset 时调。 */
 void Arm_Reset(Gimbal_cmd* obj);
 
-/* 一键夹爪找零：**空壳**，见 arm_auto.c 里的说明。现在只把自己退出
- * (auto_mode 回 arm_auto_none)，不会真的对夹爪做任何动作。 */
+/* 一键夹爪找零：**推到抵住机械限位 → 往张开方向退回半个行程 → 把那里设成零点**。
+ *
+ *   推：每拍把夹爪目标角往**闭合**方向推一小步(最多领先反馈 20°)、叠一个闭合力矩前馈，
+ *       同时看夹爪的**反馈角在 0.2 s 的窗口里动了没有**；连续 3 个窗口没动就认定抵住了
+ *       机械限位。判据只用反馈角、不用力矩/电流 —— 与电机型号和 kp 无关。
+ *   退：从那个**反馈角**往回退 (GRIPPER_ANGLE_MAX - GRIPPER_ANGLE_MIN)/2 = 半个行程。
+ *   设零：把 App/arm_zero.c 那个设零状态机叫起来，用 arm_zero_participate_override 把这一轮
+ *       **缩到夹爪一台** —— 达妙 0xFE 和常规控制帧互斥、只能在 MotorTask 里发，所以这一步
+ *       不自己发帧。代价是这一轮整条 CAN 安静 0.1~1.5 s(别的电机收不到常规帧)。
+ *
+ * 设完之后夹爪的零点在行程中点上，所以闭合端读 +142、张开端读 -142 ——
+ * gimbal_cmd_def.h 的 GRIPPER_ANGLE_MIN/MAX 就是按这个口径写的。
+ *
+ * 夹爪的"已初始化"标志(motor_inited[GRIPPER])由这个动作**自己维护**：起手置 0(零点正在被
+ * 改写，之前的口径作废)、设零成功才置 1。置 1 之后 0x80 反馈帧的 motor_inited_mask 会报
+ * 夹爪已初始化，gimbal_cmd.c 的 ±142 夹爪软限位也开始生效。
+ *
+ * 调试器里可读的 static(在 App/arm_auto.c)：gz_stall_angle(认到的机械限位角)、
+ * gz_back_target(退到哪儿)、gz_zero_result(那一轮设零的结果码，见 arm_zero.h)。
+ * **第二次跑 gz_zero_result 会是 1(UNCONFIRMED)**：那时夹爪本来就在中点上(读数≈0)，
+ * "写没写进去"分辨不出来，arm_zero 如实不谎报成功 —— 不是故障。
+ *
+ * 退出路径：设完零点 / **推开超时 10 s** / 退回超时 6 s / 等设零超时 12 s / 夹爪掉线 /
+ * 当前不在 arm_run 档(被动模式下位置环是关的，"反馈不动"会变成必然，会误判成找到限位)。
+ * 超时都是为了不把 robot_state 的初始化流程(它等着 auto_mode 回 arm_auto_none)拖死。 */
 void Arm_Gripper_Zero(Gimbal_cmd* obj);
