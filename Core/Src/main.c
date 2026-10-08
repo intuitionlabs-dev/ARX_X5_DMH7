@@ -271,12 +271,15 @@ int main(void)
   BSP_UART_Init();
   UartLoopbackTest_Init();
   /* USART1 接 PC 的连通性(回显)测试：同样必须在 BSP_UART_Init() 之后(回调表会被清空)。
-   * 注意它和下面的 Robot_State_Init() **抢同一路 USART1**，两个不能同时开
-   * (TEST_UART_ECHO_ENABLE 现在是 0)。 */
+   * 它占的是 USART1(PA9/PA10)，已经和下面的 Robot_State_Init() 错开了 —— 那个挪到了
+   * USART3 (TEST_UART_ECHO_ENABLE 现在是 0)。 */
   UartEchoTest_Init();
-  /* 机器人总模式状态机(App/robot_state.c)：在 USART1 上收上位机的帧、跑总模式状态机、
-   * 250 Hz 发反馈帧。同样必须在 BSP_UART_Init() 之后(回调表会被清空)、调度器之前。
-   * 放 main.c 而不是任务里，是按"libs/App 的初始化都放 main.c"的约定。 */
+  /* 机器人总模式状态机(App/robot_state.c)：在 **USART3**(RS485 半双工，PD8/PD9 + PB14
+   * 硬件 DE)上收上位机的帧、跑总模式状态机、250 Hz 发反馈帧。同样必须在
+   * BSP_UART_Init() 之后(回调表会被清空)、调度器之前。
+   * 放 main.c 而不是任务里，是按"libs/App 的初始化都放 main.c"的约定。
+   * 注意它和上面的 UartLoopbackTest_Init() 同抢 USART3，注册是直接赋值所以本函数
+   * 排在后面 = 本模块的回调胜出(见 App/inc/robot_state.h 顶部那段)。 */
   Robot_State_Init();
   /* 遥控器 PWM 输入捕获(TIM1/TIM2)，必须在 MX_TIM1_Init()/MX_TIM2_Init() 之后 */
   Rc_Init();

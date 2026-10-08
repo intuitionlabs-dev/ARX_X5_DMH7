@@ -87,6 +87,10 @@ static uint32_t s_fb_last_ms;          /* 上一次发反馈帧的时刻（4 ms 
 /* 初始化流程(robot_state_initing)的子步骤：0 起复位 / 1 等复位跑完 / 2 等夹爪找零跑完 */
 static uint8_t s_init_step;
 
+/* 一键复位(robot_state_resetting)的子步骤：0 起复位 / 1 等它跑完。**和 s_init_step
+ * 分开**：两个状态不会同时存在，但共用计数器会让"从哪个入口进来的"变得看不出来。 */
+static uint8_t s_reset_step;
+
 /* 校准零点(robot_state_calibrating)：arm_zero_request 写下去到 MotorTask 认领之间有
  * 最多 1 ms 的窗口，**必须先等到"忙"再等"不忙"**，否则第一拍就读到"不忙"、误判成已完成。
  * s_zero_seen_busy 就是那个"已经见过忙"的锁存。 */
@@ -109,6 +113,8 @@ volatile uint32_t robot_handshake_cnt;
 volatile uint32_t robot_handshake_reject_cnt;
 volatile uint32_t robot_init_reject_cnt;
 volatile uint32_t robot_init_abort_cnt;
+volatile uint32_t robot_reset_reject_cnt;
+volatile uint32_t robot_reset_abort_cnt;
 volatile uint32_t robot_ctrl_frame_cnt;
 volatile uint8_t robot_handshake_ok;
 volatile uint8_t robot_locked;
@@ -241,6 +247,14 @@ static void Robot_State_Enter(Robot_state next) {
     case robot_state_calibrating:
         s_arm_mode = arm_stop; /* 设零要求所有参与电机失能，见 arm_zero.h */
         break;
+    case robot_state_resetting:
+        /* 和 initing 同款理由，而且这里还有第二层：arm_stop 档下 Stop_Mode_Update()
+         * 每拍清 auto_mode（gimbal_cmd.c），复位撑不过一拍。而 **damping 也不行 ——
+         * 它虽然不清 auto_mode，但被动分支把 ref_position 钉在反馈角上、kp=0
+         * （gimbal_arm.c），规划喂进去电机也不动：复位会"跑完"但臂根本没动过**，
+         * 比 stop 那种立刻看得出的失败更难查。所以必须是 run。 */
+        s_arm_mode = arm_run;
+        break;
     default:
         break;
     }
@@ -339,6 +353,32 @@ static void HandleArmInit(void) {
 
     s_init_step = 0U;
     Robot_State_Enter(robot_state_initing);
+}
+
+/* 一键复位（0x18）。和 HandleArmInit() 的区别有两条，都是刻意的：
+ *   - **入口是「正常运行」**，不是「待初始化」—— 这是运行中主动收臂，不是上电流程；
+ *   - **不查姿态**。0x02 的 ±20° 闸门是为了守住"初始化前提成不成立"；这里臂本来就该
+ *     是歪的（正因为歪才要收），"歪"不是拒绝的理由。要不要先确认由**上位机**决定
+ *     （协议 doc 里写明了：偏差大时它弹一次 y/n）。
+ * 拒绝一律**静默不回包**（同上位机看反馈帧判）。 */
+static void HandleArmReset(void) {
+    if (s_state != robot_state_normal) {
+        robot_reset_reject_cnt++;
+        return;
+    }
+    if (Rc_Online()) {
+        robot_reset_reject_cnt++;
+        return;
+    }
+    if (!All_Motors_Online()) {
+        /* 有电机掉线：掉线会强制 arm_stop（见 Fsm_Step 的掉线处理），复位根本跑不动，
+         * 与其进复位中再卡住，不如当场拒掉。 */
+        robot_reset_reject_cnt++;
+        return;
+    }
+
+    s_reset_step = 0U;
+    Robot_State_Enter(robot_state_resetting);
 }
 
 static void HandleMotorSetZero(void) {
@@ -460,6 +500,9 @@ static void HandleFrame(uint8_t type_id, const Robot_rx_payload* pl, uint8_t len
     case UART_FRAME_TYPE_ID_ARM_CTRL_POS_VEL:
         HandleCtrl(pl, len, 1U);
         break;
+    case UART_FRAME_TYPE_ID_ARM_RESET:
+        HandleArmReset();
+        break;
     default:
         /* 不认识的码（含 0x11 —— 那是**我们**发的，上位机不该发过来）：丢弃。
          * 不回复错误包、也不计数成错误 —— 协议没有 NACK，默默忽略是最省事也最安全的。 */
@@ -559,6 +602,52 @@ static void Init_Step(void) {
     }
 }
 
+/* 一键复位（robot_state_resetting）的推进。只有两拍 —— 这里**没有夹爪找零那一步**，
+ * 那正是加 0x18 的理由：只想把臂收回原位时不用白等 4 s 找零、也不会把夹爪零点重设一遍。
+ *
+ * 跑完回**正常运行（默认 damping）**，不是回待初始化：复位是从 normal 发起的，回去还是
+ * 一个可用的会话，上位机按 0x12 就能再进 run。 */
+static void Reset_Step(void) {
+    /* 遥控器上线 → 中止，理由同 Init_Step()：遥控器会覆盖 Arm_mode，stop 档下每拍清
+     * auto_mode，正在跑的复位被打断；等遥控器再离线时 auto_mode 也是 none —— 和"复位
+     * 正常跑完"长得一模一样，会被误判成已完成。主动中止就没有这个歧义。 */
+    if (Rc_Online()) {
+        if (gimbal_cmd != NULL) {
+            gimbal_cmd->auto_mode = arm_auto_none;
+            gimbal_cmd->auto_step = 0U;
+        }
+        s_reset_step = 0U;
+        robot_reset_abort_cnt++;
+        Robot_State_Enter(robot_state_normal);
+        return;
+    }
+
+    if (gimbal_cmd == NULL) return; /* 命令层没建起来：停在这儿，同 Init_Step() */
+
+    switch (s_reset_step) {
+    case 0: /* 起：一键复位 */
+        gimbal_cmd->auto_step = 0U;
+        gimbal_cmd->auto_mode = arm_auto_reset;
+        s_reset_step = 1U;
+        break;
+
+    case 1: /* 等它跑完（Arm_Reset 的 default 分支把 auto_mode 打回 none） */
+        if (gimbal_cmd->auto_mode == arm_auto_none) {
+            s_reset_step = 0U;
+            Robot_State_Enter(robot_state_normal);
+        }
+        break;
+
+    default:
+        s_reset_step = 0U;
+        break;
+    }
+    /* ⚠ 和 Init_Step() 一样有那个静默失败：临时规划池满时 Plan_Group_Temp_Calc_And_Run()
+     * 静默返回，Arm_Reset 起了个空规划、下一拍就"跑完"，复位什么都没做但状态机以为做完
+     * 了。**这里不补姿态复核**（进去默认 damping，不会乱动），判据交给上位机 —— 它在
+     * 7→4 的反馈帧里拿 joint_angle 和 ARM_RESET_ANGLE 比一次就知道。 */
+}
+
 static void SendZeroAck(void) {
     UartPktMotorSetZeroAck ack;
     int i;
@@ -654,6 +743,10 @@ static void Fsm_Step(void) {
         Calib_Step();
         break;
 
+    case robot_state_resetting:
+        Reset_Step();
+        break;
+
     default:
         break;
     }
@@ -739,6 +832,7 @@ void Robot_State_Init(void) {
     s_state = robot_state_wait_handshake;
     s_arm_mode = arm_stop;
     s_init_step = 0U;
+    s_reset_step = 0U;
     s_zero_seen_busy = 0U;
     s_zero_start_ms = 0U;
     Ctrl_Invalidate();

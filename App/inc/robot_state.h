@@ -47,23 +47,30 @@
  *                         // (那个函数会清空 BSP 的回调表)，调度器启动之前
  *   Robot_State_Loop();   // Cmd_Loop() 开头，500 Hz
  *
- * 本模块**只管一路串口**(ROBOT_UART_PORT = BSP_UART_U1)，这也是"共享状态不用临界区"
+ * 本模块**只管一路串口**(ROBOT_UART_PORT = BSP_UART_U3)，这也是"共享状态不用临界区"
  * 的前提 —— 收包回调只有这一路会进来。
  *
- * 注意 U1 上原本挂过一个连通性测试 App/test/uart_echo_test.c(回显)，两者**抢同一路**
- * 的回调：那个测试现在是关着的(TEST_UART_ECHO_ENABLE = 0)，要开它就得先关掉本模块
- * 或者换一路。 */
+ * 注意 U3 上原本挂着自机回环测试 App/test/uart_loopback_test.c，两者**抢同一路**的回调。
+ * 那个测试现在是关着的(TEST_UART_LOOPBACK_ENABLE = 0)；就算打开也不冲突，因为它的
+ * UartLoopbackTest_Init() 在 main.c 里排在本模块**前面**，而注册回调是直接赋值，
+ * 本模块会把 U3 的回调**覆盖**掉 —— 只是回环测试从此在 U3 上收不到东西了。 */
 
 #include <stdint.h>
 
-#include "bsp_uart.h"  /* BSP_UART_U1 —— 本模块固定用这一路 */
+#include "bsp_uart.h"  /* BSP_UART_U3 —— 本模块固定用这一路 */
 #include "robot_def.h" /* ARM_JOINT_NUM / Arm_mode */
 
 /* 本模块用哪一路串口。写死：见上面"只管一路串口"。
  *
- * **USART1 = PA9(TX)/PA10(RX)**，就是之前和 PC 验通过的那一路（921600 8N1）。
- * 接 PC 的 USB 转 TTL 时是端对端：适配器 TX → PA10，适配器 RX → PA9，GND <-> GND。 */
-#define ROBOT_UART_PORT BSP_UART_U1
+ * **USART3 = PD8(TX)/PD9(RX)**，板上接的是 **RS485 半双工收发器**：方向由外设硬件
+ * 控制(PB14 = USART3_DE，见 Core/Src/usart.c 的 HAL_RS485Ex_Init)，软件不用管 DE。
+ * 921600 8N1，收发各挂一条 DMA(DMA2_Stream0/1)。
+ *
+ * 上位机这侧是 **USB 转 RS485 适配器**，接这一路的 A/B 差分对。
+ *
+ * 之前是 USART1 = PA9/PA10（普通异步口，端对端接 USB 转 TTL：适配器 TX → PA10、
+ * 适配器 RX → PA9、GND 互连）。2026-10-08 对端换成 RS485 适配器，所以挪到 U3。 */
+#define ROBOT_UART_PORT BSP_UART_U3
 
 /* 通信超时，ms。握手通过之后，这么久没收到任何有效帧就进通信离线模式。 */
 #define ROBOT_COMM_TIMEOUT_MS 500U
@@ -100,6 +107,8 @@
  *                                                                         ↓                      │
  *                                                                      校准零点 ⇒跑完回待初始化    │
  *                                                                                                ⇒0x12/0x13/0x14/0x15 改 Arm_mode
+ *                                                                                                ⇒0x18 且遥控器离线 → 复位中
+ *                                                                                                  复位中 ──一键复位跑完──→ 正常运行(默认 damping)
  *
  *   握手通过之后**任意状态**：500 ms 无有效帧 → 通信离线(damping)
  *   通信离线：收到任意有效帧 → 离线等待（回到上面那条链）
@@ -112,6 +121,7 @@ typedef enum {
     robot_state_normal,             /* 正常运行：等上位机切 Arm_mode，默认 damping */
     robot_state_comm_lost,          /* 通信离线：damping，收到任意有效帧就回离线等待 */
     robot_state_calibrating,        /* 校准零点：stop，设零状态机跑完就回待初始化 */
+    robot_state_resetting,          /* 一键复位：run，只跑 arm_auto_reset，跑完回正常运行(默认阻尼) */
     ROBOT_STATE_NUM,
 } Robot_state;
 
@@ -169,6 +179,8 @@ extern volatile uint32_t robot_handshake_cnt;        /* 握手成功次数 */
 extern volatile uint32_t robot_handshake_reject_cnt; /* 版本码不符被锁的次数 */
 extern volatile uint32_t robot_init_reject_cnt;      /* 初始化被拒次数(姿态不合格/模式不对) */
 extern volatile uint32_t robot_init_abort_cnt;       /* 初始化被遥控器打断的次数 */
+extern volatile uint32_t robot_reset_reject_cnt;     /* 一键复位被拒次数(状态不对/遥控器在线/有电机掉线) */
+extern volatile uint32_t robot_reset_abort_cnt;      /* 一键复位被遥控器打断的次数 */
 extern volatile uint32_t robot_ctrl_frame_cnt;       /* 接受的串口控制帧数 */
 extern volatile uint8_t robot_handshake_ok;          /* 1 = 握手已通过 */
 extern volatile uint8_t robot_locked;                /* 1 = 版本码不符，已锁死(要复位才恢复) */

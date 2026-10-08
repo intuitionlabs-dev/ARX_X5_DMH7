@@ -53,6 +53,7 @@ _Static_assert(_Alignof(UartPktVersion) == 1U, "版本匹配包不是 1 字节�
 _Static_assert(_Alignof(UartPktMotorSetZeroAck) == 1U, "设零回复包不是 1 字节对齐");
 _Static_assert(_Alignof(UartPktArmCtrlPos) == 1U, "控制包(角度+夹爪)不是 1 字节对齐");
 _Static_assert(_Alignof(UartPktArmCtrlPosVel) == 1U, "控制包(角度+角速度+夹爪)不是 1 字节对齐");
+_Static_assert(_Alignof(UartPktArmReset) == 1U, "一键复位包不是 1 字节对齐");
 /* 反馈帧里有 4 个 uint8_t 开头，4 字节之后紧跟 float[6] —— 要是没压成 1 对齐，
  * 编译器会在那 4 个字节后面插 0 字节填充看着没事，但整个包会变成 64 字节。 */
 _Static_assert(_Alignof(UartPktArmFeedback) == 1U, "机械臂反馈帧不是 1 字节对齐");

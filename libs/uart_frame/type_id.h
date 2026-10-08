@@ -57,6 +57,7 @@ typedef uint8_t UartFrameTypeId;
 #define UART_FRAME_TYPE_ID_ARM_DAMPING 0x15U        /* 机械臂阻尼包 · 下发 */
 #define UART_FRAME_TYPE_ID_ARM_CTRL_POS 0x16U       /* 机械臂控制包(角度+夹爪) · 下发 */
 #define UART_FRAME_TYPE_ID_ARM_CTRL_POS_VEL 0x17U   /* 机械臂控制包(角度+角速度+夹爪) · 下发 */
+#define UART_FRAME_TYPE_ID_ARM_RESET 0x18U          /* 一键复位命令包 · 下发 */
 #define UART_FRAME_TYPE_ID_ARM_FEEDBACK 0x80U       /* 机械臂反馈帧 · 上报 */
 
 /* ==================== 各包的 payload ====================
@@ -171,6 +172,24 @@ typedef struct {
   float gripper_angle;
 } UartPktArmCtrlPosVel;
 
+/* 「一键复位命令包」：只跑一键复位（五次样条回 ARM_RESET_ANGLE），**不做夹爪找零**。
+ *
+ * 空 payload —— 整包语义就是"把臂收回复位位姿"。和 0x02 的区别就是这一点：0x02 是
+ * "复位 + 夹爪找零 + 只能在上电流程里发"，0x18 是"只要复位，运行中随时可发"。
+ * 想把臂收回原位又不想白等 4 s 找零、更不想把夹爪零点重设一遍，就用这个。
+ *
+ * **只能从「正常运行」发**（0x02 只能从「待初始化」发，两个入口不重叠）。板子收到后：
+ *    - 遥控器在线 → 拒绝（人在手动接管，别抢）
+ *    - 有电机掉线 → 拒绝
+ *    - 不查姿态：**和 0x02 的 ±20° 闸门正好相反**。0x02 是上电流程的放行闸门，位姿不
+ *      对说明初始化前提不成立；0x18 是运行中主动收臂，臂本来就该是歪的，"歪"不是拒绝
+ *      的理由。要不要先确认由**上位机**决定（偏差大时弹一次确认）。
+ * 拒绝一律**静默不回包**（同 0x02）。
+ *
+ * 没有专用 ACK：受理与否看下一帧 0x80 反馈的 robot_state —— 4 → 7 就是受理了，
+ * 7 → 4 就是跑完了（跑完默认停在阻尼）。轨迹时长 ARM_AUTO_RESET_TIME_S。 */
+typedef UartPktEmpty UartPktArmReset;
+
 /* 「机械臂反馈帧」：板子 -> 上位机，**握手通过后固定 250 Hz 持续上报**，不管当前
  * 处在哪个总模式。上位机拿它当"我看到的状态到底是不是我想要的状态"的唯一依据 ——
  * 所以下发指令的**回执不是单独的回包，而是下一帧反馈**：比如发了阻尼包，看
@@ -179,7 +198,7 @@ typedef struct {
  *   mode              Arm_mode 的当前值：stop / run / damping / only_gravity_comp。
  *                     注意这是**电机怎么出力**，不是总模式。
  *   robot_state       Robot_state 的当前值（等待握手/离线等待/待初始化/初始化/
- *                     正常运行/通信离线/校准零点）。**和 mode 一起看才完整**：
+ *                     正常运行/通信离线/校准零点/复位中）。**和 mode 一起看才完整**：
  *                     比如 normal + damping 才是"正常运行、但默认阻尼"这个状态。
  *   motor_lost_mask   bit i = is_motor_lost[i]，bit0 = j1 … bit5 = j6、bit6 = 夹爪。
  *                     1 表示这台离线/没反馈。上位机判断"能不能下发初始化"就看这个

@@ -109,6 +109,7 @@ typedef union {
   UartPktArmDamping arm_damping;
   UartPktArmCtrlPos arm_ctrl_pos;
   UartPktArmCtrlPosVel arm_ctrl_pos_vel;
+  UartPktArmReset arm_reset;
   UartPktArmFeedback arm_feedback;
 } UartFramePayload;
 
