@@ -1,0 +1,3 @@
+[submodule "sdk"]
+	path = sdk
+	url = git@github.com:intuitionlabs-dev/ARX_X5_SDK_intuition.git
