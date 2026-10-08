@@ -55,7 +55,7 @@ void Arm_Reset(Gimbal_cmd* obj);
  *       同时看夹爪的**反馈角在 0.2 s 的窗口里动了没有**；连续 3 个窗口没动就认定抵住了
  *       机械限位。判据只用反馈角、不用力矩/电流 —— 与电机型号和 kp 无关。
  *   退：从那个**反馈角**往回退 (GRIPPER_ANGLE_MAX - GRIPPER_ANGLE_MIN)/2 = 半个行程。
- *   设零：把 App/arm_zero.c 那个设零状态机叫起来，用 arm_zero_participate_override 把这一轮
+ *   设零：把 App/arm_zero.c 那个设零状态机叫起来，用 gimbal->zero.participate_override 把这一轮
  *       **缩到夹爪一台** —— 达妙 0xFE 和常规控制帧互斥、只能在 MotorTask 里发，所以这一步
  *       不自己发帧。代价是这一轮整条 CAN 安静 0.1~1.5 s(别的电机收不到常规帧)。
  *
@@ -66,8 +66,10 @@ void Arm_Reset(Gimbal_cmd* obj);
  * 改写，之前的口径作废)、设零成功才置 1。置 1 之后 0x80 反馈帧的 motor_inited_mask 会报
  * 夹爪已初始化，gimbal_cmd.c 的 ±142 夹爪软限位也开始生效。
  *
- * 调试器里可读的 static(在 App/arm_auto.c)：gz_stall_angle(认到的机械限位角)、
- * gz_back_target(退到哪儿)、gz_zero_result(那一轮设零的结果码，见 arm_zero.h)。
+ * 调试器里可读的跨拍状态在 `Gimbal_cmd::gz`(定义见 App/inc/gimbal_cmd.h)：读
+ * `g_arm[N].gimbal_cmd->gz.stall_angle`(认到的机械限位角)、`->gz.back_target`(退到哪儿)、
+ * `->gz.zero_result`(那一轮设零的结果码，见 arm_zero.h)。**per 台**：两台臂各跑各的找零，
+ * 各有各的进度。
  * **第二次跑 gz_zero_result 会是 1(UNCONFIRMED)**：那时夹爪本来就在中点上(读数≈0)，
  * "写没写进去"分辨不出来，arm_zero 如实不谎报成功 —— 不是故障。
  *

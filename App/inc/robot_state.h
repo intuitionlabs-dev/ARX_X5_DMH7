@@ -62,7 +62,8 @@
 
 #include <stdint.h>
 
-#include "robot_def.h" /* ARM_JOINT_NUM / Arm_mode */
+#include "robot_def.h" /* ARM_JOINT_NUM / Arm_mode / Arm(前向声明) */
+#include "frame.h"     /* FramePkt* —— 收包环的 payload union 要按这些结构体读 */
 
 /* ==================== 走哪条链路（编译期二选一）====================
  *
@@ -126,7 +127,7 @@
  * (尤其 j2/j3 —— 它们接近限位，误差会放大)。 */
 #define ROBOT_INIT_POSE_TOL_DEG 20.0f
 
-/* 发起设零之后，等 MotorTask 认领 arm_zero_request 的最长时间，ms。
+/* 发起设零之后，等 MotorTask 认领 gimbal->zero.request 的最长时间，ms。
  * 正常情况下一拍(1 ms)内就被认领；这个超时是防"MotorTask 没在跑"导致永远卡在校准模式。 */
 #define ROBOT_ZERO_START_TIMEOUT_MS 200U
 
@@ -188,6 +189,38 @@ typedef struct {
     float gripper_angle;              /* deg，口径同 Arm_control_data.gripper_oc_angle */
 } Robot_ctrl_cmd;
 
+/* ==================== 收包环的一个槽 ====================
+ *
+ * 环按**臂**分：中断解出一整帧之后看帧头里的 arm_id，往那一台臂的环里塞
+ * (g_arm[arm_id].rx_slot[])。所以这两个类型定义在头里 —— `Arm` 要有它们当成员。
+ * 环的读写纪律(单生产者单消费者、__DMB)在 robot_state.c 里，见那一段注释。 */
+
+/* 环槽里 payload 的长度。**下行最长的包是 0x17 的 52 字节**，这里给 64 留了点余地。
+ *
+ * 为什么不是 255（协议上限）：8 个槽 × 255 就是 2 KB 的常驻 RAM，而超过
+ * ROBOT_RX_DATA_LEN 的包是**直接丢掉并计数**的 —— 将来真要加一个长包，先看
+ * robot_rx_over_cnt 涨不涨，再决定是改大这里还是换存储。 */
+#define ROBOT_RX_DATA_LEN 64U
+#define ROBOT_RX_SLOT_NUM 8U
+
+/* 一个环槽。payload 用 union 而不是裸数组，为的是让任务侧能**按结构体读**：
+ * 中断侧往 raw 里 memcpy，任务侧读 arm_ctrl_pos 这样的成员 —— 这是 C 标准 6.5.2.3
+ * 认可的 type punning（和 libs/frame 的 FrameBuf 一个道理）。
+ * 换成 `*(FramePktArmCtrlPos*)slot->payload.raw` 这种指针强转就会踩 strict aliasing。 */
+typedef union {
+    uint8_t raw[ROBOT_RX_DATA_LEN];
+    FramePktVersion version;
+    FramePktMotorSetZeroAck motor_set_zero_ack;
+    FramePktArmCtrlPos arm_ctrl_pos;
+    FramePktArmCtrlPosVel arm_ctrl_pos_vel;
+} Robot_rx_payload;
+
+typedef struct {
+    uint8_t type_id;
+    uint8_t len;
+    Robot_rx_payload payload;
+} Robot_rx_slot;
+
 /* ---- 初始化 / 调用 ---- */
 
 /* 登记链路回调 + 清状态。**必须在两个 BSP 的 Init 之后**（它们会清空自己的回调登记）。
@@ -195,40 +228,37 @@ typedef struct {
  * 放在 main.c 的 USER CODE 2 里（用户约定：libs 下的初始化都放 main.c，不放测试入口）。 */
 void Robot_State_Init(void);
 
-/* 每拍调一次（Cmd_Loop() 开头，500 Hz）。做三件事：排空接收环并逐帧分派、跑状态迁移、
- * 250 Hz 发反馈帧。非阻塞，绝不等待。 */
+/* 每拍调一次（Cmd_Loop() 开头，500 Hz）。**两台臂一起**：排空共享接收环并按帧头里的
+ * arm_id 分派、逐台跑状态迁移、逐台 250 Hz 发反馈帧、最后统一排空发送队列。
+ * 非阻塞，绝不等待。
+ *
+ * 为什么不是"逐台调一次"：接收环和发送队列都是**共享链路**的资源（一条 USB/串口），
+ * 每拍只能排空一次；而各台的状态机是独立推进的。**只给驱动建起来了的臂跑**(gimbal
+ * 非 NULL)：没有驱动就没有反馈帧可发、也没有"电机在线"可判，让它白跑一个状态机只会
+ * 在链路上多出一串没人要的帧。 */
 void Robot_State_Loop(void);
 
-/* 当前总模式对应的机械臂出力模式 —— 给 gimbal_cmd.c 的模式判定取。
- * **遥控器在线时调用方不该用它**（那时模式归遥控器）。 */
-Arm_mode Robot_State_Arm_Mode(void);
+/* 这台臂最新一帧上位机控制指令（永远非 NULL，在 Arm 里；有效与否看 valid）。
+ * 命令层的 Run_Mode_Update() 和 Arm_Ref_Set() 取它。
+ * **每台臂只认自己那一份** —— 帧是按 arm_id 分流的。 */
+const Robot_ctrl_cmd* Robot_State_Ctrl(const Arm* arm);
 
-/* 当前总模式。 */
-Robot_state Robot_State_Get(void);
+/* ---- 观测量（JLink 读，不用串口打印）----
+ *
+ * **链路级的**只有下面这几个：它们描述的是那一条 USB/串口本身(解析、收发)，和哪台臂
+ * 无关。**按台的**观测量(状态迁移、握手、反馈帧率…)都搬进了 `Arm`(App/inc/arm.h)，
+ * JLink 读法从 `robot_fb_cnt` 变成 `g_arm[0].fb_cnt`。 */
 
-/* 最新一帧上位机控制指令（永远非 NULL，是个静态对象；有效与否看 valid）。
- * 命令层的 Run_Mode_Update() 和 Arm_Ref_Set() 取它。 */
-const Robot_ctrl_cmd* Robot_State_Ctrl(void);
-
-/* ---- 观测量（JLink 读，不用串口打印）---- */
-
-extern volatile uint32_t robot_state_transition_cnt; /* 状态迁移次数 */
-extern volatile Robot_state robot_state_last;        /* 最近一次进入的总模式(和 Get() 冗余，
-                                                      * 给 JLink 一个直接看得见的地址) */
-extern volatile Arm_mode robot_arm_mode_last;        /* 最近一次给出的 Arm_mode */
-extern volatile uint32_t robot_rx_frame_cnt;         /* 解析出的整帧数(含被闸门丢掉的) */
-extern volatile uint32_t robot_rx_drop_cnt;          /* 环满丢帧数 */
-extern volatile uint32_t robot_rx_over_cnt;          /* payload 超长丢帧数 */
-extern volatile uint32_t robot_crc8_err_cnt;         /* crc8 错 */
-extern volatile uint32_t robot_crc16_err_cnt;        /* crc16 错 */
-extern volatile uint32_t robot_tx_fail_cnt;          /* 发帧失败(BSP 忙 / 编码失败) */
-extern volatile uint32_t robot_fb_cnt;               /* 发出去的反馈帧数(期望 250/s) */
-extern volatile uint32_t robot_handshake_cnt;        /* 握手成功次数 */
-extern volatile uint32_t robot_handshake_reject_cnt; /* 版本码不符被锁的次数 */
-extern volatile uint32_t robot_init_reject_cnt;      /* 初始化被拒次数(姿态不合格/模式不对) */
-extern volatile uint32_t robot_init_abort_cnt;       /* 初始化被遥控器打断的次数 */
-extern volatile uint32_t robot_reset_reject_cnt;     /* 一键复位被拒次数(状态不对/遥控器在线/有电机掉线) */
-extern volatile uint32_t robot_reset_abort_cnt;      /* 一键复位被遥控器打断的次数 */
-extern volatile uint32_t robot_ctrl_frame_cnt;       /* 接受的串口控制帧数 */
-extern volatile uint8_t robot_handshake_ok;          /* 1 = 握手已通过 */
-extern volatile uint8_t robot_locked;                /* 1 = 版本码不符，已锁死(要复位才恢复) */
+extern volatile uint32_t robot_rx_frame_cnt; /* 解析出的整帧数(含被闸门丢掉的) */
+extern volatile uint32_t robot_rx_drop_cnt;  /* 环满丢帧数 */
+extern volatile uint32_t robot_rx_over_cnt;  /* payload 超长丢帧数 */
+extern volatile uint32_t robot_crc8_err_cnt; /* crc8 错 */
+extern volatile uint32_t robot_crc16_err_cnt; /* crc16 错 */
+/* **不是丢帧计数**：发送走的是队列(见 robot_state.c)，BSP 报忙只是这一拍先不发、
+ * 下一拍重试，帧还在队里。这里涨了说明"链路这段时间发不动"(没枚举出来 / 主机没开串口 /
+ * 主机读得太慢)，配合下面的 rx 计数看是哪一头的问题。只有**队列满**和**编码失败**
+ * 这两种情况才是真丢了帧。 */
+extern volatile uint32_t robot_tx_fail_cnt;
+/* arm_id 越界的帧数(帧头里那个字节 >= ARM_NUM)。**只可能来自上位机写错或抓到别的板子的
+ * 包**，正常永远 0；非 0 说明有帧被静默丢掉了，先查这里。 */
+extern volatile uint32_t robot_rx_bad_arm_cnt;

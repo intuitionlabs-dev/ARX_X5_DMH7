@@ -213,7 +213,7 @@ static void UartLoopbackTest_Build(uint32_t seq) {
 /* 收到的帧和本轮发出去的对不对得上。两层：
  *   - 字节级(memcmp)：证明线上一字不差。
  *   - 按类型读字段：**这一层才是真正验非对齐访问的**。memcmp 走的还是字节，
- *     而包里的 float/uint32 落在帧偏移 5 这种非 4 倍数地址上，只有当成 float 读
+ *     而包里的 float/uint32 落在帧偏移 6 这种非 4 倍数地址上，只有当成 float 读
  *     一遍才知道 pack(1) 有没有真的让 GCC 生成逐字节访问的代码。
  *     float 直接 == 比是故意的：同一份二进制值来回一趟必须逐位相等。 */
 /* 记一次"对不上"的现场，供调试器看。只记最后一次，够定位了。 */
@@ -458,7 +458,7 @@ static void UartLoopbackTest_RunOneRound(void) {
     s_rx_ready = 0U;
     s_round_bytes_base = uart_lb_byte_dir[rx_idx]; /* 这一轮"收到多少字节"从这个值起算 */
 
-    n = FrameEncode(s_tx_frame, FRAME_MAX_LEN, s_tx_type_id,
+    n = FrameEncode(s_tx_frame, FRAME_MAX_LEN, s_tx_type_id, 0U,
                         (s_tx_len > 0U) ? s_tx_payload.raw : NULL, s_tx_len);
     if (n < 0) {
         uart_lb_encode_err++;

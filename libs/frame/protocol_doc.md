@@ -13,14 +13,19 @@
 
 | 项 | 值 |
 | --- | --- |
-| 协议版本串 | `Intuition-ARX-X5-2023-v0.1` |
-| 版本码 | `0xF61DCF10` |
+| 协议版本串 | `Intuition-ARX-X5-2023-v0.2` |
+| 版本码 | `0xF91DD3C9` |
 | 版本码算法 | FNV-1a 32 |
-| 帧格式版本 | 见第 2 节（当前是第一版，格式常量无第二套） |
+| 帧格式版本 | 见第 2 节（当前是第二版：帧头加了 `arm_id`） |
 
 版本串是**协议版本的身份**，也是版本码的唯一源头，定义在
 `libs/frame/frame_config.h` 的 `FRAME_VERSION_STRING`。板上取当前值用
-`FrameVersionCode()`，**不要在两端硬写 `0xF61DCF10` 这个数字** —— 改串它自己就变。
+`FrameVersionCode()`，**不要在两端硬写 `0xF91DD3C9` 这个数字** —— 改串它自己就变。
+
+**v0.1 → v0.2 是不兼容改版**：帧头在 `datalen` 之后插了一字节 `arm_id`，payload 起点
+从偏移 5 挪到 6、整帧开销从 7 变 8。所以版本码必须换 —— 旧上位机拿新帧会**整体错位**
+（它会把 `arm_id` 当 payload 第一个字节），换码能让它在 `0x01` 上就被挡下来锁死，
+而不是拿旧布局去解析新帧。
 
 上位机要算同一个值（任何语言三行，不必移植我们的实现）：
 
@@ -42,14 +47,39 @@ for b in s.encode():
 0      2      帧头 0xAA 0x55
 2      1      包类型码 type_id      见第 3 节
 3      1      datalen              0..255，payload 字节数
-4      1      crc8                 覆盖偏移 0..3 这 4 个字节
-5      N      data                 payload，N = datalen
-5+N    2      crc16                覆盖偏移 0..(4+N)，低字节在前
+4      1      arm_id               这一包说的是哪台臂，见 2.2
+5      1      crc8                 覆盖偏移 0..4 这 5 个字节
+6      N      data                 payload，N = datalen
+6+N    2      crc16                覆盖偏移 0..(5+N)，低字节在前
 ```
 
-整帧长度 = `7 + datalen`，**最短 7 字节，最长 262 字节**。
-常量：`FRAME_OVERHEAD` = 7、`FRAME_HEADER_LEN` = 5、
-`FRAME_TRAILER_LEN` = 2、`FRAME_MAX_DATA` = 255、`FRAME_MAX_LEN` = 262。
+整帧长度 = `8 + datalen`，**最短 8 字节，最长 263 字节**。
+常量：`FRAME_OVERHEAD` = 8、`FRAME_HEADER_LEN` = 6、`FRAME_ARM_ID_OFFSET` = 4、
+`FRAME_TRAILER_LEN` = 2、`FRAME_MAX_DATA` = 255、`FRAME_MAX_LEN` = 263。
+
+### arm_id：这块板子上的哪台臂
+
+同一块板子可以同时驱动**多台机械臂**（每台一路 CAN）。`arm_id` 就是"这一包冲谁"，
+**所有 `type_id` 都带，下发和上报都带**，位置上就是帧头那一个字节。
+
+| arm_id | CAN 索引 | 名字 |
+| --- | --- | --- |
+| 0 | `CAN1`（FDCAN1） | 臂 A |
+| 1 | `CAN2`（FDCAN2） | 臂 B |
+
+**就是 CAN 总线的索引**，不是另编的一套号 —— 知道臂走哪路 CAN 就知道它的 arm_id。
+
+几件上位机要知道的事：
+
+- **每台臂各自握手、各自 500 ms 看门狗**。`0x01` 只让那一台进「离线等待」，之后
+  只有发给它的帧才算它的保活帧。只给 arm_id=0 发帧，臂 B 会在 500 ms 后自己掉进
+  「通信离线(damping)」，臂 A 完全不受影响。
+- 因此**上位机要维持 N 台臂在线，就得给 N 个 arm_id 都持续发帧**。只发一台 = 另一台掉线。
+- 板子侧只认 `arm_id < 臂总数`（当前 2）；越界的帧**直接丢弃**，连计数都只记在
+  "坏 arm_id"那一个格子里，不会去索引不存在的臂。
+- **没有广播**。没有"0xFF = 全部"这种约定；要两台一起做同一件事就发两帧。
+- 帧层不认识这个概念：它把 `arm_id` 当一个不透明字节透传（编码时写进去、解析时
+  原样取出来），范围校验在上层。所以 `libs/frame` 本身仍然和业务无关。
 
 ### 字节序与数制
 
@@ -63,21 +93,25 @@ for b in s.encode():
 
 | | 算法 | 多项式 | 初值 | 覆盖范围 | 参考值 |
 | --- | --- | --- | --- | --- | --- |
-| crc8 | CRC-8/MAXIM（Modbus 那套） | `0x31` | `0xFF` | 偏移 0..3（含帧头，不含它自己） | `"123456789"` → `0x0B` |
-| crc16 | CRC-16/MODBUS | `0x8408`（= bit-reverse 过的 CCITT `0x1021`） | `0xFFFF` | 偏移 0..(4+N)（含 crc8 和全部 payload） | `"123456789"` → `0x6F91` |
+| crc8 | CRC-8/MAXIM（Modbus 那套） | `0x31` | `0xFF` | 偏移 0..4（含帧头，含 arm_id，不含它自己） | `"123456789"` → `0x0B` |
+| crc16 | CRC-16/MODBUS | `0x8408`（= bit-reverse 过的 CCITT `0x1021`） | `0xFFFF` | 偏移 0..(5+N)（含 crc8 和全部 payload） | `"123456789"` → `0x6F91` |
 
 两个都是**反射（reflected）**算法，实现见 `libs/soft_crc/soft_crc.c`（查表，表是编译期 const，
 不需要初始化）。上层调 `CRC8_Modbus_calc()` / `CRC16_Modbus_calc()` 即可。
 
-**为什么两层 CRC**：`crc8` 只盖帧头，所以收完 5 个字节就能判 `datalen` 有没有被干扰，
+**为什么两层 CRC**：`crc8` 只盖帧头，所以收完 6 个字节就能判 `datalen` 有没有被干扰，
 不用等数据收完 —— 长度字段错一个字节，整帧就会错位地吃掉后面一大段。
+
+`arm_id` 也在这 6 个字节里，所以它被 crc8 保护着。这是必须的：`datalen` 被干扰会让帧长
+错、crc16 兜得住；而 `arm_id` 被干扰只会让帧**投错臂** —— 错的那台臂拿到的是一帧
+"格式完全合法"的帧，crc16 也过得去，只能靠 crc8 挡。
 
 ### 收帧状态机
 
 解析器是**逐字节流式**的（`FrameParserFeed()`），5 个状态：
 
 ```
-WAIT_SYNC0 --0xAA--> WAIT_SYNC1 --0x55--> HEADER --(够 5 字节)--> 校验 crc8
+WAIT_SYNC0 --0xAA--> WAIT_SYNC1 --0x55--> HEADER --(够 6 字节)--> 校验 crc8
                                                                   |
                                        datalen == 0 ? CRC : DATA --+--> CRC --> OK
 ```
@@ -90,7 +124,7 @@ WAIT_SYNC0 --0xAA--> WAIT_SYNC1 --0x55--> HEADER --(够 5 字节)--> 校验 crc8
 - `AA AA 55` 这种重复帧头：第二个 `0xAA` 当作新的首字节重新锁存，不会漏掉真帧。
 - **数据区里不搜帧头**。二进制 payload 本来就可能包含 `0xAA 0x55`，在数据区里找会把真帧切碎。
 - **丢帧发现不了**。线上出现一个假的 `0xAA 0x55`（噪声或丢字节导致错位）时，
-  后面 3 个字节会被当成本帧帧头吃掉，真帧的 `0xAA 0x55` 就一起丢了 —— 表现是丢一帧、
+  后面 4 个字节会被当成本帧帧头吃掉，真帧的 `0xAA 0x55` 就一起丢了 —— 表现是丢一帧、
   下一帧恢复。这是所有"匹配到帧头就开始消费"的协议的固有代价。要判丢帧，**得让上层在
   payload 里自己放递增计数或时间戳**（`type_id` 不递增，同一个值会连续出现，帮不上忙）。
 
@@ -102,20 +136,23 @@ WAIT_SYNC0 --0xAA--> WAIT_SYNC1 --0x55--> HEADER --(够 5 字节)--> 校验 crc8
 
 | type_id | 名称 | 方向 | payload 长 | 整帧长 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| `0x00` | `NONE` | — | 0 | 7 | **保留**，表示"没有类型"（解析器复位后的初值）。编码方不要主动用 |
-| `0x01` | `VERSION` | 双向 | 4 | 11 | 版本匹配包，握手 |
-| `0x02` | `ARM_INIT` | 下发 | 0 | 7 | 初始化命令，放行"一键复位 → 一键夹爪找零" |
+| `0x00` | `NONE` | — | 0 | 8 | **保留**，表示"没有类型"（解析器复位后的初值）。编码方不要主动用 |
+| `0x01` | `VERSION` | 双向 | 4 | 12 | 版本匹配包，握手 |
+| `0x02` | `ARM_INIT` | 下发 | 0 | 8 | 初始化命令，放行"一键复位 → 一键夹爪找零" |
 | `0x03`~`0x0F` | — | — | — | — | **预留**：以后的高优先级/短包（心跳、ACK 之类） |
-| `0x10` | `MOTOR_SET_ZERO` | 下发 | 0 | 7 | 触发一轮电机设零 |
-| `0x11` | `MOTOR_SET_ZERO_ACK` | 上报 | 12 | 19 | 设零结束上报结果 |
-| `0x12` | `ARM_START` | 下发 | 0 | 7 | 切 `arm_run`（使能电机、位置控制） |
-| `0x13` | `ARM_GRAVITY` | 下发 | 0 | 7 | 切 `arm_only_gravity_comp`（只顶重力） |
-| `0x14` | `ARM_STOP` | 下发 | 0 | 7 | 切 `arm_stop`（失能电机） |
-| `0x15` | `ARM_DAMPING` | 下发 | 0 | 7 | 切 `arm_damping`（被动阻尼） |
-| `0x16` | `ARM_CTRL_POS` | 下发 | 28 | 35 | 纯位置指令（角度 + 夹爪） |
-| `0x17` | `ARM_CTRL_POS_VEL` | 下发 | 52 | 59 | 位置 + 速度前馈（角度 + 角速度 + 夹爪） |
-| `0x18` | `ARM_RESET` | 下发 | 0 | 7 | 一键复位（只复位，不做夹爪找零） |
-| `0x80` | `ARM_FEEDBACK` | 上报 | 63 | 70 | 机械臂反馈帧，握手后固定 **250 Hz** |
+| `0x10` | `MOTOR_SET_ZERO` | 下发 | 0 | 8 | 触发一轮电机设零 |
+| `0x11` | `MOTOR_SET_ZERO_ACK` | 上报 | 12 | 20 | 设零结束上报结果 |
+| `0x12` | `ARM_START` | 下发 | 0 | 8 | 切 `arm_run`（使能电机、位置控制） |
+| `0x13` | `ARM_GRAVITY` | 下发 | 0 | 8 | 切 `arm_only_gravity_comp`（只顶重力） |
+| `0x14` | `ARM_STOP` | 下发 | 0 | 8 | 切 `arm_stop`（失能电机） |
+| `0x15` | `ARM_DAMPING` | 下发 | 0 | 8 | 切 `arm_damping`（被动阻尼） |
+| `0x16` | `ARM_CTRL_POS` | 下发 | 28 | 36 | 纯位置指令（角度 + 夹爪） |
+| `0x17` | `ARM_CTRL_POS_VEL` | 下发 | 52 | 60 | 位置 + 速度前馈（角度 + 角速度 + 夹爪） |
+| `0x18` | `ARM_RESET` | 下发 | 0 | 8 | 一键复位（只复位，不做夹爪找零） |
+| `0x80` | `ARM_FEEDBACK` | 上报 | 63 | 71 | 机械臂反馈帧，握手后固定 **250 Hz** |
+
+**payload 长度一列没变** —— 加的是帧头那一个字节，所有 payload 布局原样不动。
+整帧长 = payload 长 + 8（v0.1 是 +7），上表的整帧长全都跟着 +1。
 
 方向：「下发」= 上位机 → 板子，「上报」= 板子 → 上位机。
 低段 `0x0x` 是"链路控制"类短包（握手、放行），中段 `0x1x` 是机械臂指令，高段 `0x8x`
@@ -159,7 +196,7 @@ typedef struct {
 字段特意声明成 `uint8_t` 而不是直接引 `arm_zero.h` 的枚举 —— 这个头**不 include App 的任何东西**，
 取值含义对上就行，接上层时按枚举用。
 
-没放进来的两个诊断量：`arm_zero_retry[]`（每台重发几次）、`arm_zero_wake_mask`
+没放进来的两个诊断量：`gimbal->zero.retry[]`（每台重发几次）、`gimbal->zero.wake_mask`
 （哪几台失能后要靠使能帧唤醒才读得到位置）。上位机拿这两个也没法做什么，需要时再扩包。
 
 **警告**：设零把"当前位姿"定义成零点，会**覆盖电机里的原零点**。下发这条指令前必须先让
@@ -287,7 +324,7 @@ typedef struct {
     float   joint_vel[6];       /* 24  deg/s */
     float   gripper_angle;      /*  4  deg，口径同 Gripper 反馈角 */
     uint8_t motor_temp[7];      /*  7  ℃，索引同上 */
-} FramePktArmFeedback;           /* 共 63 字节，整帧 70 */
+} FramePktArmFeedback;           /* 共 63 字节，整帧 71 */
 ```
 
 - **方向**：板子 → 上位机，**握手通过之后无论机器人处于什么总模式都以 250 Hz 固定发送**
@@ -305,7 +342,7 @@ typedef struct {
 - `motor_temp` 是整机温度回传量：达妙本来就是整型，ENCOS 是 float 且**收到第一帧反馈前是
   NAN**，板上按 0 处理（"没读到"和"0℃"在这里不区分）。
 
-**没放进来**的东西：`arm_zero_state` / `arm_zero_result[]` 那套设零诊断量。那套走 `0x11`
+**没放进来**的东西：`gimbal->zero.state` / `gimbal->zero.result[]` 那套设零诊断量。那套走 `0x11`
 的 ACK 包（设零结束时上报一次），不占反馈帧的带宽。手爪力控、电机电流这些目前也不在。
 
 ### 加新包的步骤
@@ -315,7 +352,7 @@ typedef struct {
 3. 在 `frame.h` 的 `FramePayload` union 里挂上成员 —— **这一处漏了就不会被解包**；
 4. 如果包长固定，在 `frame.c` 里加一条 `_Static_assert(sizeof(...) == N)`。
 
-`payload` 从帧的**偏移 5** 开始，不是 4 的倍数，所以包里的 float 成员天生非对齐。
+`payload` 从帧的**偏移 6** 开始，不是 4 的倍数，所以包里的 float 成员天生非对齐。
 所有包结构体都压到 **1 字节对齐**，编译器才会生成逐字节访问的代码（Cortex-M7 的 LDR/STR
 按对齐访问，不告诉它在非对齐地址上会出错）。`frame.c` 里有一组 `_Alignof == 1` 的静态断言守着，
 所以**新结构体必须定义在 pack 区里面**，否则断言立刻红。
@@ -324,16 +361,16 @@ typedef struct {
 
 ### 一次收发的字节级流程
 
-**发送方**（`FrameEncode(out, out_size, type_id, data, data_len)`）：
+**发送方**（`FrameEncode(out, out_size, type_id, arm_id, data, data_len)`）：
 
 1. 先全部校验完再动手写 —— `out` 为 NULL、或 `data` 为 NULL 但 `data_len > 0` 返回
    `FRAME_ENC_ERR_NULL`(-1)；`out_size` 不够返回 `FRAME_ENC_ERR_SIZE`(-2)。
-   **失败时 `out` 一个字节都不会被写。**
-2. 写 `AA 55`、`type_id`、`datalen`；
-3. `crc8 = CRC8_Modbus_calc(out, 4)` 写进偏移 4；
+   **失败时 `out` 一个字节都不会被写。** `arm_id` **不校验范围**，原样写进去。
+2. 写 `AA 55`、`type_id`、`datalen`、`arm_id`；
+3. `crc8 = CRC8_Modbus_calc(out, 5)` 写进偏移 5；
 4. 拷 `data_len` 字节 payload；
-5. `crc16 = CRC16_Modbus_calc(out, 5 + data_len)`，低字节写 `5+N`、高字节写 `5+N+1`。
-6. 返回写入字节数 `7 + data_len`（失败返回负数）。
+5. `crc16 = CRC16_Modbus_calc(out, 6 + data_len)`，低字节写 `6+N`、高字节写 `6+N+1`。
+6. 返回写入字节数 `8 + data_len`（失败返回负数）。
 
 **接收方**：把收到的每个字节喂进 `FrameParserFeed()`，一直喂到它返回 `FRAME_OK`。
 
@@ -343,12 +380,12 @@ typedef struct {
 
 ```c
 union {
-    uint8_t raw[262];
-    struct { uint8_t header[5]; FramePayload payload; uint8_t trailer[2]; } f;
+    uint8_t raw[263];
+    struct { uint8_t header[6]; FramePayload payload; uint8_t trailer[2]; } f;
 } FrameBuf;
 ```
 
-所以校验通过的那一刻，`raw[5..5+N-1]` 已经**原地**就是 payload 了，不用 memcpy、不用逐字段拼：
+所以校验通过的那一刻，`raw[6..6+N-1]` 已经**原地**就是 payload 了，不用 memcpy、不用逐字段拼：
 
 ```c
 if (FrameParserFeed(&parser, byte) == FRAME_OK) {
@@ -365,10 +402,12 @@ if (FrameParserFeed(&parser, byte) == FRAME_OK) {
   按对象表示重新解释，这是定义良好的；而 `*(FramePktArmCtrlPos *)buf.raw` 这种指针强转会踩
   strict aliasing，优化开起来就可能被编歪。（C++ 里 union type punning 反而是 UB，这个头是给 C 用的。）
 - **取值的时机**：`FRAME_OK` 返回后、**下一帧的字节进来之前**要把要用的值取走。
-  解析器会接着解下一帧，下一帧的帧头字节会覆盖 `raw[0..4]`，那个值就没了。
-- 原始字节也一直在 `parser.buf.raw[0 .. 6+data_len-1]`（从 `0xAA` 起），要转发整帧可以直接用它。
+  解析器会接着解下一帧，下一帧的帧头字节会覆盖 `raw[0..5]`，那个值就没了。
+- 原始字节也一直在 `parser.buf.raw[0 .. 7+data_len-1]`（从 `0xAA` 起），要转发整帧可以直接用它。
+- **arm_id 单独提到了 `parser.arm_id`**（也还在 `raw[FRAME_ARM_ID_OFFSET]` 里）。帧层不认识
+  它的语义，只是原样带出来给上层分流。
 
-`FrameParser` 约 270 字节，**放文件作用域或全局，别放栈上**。零初始化等价于
+`FrameParser` 约 271 字节，**放文件作用域或全局，别放栈上**。零初始化等价于
 `FrameParserReset()`（`INCOMPLETE` 和 `WAIT_SYNC0` 都是 0）。
 
 ### 会话流程（板上已实现）

@@ -5,19 +5,23 @@
 #include "soft_crc.h"
 #include "frame_config.h" /* 协议版本串，只有这个文件看得到 */
 
-_Static_assert(FRAME_MAX_LEN == 262U, "帧长常量算错了");
+_Static_assert(FRAME_MAX_LEN == 263U, "帧长常量算错了");
 
 /*
  * FrameBuf 的布局是"自动解包"能不能成立的全部依据：raw 和 f 必须是同尺寸、
- * 且 payload 恰好落在偏移 5。错位了不会报错，只会**静默解出垃圾**，所以在这守住。
+ * 且 payload 恰好落在偏移 6。错位了不会报错，只会**静默解出垃圾**，所以在这守住。
  * （真正跑的时候这套布局已经用小工具在 arm-none-eabi-gcc 上实测过一遍。）
  */
 _Static_assert(sizeof(FrameBuf) == FRAME_MAX_LEN, "union 两个视图尺寸不一致");
 _Static_assert(offsetof(FrameBuf, f.header) == 0U, "帧头没在偏移 0");
 _Static_assert(offsetof(FrameBuf, f.payload) == FRAME_HEADER_LEN,
-               "payload 没在偏移 5，解包视图整体错位");
+               "payload 没在偏移 6，解包视图整体错位");
 _Static_assert(offsetof(FrameBuf, f.trailer) == FRAME_MAX_LEN - FRAME_TRAILER_LEN,
-               "帧尾没贴在 262 字节的最末尾");
+               "帧尾没贴在 263 字节的最末尾");
+/* arm_id 必须落在帧头数组里面。这层不认识它的语义，但偏移错了就成了"改写 datalen
+ * 或 crc8"这种静默错帧，比报错难查得多。 */
+_Static_assert(FRAME_ARM_ID_OFFSET < FRAME_HEADER_LEN,
+               "arm_id 的偏移跑到帧头外面去了");
 
 /* 各包的线上长度。这几个数写进注释里给上位机看了，编译器再核一遍。 */
 _Static_assert(sizeof(FramePktMotorSetZeroAck) == 12U, "电机设置零点回复包不是 12 字节");
@@ -37,7 +41,7 @@ _Static_assert(sizeof(FramePktVersion) == 4U, "版本匹配包不是 4 字节");
  * ==================== 对齐断言 ====================
  *
  * 上面那组 sizeof 断言**证明不了对齐**：`{uint8_t; uint8_t[7]; uint32_t;}` 在对齐 1
- * 和对齐 4 下 sizeof 都是 12。而"payload 落在帧偏移 5 上还能安全读 float"恰恰取决于
+ * 和对齐 4 下 sizeof 都是 12。而"payload 落在帧偏移 6 上还能安全读 float"恰恰取决于
  * 对齐是不是 1，所以得单独断言。两组互补，不是重复。
  *
  * 换成 #pragma pack 之后这组断言更有必要：pack 是**编译器的全局状态**，靠
@@ -61,7 +65,7 @@ _Static_assert(_Alignof(FramePayload) == 1U, "payload union 不是 1 字节对�
 _Static_assert(_Alignof(FrameBuf) == 1U, "帧 union 不是 1 字节对齐");
 
 int32_t FrameEncode(uint8_t *out, uint32_t out_size, FrameTypeId type_id,
-                        const uint8_t *data, uint8_t data_len) {
+                        uint8_t arm_id, const uint8_t *data, uint8_t data_len) {
   const uint32_t frame_len = FRAME_LEN(data_len);
   uint16_t crc16;
   uint32_t i;
@@ -81,7 +85,11 @@ int32_t FrameEncode(uint8_t *out, uint32_t out_size, FrameTypeId type_id,
   out[1] = FRAME_SYNC1;
   out[2] = type_id;
   out[3] = data_len;
-  out[4] = CRC8_Modbus_calc(out, FRAME_HEADER_LEN - 1U);
+  out[FRAME_ARM_ID_OFFSET] = arm_id;
+  /* crc8 盖 raw[0..4]，**含 arm_id** —— 它比 type_id/datalen 更需要保护：
+   * datalen 被干扰会让帧长错、crc16 兜得住；arm_id 被干扰只会让帧投错臂，
+   * 而错的那台臂拿到的是一帧"格式完全合法"的帧，payload 校验也过得去。 */
+  out[FRAME_HEADER_LEN - 1U] = CRC8_Modbus_calc(out, FRAME_HEADER_LEN - 1U);
 
   for (i = 0U; i < (uint32_t)data_len; i++) {
     out[FRAME_HEADER_LEN + i] = data[i];
@@ -119,6 +127,7 @@ void FrameParserReset(FrameParser *p) {
   p->len = 0U;
   p->data_len = 0U;
   p->type_id = FRAME_TYPE_ID_NONE;
+  p->arm_id = 0U;
 }
 
 FrameStatus FrameParserFeed(FrameParser *p, uint8_t byte) {
@@ -163,6 +172,7 @@ FrameStatus FrameParserFeed(FrameParser *p, uint8_t byte) {
       }
       p->type_id = p->buf.raw[2];
       p->data_len = p->buf.raw[3];
+      p->arm_id = p->buf.raw[FRAME_ARM_ID_OFFSET];
       p->state = (p->data_len == 0U) ? FRAME_ST_CRC : FRAME_ST_DATA;
       return result;
 

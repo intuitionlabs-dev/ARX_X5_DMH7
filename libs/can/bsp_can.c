@@ -20,11 +20,19 @@
     #error
 #endif
 
+/* 本拍的组相位。**每拍由 BSP_CAN_TxGroupLatch() 锁存一次**，见 bsp_can.h 里那段注释：
+ * 一拍的发送是轮转做的(见 Core/Src/freertos.c 的 StartMotorTask)，一拍要跨 600~800us，
+ * 现读时钟的话毫秒边沿会落在轮转中间，同一拍里排在后面的电机会被"下一组的门"整拍挡掉。 */
+static uint8_t s_tx_group_phase = 0u;
+
+void BSP_CAN_TxGroupLatch(void) {
+    /* 时基必须用 osKernelGetTickCount()，不能是 HAL_GetTick()：门控要和任务调度
+     * (SysTick)同相，两者实测差 43 ppm，混用会让掩码对不上频率。 */
+    s_tx_group_phase = (uint8_t)(osKernelGetTickCount() % CAN_TX_GROUP_NUM);
+}
+
 uint8_t BSP_CAN_TxGroupMatch(uint8_t tx_group) {
-    uint8_t gate_phase = 0;
-    uint32_t now = osKernelGetTickCount();//此处必须使用 osKernelGetTickCount()，不能使用 HAL_GetTick()，因为BSP_CAN_TxGroupMatch的与任务调度强相关，而任务调度默认使用的时基是systick而不是HAL_GetTick()对应的TIM，所以使用HAL_GetTick()会导致与任务调度不同步，造成预期之外的结果
-    gate_phase = (uint8_t)(now % CAN_TX_GROUP_NUM);
-    uint8_t pass = (tx_group & (uint8_t)(1u << gate_phase)) != 0u;
+    uint8_t pass = (tx_group & (uint8_t)(1u << s_tx_group_phase)) != 0u;
     return pass;
 }
 
@@ -178,19 +186,22 @@ typedef struct Bsp_fd_can_type_def_t {
 
 Bsp_fd_can_type_def can_devices[DEVICE_CAN_CNT];  //定义对应数量的can外设，即代码中定义can总线
 
-    /* ---- 诊断(2026-10-05)：两条我们发出的帧之间至少隔 N 微秒 ------------------
- * 目的：j3(ENCOS) 在达妙 500 Hz 满流量下不发声，怀疑"我们一 tick 里连着丢好几帧"
+    /* ---- 最小帧间隔(2026-10-05 起，2026-10-08 改成"按轮等") ------------------
+ * 目的(当年的)：j3(ENCOS) 在达妙 500 Hz 满流量下不发声，怀疑"我们一 tick 里连着丢好几帧"
  * （4 台达妙指令帧挨着发 → 它们几乎同时回反馈）把总线的空档挤没。这里把**我们自己**
- * 的发送节奏摊平成"每帧至少隔 200us"，再在达妙正常跑的情况下看 j3 活不活。
+ * 的发送节奏摊平成"每帧至少隔 N 微秒"，再在达妙正常跑的情况下看 j3 活不活。
  * 注意：它只改"我们发帧"的间隔，**改不了达妙的反馈节奏**（那是电机自己发的回应），
  * 所以这个实验能区分"我们的帧挤在一起的锅"和"达妙反馈量的锅"。
  * 计时用 DWT->CYCCNT，开机后用 HAL_GetTick() 的 1ms 边沿自校准 cycles/us ——
  * 不猜主频：H7 的 CPUCLK 和 HCLK 不是一个数，SystemCoreClock 给的是 HCLK。
- * 代价：本实验里 CAN1 最多只能发 5000 帧/s，而我们要发约 2500 帧/s，等于 MotorTask
- * 每拍要空转 ~0.5ms。若看到达妙反馈帧率掉下来，就是 MotorTask 被拖了。
+ *
+ * **2026-10-08 双臂之后改成按轮等**(见 BSP_CAN_TxGapWait 的声明)：等的那一下从
+ * BSP_CAN_Send() 里搬到了 MotorTask 的轮转循环末尾。原来是"每帧都等"，两条总线
+ * 各发各的会让每路的帧率砍半(5000 -> 2500 帧/s)；现在**一轮里两路各发一帧、
+ * 一轮只等这一次**，计时器被两条总线共用，代价和只有 CAN1 时逐位相同。
+ * 实测(单臂、按轮等)：CAN1 上达妙反馈 500 Hz、j3 正常(见 [[encos-motor-port]])。
  * **实验完把 BSP_CAN_TX_MIN_GAP_US 改回 0u。** */
     #define BSP_CAN_TX_MIN_GAP_US 200u
-    #define BSP_CAN_TX_GAP_BUS 0u /* 只作用于 CAN1(索引 0)；其它总线不受影响 */
 
     #if BSP_CAN_TX_MIN_GAP_US
 static uint32_t tx_gap_cycles_per_us; /* 0 = 还没校准 */
@@ -211,8 +222,9 @@ static void tx_gap_calibrate(void) {
     tx_gap_last_cyc = DWT->CYCCNT;
 }
 
-/* 距上一帧不足 N us 就原地等 —— 调用者(MotorTask)会被拖住，这是实验的代价 */
-static void tx_gap_wait(void) {
+/* 距上一帧不足 N us 就原地等 —— 调用者(MotorTask)会被拖住，这是实验的代价。
+ * 由 MotorTask 每"轮"调一次(BSP_CAN_TxGapWait)，不在 BSP_CAN_Send 里调。 */
+void BSP_CAN_TxGapWait(void) {
     if (!tx_gap_cycles_per_us) {
         tx_gap_calibrate();
     }
@@ -220,6 +232,9 @@ static void tx_gap_wait(void) {
     while ((uint32_t)(DWT->CYCCNT - tx_gap_last_cyc) < need) {}
     tx_gap_last_cyc = DWT->CYCCNT;
 }
+    #else
+/* 关掉间隔控制时空实现：调用方(MotorTask)不用写 #if */
+void BSP_CAN_TxGapWait(void) {}
     #endif
 
 void BSP_CAN_Init(void) {
@@ -259,11 +274,7 @@ FPS_t j1_tx_fps;
 //  仅对HAL库的can发送函数进行了形式上的封装，实际参数依然依赖外部传参
 void BSP_CAN_Send(uint8_t fdcan_id, uint16_t identifier, uint8_t *data, basic_data_t len) {
     #if !_BSP_DEBUG_CAN_NOT_SEND
-        #if BSP_CAN_TX_MIN_GAP_US
-    if (fdcan_id == BSP_CAN_TX_GAP_BUS) {
-        tx_gap_wait(); /* 诊断：本次发送距上一次至少 BSP_CAN_TX_MIN_GAP_US 微秒 */
-    }
-        #endif
+    /* 这里**不再**等最小帧间隔：等待改由调用方按"轮"做，见 BSP_CAN_TxGapWait() */
     FDCAN_TxHeaderTypeDef txconf;
     switch (len) {
     case 0:

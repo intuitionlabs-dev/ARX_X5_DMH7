@@ -3,7 +3,7 @@
 #include <math.h> /* fabsf() */
 
 #include "main.h"       /* HAL_GetTick() */
-#include "gimbal_arm.h" /* gimbal：7 个电机的指针都挂在它身上(见 Gimbal_t) */
+#include "gimbal_arm.h" /* Gimbal：7 个电机的指针 + 本轮设零的全部状态都在它身上 */
 #include "DM_motor.h"   /* DMmotor_Disable / Enable / Save_Zero / errcode / fdb_position */
 #include "ENCOS_motor.h" /* ENCOSmotor_Disable / Save_Zero / zero_ack_* */
 
@@ -26,6 +26,24 @@
  *
  * 4) 总线是故意安静的，而电机失能后可能不再发反馈 → 20ms 的掉线看门狗会把它们全判掉线。
  *    keep_monitors_alive() 在设零期间主动喂狗，理由见那里的注释。
+ *
+ * 5) ENCOS 设零复核(2026-10-08，六台一起盯，走过三版)：**0x7FF 的应答只跟电机自己有关
+ *    —— 它写完才回，迟到量实测 0.4~5s 不等，而且连续反复触发会越来越慢(实测同一块板连着
+ *    十来轮：0.43 → 0.6 → 2.7 → 4.9s)**，跟主动发不发帧无关。这不是一开始就想清楚的：
+ *    第一版单台窗口 1500ms，六台整排报"超时"，而电机那边的零点其实早写好了(假失败)。
+ *    第二版以为"ACK 被我们自己关掉的总线压住了、发帧去顶就出来"，改发 0xE0 位置查询：
+ *    查询**被回答了**(遥测一直回来、POSITION 位重新立起)，ACK 却照样不提前。
+ *    第三版改发零增益停止帧(type 0，和空闲期 500Hz 扫描同形)去顶：20ms 一格的轨迹里 j1
+ *    在 828ms 内挨了 3 条顶帧、遥测也回来了，ACK 仍然没到；而**同一轮里 j2 在它的第一条
+ *    顶帧之前(设零后 +434ms)就自己回了 ACK** ⇒ 顶帧与 ACK 无关，那条"六台 ACK 挤在总线
+ *    重开时一起到"的结论是采样假象(一次会话顺序读六台，谁先读到谁的时间戳就早)。
+ *    驱动这一侧是干净的：5s 那一轮里 j3 的 `zero_pending` 从头到尾是 1，ACK 一到就被收下
+ *    (pend 1→0、rcv/ok 同时置 1)，所以慢的是电机，不是我们的收帧或判据。
+ *    ⇒ 修法两条：① 等 ACK 设上限 ARM_ZERO_ENCOS_ACK_WAIT_MS(1500ms)，等够还不来就**退让
+ *    到"只看设零后的新位置"**(和达妙那四台同一套判据、同一容差)，并把这台记进
+ *    ack_missing_mask —— 死等它就会跟着电机的迟到量一起退化成假超时。② 顶帧仍然要发，
+ *    但作用只有一条：**要一帧设零后的新位置** —— ENCOS 是问答式的，不主动要就只能等它
+ *    自愿发(它确实也会自愿发，只是不保证时机)。
  * ================================================================================= */
 
 /* ---------- 时间参数 ---------- */
@@ -49,48 +67,50 @@
 #define ARM_ZERO_DM_WAKE_MS 100u
 /* 达妙单台反复重发的上限(从进入这台算起) */
 #define ARM_ZERO_DM_PER_MOTOR_MS 1000u
-/* 达妙位置容差(rad)。12.5rad/65536 ≈ 0.00038rad 一个码，0.01rad 已经很宽。 */
-#define ARM_ZERO_DM_POS_TOL_RAD 0.01f
+/* 位置容差(rad)。12.5rad/65536 ≈ 0.00038rad 一个码，0.01rad 已经很宽。
+ * 达妙和 ENCOS 同量纲(ENCOS_motor::fdb_position 也是 rad、量程同样 ±12.5rad)，
+ * 所以这个容差两边通用。 */
+#define ARM_ZERO_POS_TOL_RAD 0.01f
 
-/* ENCOS 单台上限。库内部：一次设零后总线要静默 501ms(ENCOS_SETTING_GUARD_MS)才能再发，
- * ACK 超时判据也是 1000ms(ENCOS_ZERO_ACK_TIMEOUT_MS)，重发一次的周期就 ≥1s，这里要更大。 */
-#define ARM_ZERO_ENCOS_PER_MOTOR_MS 1500u
+/* ENCOS：等 0x7FF 应答的上限。**这是个退让阈值**，见 check_current 的 ENCOS 支 ——
+ * 实测 ACK 迟到量 0.4~5s 不等、反复触发还会越来越慢(文件头第 5 条)，而死等它会把"零点
+ * 其实写好了"的电机报成假超时(第一版单台窗口 1500ms 时六台整排假失败就是这个)。所以等够
+ * 这么久还不来就退让到"只看设零后的新位置"(和达妙同一套判据)。1500ms 是实测正常值
+ * (0.4~0.6s)的两倍半；退让本身不损失可信度 —— 位置那一关照样卡着容差。 */
+#define ARM_ZERO_ENCOS_ACK_WAIT_MS 1500u
+/* ENCOS 单台上限。复核一走完就 advance，所以这是**上限不是延时**：正常一台 ≈ ACK(或退让
+ * 阈值) + 一次 501ms 闸之后的位置应答 ≈ 0.6~2.1s。留到 2500 = 让退让路径(1500)之后还有
+ * 501ms 的指令闸 + 一帧应答的余量，不至于擦边判超时。
+ * (库内部的两个数：设零后总线静默 501ms = ENCOS_SETTING_GUARD_MS；待 ACK 超时 1000ms =
+ *  ENCOS_ZERO_ACK_TIMEOUT_MS —— 后者只在驱动的 Send_Step 被调到时才推进，而设零期间这条
+ *  总线的 Send_Step 被门关掉了，所以那个 1000ms 不会把我们的 zero_pending 清掉。) */
+#define ARM_ZERO_ENCOS_PER_MOTOR_MS 2500u
+/* ENCOS 复核时"顶一帧"之间的最小间隔(见 check_current 里的说明)。设零后头 501ms 里发什么
+ * 都过不了驱动 bus_busy() 那把闸，所以这个数只决定 501ms 之后的节奏 —— 空闲期本来就是
+ * 500Hz 发同一形状的停止帧，不必更保守。 */
+#define ARM_ZERO_ENCOS_POKE_MS 120u
 
-/* 整体上限 */
-#define ARM_ZERO_TOTAL_MS 8000u
+/* 整体上限。最坏情况：失能确认 1500ms + 3 台 ENCOS 各吃满 2500ms + 3 台达妙各 1000ms
+ * = 12000ms —— 得罩得住，否则每台的复核还没走完就被整体超时砍掉(那才是真正看不出问题的
+ * 那种失败)。**别忘了前面那段失能确认**：只算单台窗口的话正好也是 12000，擦边，实测就是
+ * 这么把它从 12000 顶到 15000 的(留 3s 余量)。 */
+#define ARM_ZERO_TOTAL_MS 15000u
 
-/* ---------- 反馈(全局，JLink 直接读) ---------- */
-volatile uint8_t arm_zero_request = 0;
-volatile uint8_t arm_zero_state = ARM_ZERO_IDLE;
-volatile uint8_t arm_zero_result[ARM_MOTOR_NUM] = {0};
-volatile uint8_t arm_zero_retry[ARM_MOTOR_NUM] = {0};
-volatile uint32_t arm_zero_elapsed_ms = 0;
-volatile uint8_t arm_zero_disable_confirmed = 0;
-uint8_t arm_zero_encos_enable = 0;
-/* 参与集覆盖：**非 0 时这一轮只让这些位参与**(bit = Arm_Motor_Index)，0 = 照旧(达妙 4 台
- * 恒参与、j1~j3 看 arm_zero_encos_enable)。一键夹爪找零(App/arm_auto.c)用它把一轮设零
- * 缩到夹爪一台 —— "设零帧和常规控制帧互斥"这条没变(那一轮照样整条总线不发帧)，但 j4~j6
- * 不再被失能，臂不会当场松掉。
- * 它是**一次性**的：start() 把它锁进 s_participate_mask 之后就地清 0(和 arm_zero_request
- * 被消费一个路子)，所以不会漏下"以后每轮都只设夹爪"这种状态。 */
-uint8_t arm_zero_participate_override = 0;
-/* 哪些电机需要在"检查"阶段先被使能帧唤醒才读得到位置(bit = Arm_Motor_Index)。
- * 实测 j5 失能后不再发反馈，就会落到这一位；全是 0 说明 4 台失能后都还继续汇报。 */
-volatile uint8_t arm_zero_wake_mask = 0;
+/* j1~j3 是否真的参与(0=占位，只标记 SKIP)。**不是状态、是策略开关**，所以留在全局：
+ * 它描述的是"这块板子上 ENCOS 那条路能不能用"，和具体哪台臂无关(两台臂同构)。
+ * 触发那一轮开始时会被**锁进** Arm_zero::participate_mask，运行途中翻它不影响本轮。
+ *
+ * 2026-10-08 从 0 翻成 1：j1~j3 的 ENCOS 已经在两条总线上正常跑起来(标称 250Hz 反馈、
+ * motor_inited 里它们的位是 1)，设零这条路可以真发了。 */
+uint8_t arm_zero_encos_enable = 1;
 
-/* ---------- 内部状态(静态零初始化即可) ---------- */
-static uint32_t s_start_ms;  /* 本轮开始时刻 */
-static uint32_t s_phase_ms;  /* 当前阶段(等失能确认 / 当前这一台)的起点 */
-static uint32_t s_send_ms;   /* 当前这一台最近一次"发出的那一帧"的时刻 */
-static uint32_t s_retry_ms;  /* 最近一次重发失能帧的时刻 */
-static uint8_t s_index;      /* 正在处理的电机，ARM_MOTOR_NUM 表示跑完了 */
-static uint8_t s_dm_woken;   /* 当前这台达妙是不是已经被使能帧唤醒过(读完要关回去) */
-static float s_before_pos;   /* 发设零帧之前的位置：分辨"真被拉到 0"还是"本来就在 0" */
-/* 本轮的参与集，bit = Arm_Motor_Index，**在 start() 里按当时的 arm_zero_encos_enable 锁定**。
- * 不能每次现问那个全局：判定成功/超时是在 finish() 里做的，若运行途中有人把开关翻回 0，
- * 现问就会把已经记成"超时"的 ENCOS 当成"本来就不参与"，于是本该报 TIMEOUT 的一轮被判成
- * DONE —— 实测就是这么撞出来的。 */
-static uint8_t s_participate_mask;
+/* ---------- 其余状态全在 `Gimbal::zero` 里 ---------- */
+/* 原来是这里的一大堆文件级全局(arm_zero_request / arm_zero_state / arm_zero_result[] /
+ * arm_zero_retry[] / arm_zero_elapsed_ms / arm_zero_disable_confirmed / arm_zero_wake_mask /
+ * arm_zero_participate_override)加一堆 static(s_start_ms / s_index / s_participate_mask …)。
+ * 两台臂之后它们必须按台分开 —— 共用一份的话 A 台设到一半、B 台一触发就把进度整个覆盖。
+ * 现在统一收进 Arm_zero 结构体(定义与字段说明见 App/inc/arm_zero.h)、挂在 Gimbal 上，
+ * 所以本文件里每一处状态访问都长成 `g->zero.xxx`，并且**每个函数都得有那个 g**。 */
 
 /* ---------- 电机取用 ---------- */
 /* 7 台电机都挂在 Gimbal 上(见 gimbal_arm.h)，用索引拿。拿不到(创建失败)返回 NULL。 */
@@ -113,14 +133,14 @@ static ENCOS_motor* encos_at(Gimbal* g, uint8_t i) {
     }
 }
 
-/* 本轮这台参不参与。看的是 start() 锁下来的 s_participate_mask，不是实时的开关。 */
-static uint8_t participates(uint8_t i) {
-    return (uint8_t)((s_participate_mask >> i) & 1u);
+/* 本轮这台参不参与。看的是 start() 锁下来的 zero.participate_mask，不是实时的开关。 */
+static uint8_t participates(Gimbal* g, uint8_t i) {
+    return (uint8_t)((g->zero.participate_mask >> i) & 1u);
 }
 
 /* 从 from 开始找下一台参与的电机，返回 ARM_MOTOR_NUM 表示没有了 */
-static uint8_t next_participant(uint8_t from) {
-    while (from < ARM_MOTOR_NUM && !participates(from)) from++;
+static uint8_t next_participant(Gimbal* g, uint8_t from) {
+    while (from < ARM_MOTOR_NUM && !participates(g, from)) from++;
     return from;
 }
 
@@ -140,7 +160,7 @@ static uint8_t dm_reported_since(DM_motor* dm, uint32_t since) {
 /* ---------- 步骤 ---------- */
 static void disable_all(Gimbal* g) {
     for (int i = 0; i < ARM_MOTOR_NUM; i++) {
-        if (!participates(i)) continue;
+        if (!participates(g, i)) continue;
         DM_motor* dm = dm_at(g, (uint8_t)i);
         if (dm) {
             DMmotor_Disable(dm);
@@ -161,7 +181,7 @@ static uint8_t dm_disabled_confirmed(DM_motor* dm, uint32_t now) {
  * 所以参与了也只算它一票通过 —— 等 CAN3 通了再回来看要不要补判据。 */
 static uint8_t all_disabled(Gimbal* g, uint32_t now) {
     for (int i = 0; i < ARM_MOTOR_NUM; i++) {
-        if (!participates(i)) continue;
+        if (!participates(g, i)) continue;
         DM_motor* dm = dm_at(g, (uint8_t)i);
         if (dm == NULL) continue; /* 对象都没建起来，判不了 */
         if (!dm_disabled_confirmed(dm, now)) return 0;
@@ -188,130 +208,193 @@ static void keep_monitors_alive(Gimbal* g) {
 
 /* 本轮结束：扫描每台的结果决定 DONE 还是 TIMEOUT(两种情况都要给反馈)。
  * force_bad=1 用于"失能没确认"和"整体超时"这两条没有单台结果的失败路径。 */
-static void finish(uint32_t now, uint8_t force_bad) {
+static void finish(Gimbal* g, uint32_t now, uint8_t force_bad) {
     uint8_t bad = force_bad;
     for (int i = 0; i < ARM_MOTOR_NUM && !bad; i++) {
-        if (!participates((uint8_t)i)) continue;
-        if (arm_zero_result[i] == ARM_ZERO_RES_TIMEOUT ||
-            arm_zero_result[i] == ARM_ZERO_RES_FAIL ||
-            arm_zero_result[i] == ARM_ZERO_RES_NONE)
+        if (!participates(g, (uint8_t)i)) continue;
+        if (g->zero.result[i] == ARM_ZERO_RES_TIMEOUT ||
+            g->zero.result[i] == ARM_ZERO_RES_FAIL ||
+            g->zero.result[i] == ARM_ZERO_RES_NONE)
             bad = 1;
     }
-    arm_zero_elapsed_ms = (uint32_t)(now - s_start_ms);
-    arm_zero_state = bad ? ARM_ZERO_TIMEOUT : ARM_ZERO_DONE;
+    g->zero.elapsed_ms = (uint32_t)(now - g->zero.start_ms);
+    g->zero.state = bad ? ARM_ZERO_TIMEOUT : ARM_ZERO_DONE;
 }
 
 /* 这一台完事，换下一台；没有下一台就结束 */
 static void advance(Gimbal* g, uint32_t now) {
-    s_index = next_participant((uint8_t)(s_index + 1));
-    s_phase_ms = now;
-    s_dm_woken = 0;
-    if (s_index >= ARM_MOTOR_NUM) {
-        finish(now, 0);
+    g->zero.index = next_participant(g, (uint8_t)(g->zero.index + 1));
+    g->zero.phase_ms = now;
+    g->zero.dm_woken = 0;
+    if (g->zero.index >= ARM_MOTOR_NUM) {
+        finish(g, now, 0);
         return;
     }
-    arm_zero_state = ARM_ZERO_SEND;
+    g->zero.state = ARM_ZERO_SEND;
 }
 
 /* 重发当前这台的设零帧(达妙)。若刚唤醒过，先补一帧失能把它关回去。 */
-static void dm_resend_zero(DM_motor* dm, uint32_t now) {
-    if (s_dm_woken) {
+static void dm_resend_zero(Gimbal* g, DM_motor* dm, uint32_t now) {
+    if (g->zero.dm_woken) {
         DMmotor_Disable(dm);
-        s_dm_woken = 0;
+        g->zero.dm_woken = 0;
     }
     DMmotor_Save_Zero(dm);
-    arm_zero_retry[s_index]++;
-    s_send_ms = now;
-    /* s_before_pos 不更新：它代表"这台设零之前本来是多少" */
+    g->zero.retry[g->zero.index]++;
+    g->zero.send_ms = now;
+    /* g->zero.before_pos 不更新：它代表"这台设零之前本来是多少" */
 }
 
 /* 达妙：读位置判成败。成功要顺手把唤醒过的电机再关回去。 */
 static void dm_evaluate(Gimbal* g, DM_motor* dm, uint32_t now) {
-    if (fabsf(dm->fdb_position) <= ARM_ZERO_DM_POS_TOL_RAD) {
-        if (fabsf(s_before_pos) <= ARM_ZERO_DM_POS_TOL_RAD) {
+    if (fabsf(dm->fdb_position) <= ARM_ZERO_POS_TOL_RAD) {
+        if (fabsf(g->zero.before_pos) <= ARM_ZERO_POS_TOL_RAD) {
             /* 设零前本来就在容差内：前后都是 ~0，**无法分辨**这一帧到底写进去没有。
              * 如实记 UNCONFIRMED，不谎报成功。 */
-            arm_zero_result[s_index] = ARM_ZERO_RES_UNCONFIRMED;
+            g->zero.result[g->zero.index] = ARM_ZERO_RES_UNCONFIRMED;
         } else {
             /* 明显被拉到了 0 —— 设零确实生效了 */
-            arm_zero_result[s_index] = ARM_ZERO_RES_OK;
+            g->zero.result[g->zero.index] = ARM_ZERO_RES_OK;
             /* 设零后编码器读数整体平移，累计圈数 round 是相对旧零点的，按新零点归零。
              * 这里在 MotorTask 里写、CAN 中断里也会写 round，是个宽宏大量的竞争
              * (设零期间本来就没有常规控制)。 */
             dm->round = 0;
             dm->real_fdb_position = dm->fdb_position;
         }
-        if (s_dm_woken) {
+        if (g->zero.dm_woken) {
             DMmotor_Disable(dm); /* 读完关回去，保持"全失能" */
-            s_dm_woken = 0;
+            g->zero.dm_woken = 0;
         }
         advance(g, now);
         return;
     }
-    dm_resend_zero(dm, now); /* 没到 0：重发 */
+    dm_resend_zero(g, dm, now); /* 没到 0：重发 */
 }
 
 /* ② 给当前这台发设零帧。一次只发一台：ENCOS 有">500ms 总线指令间隔"的硬要求，
  * 达妙一次一台也无害。 */
 static void send_current(Gimbal* g, uint32_t now) {
-    DM_motor* dm = dm_at(g, s_index);
+    DM_motor* dm = dm_at(g, g->zero.index);
     if (dm) {
-        s_before_pos = dm->fdb_position;
-        s_dm_woken = 0;
+        g->zero.before_pos = dm->fdb_position;
+        g->zero.dm_woken = 0;
         DMmotor_Save_Zero(dm);
-        s_send_ms = now;
-        arm_zero_state = ARM_ZERO_CHECK;
+        g->zero.send_ms = now;
+        g->zero.state = ARM_ZERO_CHECK;
         return;
     }
-    ENCOS_motor* ec = encos_at(g, s_index);
+    ENCOS_motor* ec = encos_at(g, g->zero.index);
     if (ec == NULL) {
-        arm_zero_result[s_index] = ARM_ZERO_RES_FAIL; /* 对象没建起来，这台的活干不了 */
+        g->zero.result[g->zero.index] = ARM_ZERO_RES_FAIL; /* 对象没建起来，这台的活干不了 */
         advance(g, now);
         return;
     }
+    /* 记下"设零前是多少"：判成败要用它区分"真的被拉到 0"和"本来就在 0"(同达妙那条路)。
+     * Save_Zero 会清掉 feedback_valid 的 POSITION 位，但 fdb_position 里的**值**还是最后
+     * 收到的那一帧 —— 设零期间臂是失能静止的，这个值就是设零前的位姿。 */
+    g->zero.before_pos = ec->fdb_position;
     ENCOS_Result r = ENCOSmotor_Save_Zero(ec);
     if (r == ENCOS_BUSY) {
         /* 还在上一台设零帧之后的总线静默期(501ms)里，下一拍再试 */
-        arm_zero_state = ARM_ZERO_SEND;
+        g->zero.state = ARM_ZERO_SEND;
         return;
     }
-    s_send_ms = now;
-    arm_zero_state = ARM_ZERO_CHECK;
+    g->zero.send_ms = now;
+    g->zero.state = ARM_ZERO_CHECK;
 }
 
 /* ③ 检查当前这一台成没成；不成就在单台窗口内反复重发 */
 static void check_current(Gimbal* g, uint32_t now) {
-    DM_motor* dm = dm_at(g, s_index);
+    DM_motor* dm = dm_at(g, g->zero.index);
     uint32_t limit = dm ? ARM_ZERO_DM_PER_MOTOR_MS : ARM_ZERO_ENCOS_PER_MOTOR_MS;
-    if ((uint32_t)(now - s_phase_ms) >= limit) {
+    if ((uint32_t)(now - g->zero.phase_ms) >= limit) {
         /* 反复试到超时。达妙"本来就在 0 附近、写没写进去看不出来"的那种，上面已经判过
-         * UNCONFIRMED 了，走到这里是真的没拉到 0。 */
-        if (arm_zero_result[s_index] != ARM_ZERO_RES_FAIL)
-            arm_zero_result[s_index] = ARM_ZERO_RES_TIMEOUT;
+         * UNCONFIRMED 了，走到这里是真的没拉到 0。
+         * ENCOS：ACK 报了成功、只是**位置没来得及核对上**的话不能报"超时/失败" ——
+         * 电机那边很可能已经写好了(实测就是这样)，如实记"已发未确认"。 */
+        ENCOS_motor* ecto = dm ? NULL : encos_at(g, g->zero.index);
+        if (g->zero.result[g->zero.index] != ARM_ZERO_RES_FAIL)
+            g->zero.result[g->zero.index] =
+                (ecto != NULL && ecto->zero_ack_received && ecto->zero_ack_success)
+                ? ARM_ZERO_RES_UNCONFIRMED
+                : ARM_ZERO_RES_TIMEOUT;
         advance(g, now);
         return;
     }
 
     if (dm == NULL) {
-        /* ENCOS：库自己收 0x7FF 的应答(ENCOS_motor.c 的 RxCallBack)，我们只看结果 */
-        ENCOS_motor* ec = encos_at(g, s_index);
+        /* ENCOS：库自己收 0x7FF 的应答(ENCOS_motor.c 的 RxCallBack)。但 **ACK 只说明算命令
+         * 收到了，不等于零点真写进去了** —— 库自己的 README 也写着"失败/超时不要假定零点
+         * 设置成功；核对反馈后由应用决定是否重试"。所以 ACK 报成功之后还要再核一帧位置。
+         *
+         * "新"位置怎么判：驱动在**发出设零帧时**和**收到 ACK 时**都把 feedback_valid 的
+         * POSITION 位清掉了(ENCOS_motor.c 的 Save_Zero / RxCallBack)，而它只被"解出一帧
+         * 真位置"重新置起。所以这一位重新立起来 ⟺ 设零之后的第一帧位置反馈到了 ——
+         * 不用自己记时间戳，也不会把设零前那帧老位置当成新位置读进来。 */
+        ENCOS_motor* ec = encos_at(g, g->zero.index);
         if (ec == NULL) {
-            arm_zero_result[s_index] = ARM_ZERO_RES_FAIL;
+            g->zero.result[g->zero.index] = ARM_ZERO_RES_FAIL;
             advance(g, now);
             return;
         }
-        if (ec->zero_ack_received) {
-            if (ec->zero_ack_success) {
-                arm_zero_result[s_index] = ARM_ZERO_RES_OK;
-                advance(g, now);
-            } else {
-                /* 协议明确回了"失败"：记下来再发一遍(Save_Zero 会清掉上次的 ACK 标志) */
-                arm_zero_result[s_index] = ARM_ZERO_RES_FAIL;
-                if (ENCOSmotor_Save_Zero(ec) == ENCOS_OK) {
-                    arm_zero_retry[s_index]++;
-                    s_send_ms = now;
-                }
+        /* ---- ACK 等它自己来；**别在这儿发帧去顶** ----
+         * 见文件头第 5 条：ACK 的到达时刻只跟电机那边写完没有有关(实测 0.4~5s 不等，反复
+         * 触发还会更慢)，位置查询(0xE0)和零增益停止帧都顶不动它 —— 实测发了帧遥测是回来了，
+         * ACK 照样压着。设零期间这条总线是我们自己关着门的(见 arm_zero.h 文件头)，但**关门
+         * 不影响 ACK** —— 它本来就是"写完了自己回来"的。
+         * 等有上限：等够 ARM_ZERO_ENCOS_ACK_WAIT_MS 还不来就走下面的退让路(见判位置那段)。 */
+        if (!ec->zero_ack_received) {
+            if ((uint32_t)(now - g->zero.send_ms) < ARM_ZERO_ENCOS_ACK_WAIT_MS) return;
+        } else if (!ec->zero_ack_success) {
+            /* 协议明确回了"失败"：记下来再发一遍(Save_Zero 会清掉上次的 ACK 标志) */
+            g->zero.result[g->zero.index] = ARM_ZERO_RES_FAIL;
+            if (ENCOSmotor_Save_Zero(ec) == ENCOS_OK) {
+                g->zero.retry[g->zero.index]++;
+                g->zero.send_ms = now;
             }
+            return;
+        }
+        if (!(ec->feedback_valid & ENCOS_HAS_POSITION)) {
+            /* 等**设零之后的新位置**。POSITION 位在发设零帧和收 ACK 时都被驱动清掉了
+             * (ENCOS_motor.c 的 Save_Zero / RxCallBack)，只有"解出一帧真位置"才重新立起 ——
+             * 所以这一位立起来 ⟺ 我们要的那帧新位置到了，不会把设零前的老位置当新位置用。
+             * (走退让路时 ACK 没来、没人清这一位，但 Save_Zero 已经清过一次了，同样只有
+             *  设零后的真位置才立得起来。)
+             * 怎么要：ENCOS 是问答式的，得主动顶一帧。**发的是零增益停止帧**
+             * (ENCOSmotor_Disable() → send_stop() → type 0 混控帧，和空闲期 500Hz 扫描发的同一
+             * 形状，停着的电机收到它不会动，也不会碰零点)。电机收到它回一帧 type 1 遥测，
+             * 里面就带着位置。
+             * 不必每拍都发：501ms 的总线指令闸(驱动 bus_busy())会挡掉太密的，这里再按
+             * ARM_ZERO_ENCOS_POKE_MS 排一下节奏。发不出去(BUSY)就下一拍再来 —— 下一拍的
+             * retry_ms 会重新起算，不会因为忙就空转到窗口尽头。 */
+            if ((uint32_t)(now - g->zero.retry_ms) >= ARM_ZERO_ENCOS_POKE_MS) {
+                g->zero.retry_ms = now; /* 借它当"上次顶帧"的时间戳 */
+                ENCOSmotor_Disable(ec);
+            }
+            return;
+        }
+        /* ---- 判位置(两条路合流：ACK 确认过 / 等够退让) ----
+         * 判据和达妙那条路**逐字相同**(用户对达妙那四台就是定的这个，容差也一样)：
+         *   位置出容差 → 失败 + 重发；位置在容差内、设零前也在容差内 → 无法分辨，记"已发未确认"；
+         *   位置在容差内、设零前在容差外 → 真的被拉到 0 了，记成功。
+         * 没有 ACK 就走到这儿的，记进 ack_missing_mask：这一位让"ACK 确认过的成功"和
+         * "只看位置的成功"在结果里分得开，不混成一个 OK(见 arm_zero.h 里那个字段的说明)。 */
+        if (!ec->zero_ack_received)
+            g->zero.ack_missing_mask |= (uint8_t)(1u << g->zero.index);
+        if (fabsf(ec->fdb_position) <= ARM_ZERO_POS_TOL_RAD) {
+            g->zero.result[g->zero.index] =
+                fabsf(g->zero.before_pos) <= ARM_ZERO_POS_TOL_RAD
+                    ? ARM_ZERO_RES_UNCONFIRMED
+                    : ARM_ZERO_RES_OK;
+            advance(g, now);
+            return;
+        }
+        /* 位置没到零点(ACK 说成功 / 没等到 ACK 都算)：如实记失败并重发一次(重发受 501ms
+         * 总线静默期约束，Save_Zero 忙的话这个 result 就留在 FAIL 上，由整体/单台超时收尾)。 */
+        g->zero.result[g->zero.index] = ARM_ZERO_RES_FAIL;
+        if (ENCOSmotor_Save_Zero(ec) == ENCOS_OK) {
+            g->zero.retry[g->zero.index]++;
+            g->zero.send_ms = now;
         }
         return;
     }
@@ -320,23 +403,23 @@ static void check_current(Gimbal* g, uint32_t now) {
      *   A. 失能后**仍然**发反馈的固件(实测 j4)：等一帧新反馈直接读位置；
      *   B. 失能后**不再**发反馈的固件(实测 j5)：没反馈可读，先发一帧使能(0xFC)把它
      *      唤醒，读到新位置之后再发 0xFD 关回去 —— 这也是达妙上位机设完零点的做法。 */
-    if (s_dm_woken == 0) {
-        if ((uint32_t)(now - s_send_ms) < ARM_ZERO_DM_VERIFY_DELAY_MS) return;
-        if (dm_reported_since(dm, s_send_ms)) { /* A 路 */
+    if (g->zero.dm_woken == 0) {
+        if ((uint32_t)(now - g->zero.send_ms) < ARM_ZERO_DM_VERIFY_DELAY_MS) return;
+        if (dm_reported_since(dm, g->zero.send_ms)) { /* A 路 */
             dm_evaluate(g, dm, now);
             return;
         }
         DMmotor_Enable(dm); /* B 路：唤醒 */
-        s_dm_woken = 1;
-        arm_zero_wake_mask |= (uint8_t)(1u << s_index);
-        s_send_ms = now; /* 复用这个时间戳当"唤醒帧发出时刻" */
+        g->zero.dm_woken = 1;
+        g->zero.wake_mask |= (uint8_t)(1u << g->zero.index);
+        g->zero.send_ms = now; /* 复用这个时间戳当"唤醒帧发出时刻" */
         return;
     }
     /* 唤醒帧已经发出去了，等它把反馈发回来 */
-    if ((uint32_t)(now - s_send_ms) < ARM_ZERO_DM_WAKE_MS) return;
-    if (!dm_reported_since(dm, s_send_ms)) {
+    if ((uint32_t)(now - g->zero.send_ms) < ARM_ZERO_DM_WAKE_MS) return;
+    if (!dm_reported_since(dm, g->zero.send_ms)) {
         /* 唤醒也没换来反馈：整台重来(先补失能，再重发设零帧) */
-        dm_resend_zero(dm, now);
+        dm_resend_zero(g, dm, now);
         return;
     }
     dm_evaluate(g, dm, now);
@@ -344,40 +427,47 @@ static void check_current(Gimbal* g, uint32_t now) {
 
 /* 开始一轮 */
 static void start(Gimbal* g, uint32_t now) {
-    /* 先定参与集(见 s_participate_mask 的注释)：达妙 4 台恒参与，ENCOS 那 3 台看开关。
+    /* 先定参与集(见 g->zero.participate_mask 的注释)：达妙 4 台恒参与，ENCOS 那 3 台看开关。
      * 这一轮从头到尾都按这个集子走，中途翻开关不影响本轮。 */
-    s_participate_mask = arm_zero_participate_override;
-    /* 覆盖是**一次性**的：锁进 s_participate_mask 之后就地清掉(和 arm_zero_request 被消费
+    g->zero.participate_mask = g->zero.participate_override;
+    /* 覆盖是**一次性**的：锁进 g->zero.participate_mask 之后就地清掉(和 g->zero.request 被消费
      * 一个路子)。这样即使触发的那个上层动作被外部中途打断(比如遥控器上线，robot_state
      * 会把 auto_mode 直接清掉，那边的收尾代码就跑不到了)，也不会留下一个"以后每次设零
      * 都只设夹爪"的雷。 */
-    arm_zero_participate_override = 0;
-    if (s_participate_mask == 0) { /* 覆盖为 0 = 照旧(整臂) */
+    g->zero.participate_override = 0;
+    if (g->zero.participate_mask == 0) { /* 覆盖为 0 = 默认集：六个关节 */
         for (int i = 0; i < ARM_MOTOR_NUM; i++) {
             if (i <= JOINT3 && !arm_zero_encos_enable) continue; /* j1~j3 占位：只记 SKIP */
-            s_participate_mask |= (uint8_t)(1u << i);
+            /* 夹爪**不在默认集里**：它的"零"是行程中点(∓142)，只能靠"推到限位→退回半个
+             * 行程"那个找零流程得到(见 arm_auto.c 的夹爪找零)，把当前开口设成零是错的。
+             * 要设夹爪就显式写 participate_override 点名(那条路本来就这么用)。 */
+            if (i == GRIPPER) continue;
+            g->zero.participate_mask |= (uint8_t)(1u << i);
         }
     }
     for (int i = 0; i < ARM_MOTOR_NUM; i++) {
-        arm_zero_result[i] = participates((uint8_t)i) ? ARM_ZERO_RES_NONE : ARM_ZERO_RES_SKIP;
-        arm_zero_retry[i] = 0;
+        g->zero.result[i] = participates(g, (uint8_t)i) ? ARM_ZERO_RES_NONE : ARM_ZERO_RES_SKIP;
+        g->zero.retry[i] = 0;
     }
-    s_start_ms = now;
-    s_phase_ms = now;
-    s_retry_ms = now;
-    s_index = next_participant(0);
-    s_dm_woken = 0;
-    s_before_pos = 0.0f;
-    arm_zero_elapsed_ms = 0;
-    arm_zero_disable_confirmed = 0;
-    arm_zero_wake_mask = 0;
+    g->zero.start_ms = now;
+    g->zero.phase_ms = now;
+    g->zero.retry_ms = now;
+    g->zero.index = next_participant(g, 0);
+    g->zero.dm_woken = 0;
+    g->zero.before_pos = 0.0f;
+    g->zero.elapsed_ms = 0;
+    g->zero.disable_confirmed = 0;
+    g->zero.wake_mask = 0;
+    g->zero.ack_missing_mask = 0;
 
     disable_all(g);                         /* ① 所有参与电机失能 */
-    arm_zero_state = ARM_ZERO_WAIT_DISABLE; /* ② 等确认 */
+    g->zero.state = ARM_ZERO_WAIT_DISABLE; /* ② 等确认 */
 }
 
-uint8_t Arm_Zero_Busy(void) {
-    switch ((Arm_zero_state)arm_zero_state) {
+uint8_t Arm_Zero_Busy(Gimbal* g) {
+    /* g 为 NULL(驱动没建起来)时算"不忙"：没有电机对象就没有帧要发，让它照常走。 */
+    if (g == NULL) return 0;
+    switch ((Arm_zero_state)g->zero.state) {
     case ARM_ZERO_DISABLE:
     case ARM_ZERO_WAIT_DISABLE:
     case ARM_ZERO_SEND:
@@ -388,66 +478,60 @@ uint8_t Arm_Zero_Busy(void) {
     }
 }
 
-void Arm_Zero_Loop(void) {
-    /* gimbal 是 CmdTask 里建的(Gimbal_Create() 依赖 CAN 已初始化，见 gimbal_arm.h)。
-     * MotorTask 里读这个指针：指针写是原子的，最坏情况也只是这一拍拿到 NULL —— 那样
-     * 请求留着不消费，下一拍再来。 */
-    Gimbal* g = gimbal;
+void Arm_Zero_Loop(Gimbal* g) {
+    /* g 是 CmdTask 里建的(Gimbal_Create() 依赖 CAN 已初始化，见 gimbal_arm.h)，MotorTask
+     * 每拍读它。指针写是原子的，最坏情况也只是这一拍拿到 NULL —— 那样**什么都不做**：
+     * 请求留着不消费，下一拍再来(状态也全在 g 里，没有 g 就没有状态可推进)。 */
+    if (g == NULL) return;
     uint32_t now = HAL_GetTick();
 
-    if (!Arm_Zero_Busy()) {
+    if (!Arm_Zero_Busy(g)) {
         /* 空闲或上一轮已结束：只有请求来了才开新一轮(所以写 1 可以重复触发) */
-        if (!arm_zero_request || g == NULL) return;
-        arm_zero_request = 0;
+        if (!g->zero.request) return;
+        g->zero.request = 0;
         start(g, now);
-        return;
-    }
-
-    if (g == NULL) {
-        /* 理论上不会：状态机是 gimbal 存在之后才起来的 */
-        finish(now, 1);
         return;
     }
 
     keep_monitors_alive(g);
 
     /* 整体兜底 */
-    if ((uint32_t)(now - s_start_ms) >= ARM_ZERO_TOTAL_MS) {
-        finish(now, 1);
+    if ((uint32_t)(now - g->zero.start_ms) >= ARM_ZERO_TOTAL_MS) {
+        finish(g, now, 1);
         return;
     }
 
-    switch ((Arm_zero_state)arm_zero_state) {
+    switch ((Arm_zero_state)g->zero.state) {
     case ARM_ZERO_WAIT_DISABLE:
 #if ARM_ZERO_DISABLE_NEED_CONFIRM
         if (all_disabled(g, now)) {
-            arm_zero_disable_confirmed = 1;
-            s_index = next_participant(0);
-            s_phase_ms = now;
-            if (s_index >= ARM_MOTOR_NUM) {
-                finish(now, 0);
+            g->zero.disable_confirmed = 1;
+            g->zero.index = next_participant(g, 0);
+            g->zero.phase_ms = now;
+            if (g->zero.index >= ARM_MOTOR_NUM) {
+                finish(g, now, 0);
                 break;
             }
-            arm_zero_state = ARM_ZERO_SEND;
-        } else if ((uint32_t)(now - s_phase_ms) >= ARM_ZERO_DISABLE_CONFIRM_MS) {
+            g->zero.state = ARM_ZERO_SEND;
+        } else if ((uint32_t)(now - g->zero.phase_ms) >= ARM_ZERO_DISABLE_CONFIRM_MS) {
             /* 等不到失能确认：**不往下发设零帧**(电机可能还带着力矩)。
-             * 如实报超时，arm_zero_disable_confirmed 留在 0 供排查。 */
-            finish(now, 1);
-        } else if ((uint32_t)(now - s_retry_ms) >= ARM_ZERO_DISABLE_RETRY_MS) {
-            s_retry_ms = now;
+             * 如实报超时，g->zero.disable_confirmed 留在 0 供排查。 */
+            finish(g, now, 1);
+        } else if ((uint32_t)(now - g->zero.retry_ms) >= ARM_ZERO_DISABLE_RETRY_MS) {
+            g->zero.retry_ms = now;
             disable_all(g); /* 没确认就再发一遍 */
         }
 #else
         /* 退让路径：不判确认，发完等固定时间就走 */
-        if ((uint32_t)(now - s_phase_ms) >= ARM_ZERO_DISABLE_FALLBACK_MS) {
-            arm_zero_disable_confirmed = 1;
-            s_index = next_participant(0);
-            s_phase_ms = now;
-            if (s_index >= ARM_MOTOR_NUM) {
-                finish(now, 0);
+        if ((uint32_t)(now - g->zero.phase_ms) >= ARM_ZERO_DISABLE_FALLBACK_MS) {
+            g->zero.disable_confirmed = 1;
+            g->zero.index = next_participant(g, 0);
+            g->zero.phase_ms = now;
+            if (g->zero.index >= ARM_MOTOR_NUM) {
+                finish(g, now, 0);
                 break;
             }
-            arm_zero_state = ARM_ZERO_SEND;
+            g->zero.state = ARM_ZERO_SEND;
         }
 #endif
         break;

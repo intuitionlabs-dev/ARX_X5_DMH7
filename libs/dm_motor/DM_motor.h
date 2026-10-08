@@ -48,7 +48,7 @@ typedef struct dm_motor_config_t {
     DM_output_mode output_mode;  // 达妙电机输出方向，默认正转
     /* 发送分组掩码(见 libs/can/can_config.h 的 CAN_TX_xxxHZ_Gn)：
      * 这一路控制帧属于哪些组。总线只在"当前组"匹配时才真的发出去，
-     * 于是**控制频率由掩码决定**——每 1ms 调一次 Calc_Send、传 CAN_TX_500HZ_G0
+     * 于是**控制频率由掩码决定**——1ms 一拍、每拍轮着调一次 Send_Step、传 CAN_TX_500HZ_G0
      * 就是 500 Hz，不需要再在驱动里分频。命令帧(使能/失能/设零)不走这个，
      * 一律 CAN_TX_GROUP_ALL。 */
     uint8_t tx_group;
@@ -92,14 +92,24 @@ typedef struct dm_motor_t {
     FPS_t motor_fps;
     controller* motor_controller;   //控制器
     control_dm_func control_calc;
+
+    /* "这一拍已经处理过了" —— 由 DMmotor_Send_Step() 置位、DMmotor_Send_Begin() 每拍清 0。
+     * 轮转循环(见 freertos.c 的 StartMotorTask)一拍里会把 Send_Step 调好几次，没有这个标志
+     * 第一台电机就会被反复发。相位不匹配被跳过的电机也置位(它这一拍就是不发了)。 */
+    uint8_t sent_this_tick;
 } DM_motor;
 
 #pragma pack()
 
 void DMmotor_Driver_Init(void);
 DM_motor* DMmotor_Create(DM_motor_config* config , control_dm_func func);
-void DMmotor_Calc_Send(void);
-/* 使能/失能帧(FF..FC / FF..FD)。实现在 DM_motor.c，一直在用(DMmotor_Calc_Send 里每
+/* ---- 发送：一拍一帧的步进形式(见 DM_motor.c 的注释) ---- */
+/* 每拍开跑前调一次，清掉所有电机的 sent_this_tick */
+void DMmotor_Send_Begin(void);
+/* 在 can_id 这条总线上**最多发一帧**。返回 1 = 发了(调用方要按轮等一次最小帧间隔)，
+ * 0 = 这条总线这一拍没事干了。 */
+uint8_t DMmotor_Send_Step(uint8_t can_id);
+/* 使能/失能帧(FF..FC / FF..FD)。实现在 DM_motor.c，一直在用(DMmotor_Send_Step 里每
  * 300ms 就发一次使能)，只是当初没往头里放 —— 设零状态机(App/arm_zero.c)要用失能帧。 */
 void DMmotor_Enable(DM_motor* obj);
 void DMmotor_Disable(DM_motor* obj);

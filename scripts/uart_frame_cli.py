@@ -36,9 +36,21 @@ j1-integral-window-and-ff），调试时反而不好解释。需要时再扩。
     python3 scripts/uart_frame_cli.py                # 真机：自动挑口子（板子 USB 优先，
                                                      # 退回 1a86 RS485 适配器），921600
     python3 scripts/uart_frame_cli.py --port /dev/ttyACM0   # 指定口子
+    python3 scripts/uart_frame_cli.py --arm-id 1     # 控制 CAN2 上那台（默认 0 = CAN1）
     python3 scripts/uart_frame_cli.py --fake         # 假板子，不接硬件就能把面板/按键/状态机走一遍
     python3 scripts/uart_frame_cli.py --selftest     # 协议层离线自测（CRC/版本码/编解码/重同步）
 面板里按 h 看按键表。
+
+**控制哪一台臂由启动参数 --arm-id 定死，一个进程只驱动一台。** 板子是双臂共用一条
+上位机链路的：所有命令帧和反馈帧在帧头都带一个 arm_id 字节（0=CAN1/臂A，1=CAN2/臂B），
+本进程发出的每一帧都盖自己的 arm_id，收到的帧里不是这台臂的一律不解读。于是
+`--arm-id 0` / `--arm-id 1` 就是两个**完全独立**的操作手（目标角、握手状态、事件流、
+500 ms 看门狗互不影响）—— 就像各自插了一块板子，换一台只要重启一次脚本。
+
+**但一次只能开一个**：板子那侧的上位机链路是**编译期**二选一的一路（robot_state.h 的
+ROBOT_LINK），物理上就这么一个口子，两个进程同时开同一个 tty 会互相抢字节、把帧拆散。
+要看另一台，退出重开、带上另一个 --arm-id 就行。想在一屏里同时看/同时动两台，
+那是双列面板那件事，不在这里。
 
 **安全**：默认退出**不发** 0x14（停止），只停发 0x16 —— 目标冻结、臂保持原样，
 约 500 ms 后板子自己因无帧进 damping。要立刻松劲请手动按 x，或加 --stop-on-exit。
@@ -90,9 +102,44 @@ def fnv1a32(s):
 
 
 # 版本串抄自 libs/frame/frame_config.h 的 FRAME_VERSION_STRING。
-# **版本码不硬写**，开机自己算 —— 板子上改了串这里就跟上，不用记 0xF61DCF10。
-VERSION_STRING = "Intuition-ARX-X5-2023-v0.1"
+# **版本码不硬写**，开机自己算 —— 板子上改了串这里就跟上，不用记 0xF91DD3C9。
+#
+# v0.2：帧头在 datalen 之后加了一字节 arm_id（payload 起点 5→6、整帧开销 7→8）。
+# 这是**不兼容改版**，所以版本串必须跟着改 —— 一段 v0.1 的上位机拿 v0.2 的帧会整体
+# 错位，换码能让它在 0x01 上就被板子挡下来锁死，而不是拿旧布局去解析新帧。
+VERSION_STRING = "Intuition-ARX-X5-2023-v0.2"
 VERSION_CODE = fnv1a32(VERSION_STRING)
+
+# 一块板子上有几台机械臂（板上 App/inc/robot_def.h 的 ARM_NUM）。
+# arm_id 就是 CAN 总线索引：0 = CAN1(臂A)、1 = CAN2(臂B)。
+N_ARM = 2
+# **一个进程只控制一台臂**，哪一台在启动时用 --arm-id 定死（见 parse_arm_id）。
+# 这样面板/会话/反馈全链路都只有一个 arm_id，不用在运行时切换 —— 切换意味着
+# 目标角、握手状态、事件流全要跟着换一份，那是"两台双列显示"那件事，不是这个开关。
+DEFAULT_ARM_ID = 0
+
+
+def arm_label(arm_id):
+    """面板/日志里标一台臂的统一写法。"""
+    return "臂%s(arm_id=%d, CAN%d)" % ("AB"[arm_id] if 0 <= arm_id < len("AB") else "?",
+                                       arm_id, arm_id + 1)
+
+
+def parse_arm_id(s):
+    """--arm-id 的取值校验。
+
+    板子侧只认 arm_id < ARM_NUM，越界的帧会被**静默丢弃**（连版本包都不回），
+    现象就是"什么都不动、也没有字节" —— 所以这里宁可启动时直接报错，
+    别让它变成一个要靠抓包才能诊断的沉默失败。
+    """
+    try:
+        v = int(s, 0)
+    except ValueError:
+        raise argparse.ArgumentTypeError("--arm-id 要是整数（0..%d）" % (N_ARM - 1))
+    if not 0 <= v < N_ARM:
+        raise argparse.ArgumentTypeError("--arm-id 只能是 0..%d（板上 ARM_NUM=%d）"
+                                         % (N_ARM - 1, N_ARM))
+    return v
 
 # 码表（libs/frame/type_id.h）
 TID_VERSION = 0x01        # 版本，双向
@@ -173,9 +220,13 @@ def clamp_axis(axis, v):
     return v, False
 
 
-def encode(tid, payload=b""):
-    """组一帧：AA 55 | type | datalen | crc8 | data | crc16(LE)，共 7+datalen 字节。"""
-    head = bytearray((0xAA, 0x55, tid & 0xFF, len(payload) & 0xFF))
+def encode(tid, payload=b"", arm_id=DEFAULT_ARM_ID):
+    """组一帧：AA 55 | type | datalen | arm_id | crc8 | data | crc16(LE)，共 8+datalen 字节。
+
+    arm_id 是"这一包发给哪台臂"（0 = CAN1，1 = CAN2），**所有 type_id 都带**。
+    板子侧只认 arm_id < ARM_NUM，越界的帧直接丢弃。
+    """
+    head = bytearray((0xAA, 0x55, tid & 0xFF, len(payload) & 0xFF, arm_id & 0xFF))
     b = bytearray(head)
     b.append(crc8(head))
     b += payload
@@ -231,9 +282,16 @@ def expand_inited_mask(mask):
 class FrameParser:
     """字节流 → 帧。粘包 / 前导噪声 / 半帧 / 坏 CRC 都能重同步。
 
-    重同步策略：找 AA 55 → 够 7+len 字节后先校 crc8，不对就把窗口**只挪一格**再找
+    重同步策略：找 AA 55 → 够 8+len 字节后先校 crc8，不对就把窗口**只挪一格**再找
     （而不是丢掉整帧）—— 因为 payload 里完全可能出现 AA 55。
+
+    feed() 吐出的是 **(type_id, arm_id, payload)** 三元组：arm_id 是帧头偏移 4 那个字节，
+    上层按它分流（0 = CAN1 臂 A、1 = CAN2 臂 B）。
     """
+
+    # 帧头：0..4（AA 55 / type / datalen / arm_id）+ 偏移 5 的 crc8
+    CRC8_LEN = 5
+    HEADER_LEN = 6
 
     def __init__(self):
         self.buf = bytearray()
@@ -256,21 +314,21 @@ class FrameParser:
             if i > 0:
                 self.n_drop += i
                 del self.buf[:i]
-            if len(self.buf) < 5:
+            if len(self.buf) < self.HEADER_LEN:
                 break
             n = self.buf[3]
-            total = 7 + n
+            total = 8 + n
             if len(self.buf) < total:
                 break
-            if crc8(self.buf[:4]) != self.buf[4]:
+            if crc8(self.buf[:self.CRC8_LEN]) != self.buf[self.CRC8_LEN]:
                 self.n_err_crc8 += 1
                 del self.buf[:1]
                 continue
-            if crc16(self.buf[:5 + n]) != (self.buf[5 + n] | (self.buf[6 + n] << 8)):
+            if crc16(self.buf[:6 + n]) != (self.buf[6 + n] | (self.buf[7 + n] << 8)):
                 self.n_err_crc16 += 1
                 del self.buf[:1]
                 continue
-            out.append((self.buf[2], bytes(self.buf[5:5 + n])))
+            out.append((self.buf[2], self.buf[4], bytes(self.buf[6:6 + n])))
             self.n_ok += 1
             del self.buf[:total]
         return out
@@ -478,12 +536,18 @@ class SharedState:
 
 
 class Link:
-    """真串口。写只在主线程（send），读在后台线程。"""
+    """真串口。写只在主线程（send），读在后台线程。
 
-    def __init__(self, port, baud, shared):
+    `arm_id` 是**这条链路代表的那台臂**（--arm-id）：发出去的每一帧都盖这个 id，
+    收进来的帧只认这个 id 的那些。收发两侧都在这一个属性上，所以不存在
+    "发给了 A 却在等 B 的反馈"这种半半边界的错。
+    """
+
+    def __init__(self, port, baud, shared, arm_id=DEFAULT_ARM_ID):
         self.port = port
         self.baud = baud
         self.shared = shared
+        self.arm_id = arm_id
         # 这条口子是哪种链路（"USB" / "RS485" / None）。只用来在面板/日志里标出来。
         self.kind = classify_port(usb_identity(port))
         self.ser = None
@@ -517,7 +581,7 @@ class Link:
         if self.ser is None:
             return False
         try:
-            self.ser.write(encode(tid, payload))
+            self.ser.write(encode(tid, payload, self.arm_id))
         except Exception as e:  # 拔线 / 写失败
             with self.shared.lock:
                 self.shared.link_up = False
@@ -557,8 +621,15 @@ class Link:
                         self.shared.rx_rate = self.shared._rate_n / el
                     self.shared._rate_t = now
                     self.shared._rate_n = 0
-                for tid, payload in frames:
+                for tid, arm_id, payload in frames:
                     self.shared.n_rx += 1
+                    # 只有**本进程那台臂**的帧往 shared 里落 —— shared 是单台的会话状态
+                    # （一个 fb、一个 ack），混进另一台的帧就会让面板在两台之间乱跳。
+                    # 另一台的帧照常计入 n_rx（链路上收了多少帧是链路统计，本来就该是
+                    # 全链路的），只是不解读。所以面板上"收 N 帧"是全链路的、两台都在里面，
+                    # 而"0x80 M"那个才是本台的 —— 两个数不一样是正常的，不是丢帧。
+                    if arm_id != self.arm_id:
+                        continue
                     self.shared.fb_t = now if tid == TID_ARM_FEEDBACK else self.shared.fb_t
                     if tid == TID_ARM_FEEDBACK:
                         try:
@@ -872,6 +943,10 @@ class FakeLink:
         self._thr = None
         self.shared = shared
         self.opts = opts
+        # 这台假板子扮演哪一台臂。**只是标出来**（面板/日志）——假板子只有一个状态机、
+        # 写进 shared 的也是一份解好的 dict（里面没有 arm_id 字段），所以 0 和 1 跑起来
+        # 是同一份代码。真板上那台臂由 CAN 总线物理分开，这边没有可模拟的第二条链路。
+        self.arm_id = getattr(opts, "arm_id", DEFAULT_ARM_ID)
         self.lock = threading.Lock()
         self._alive = False
         self.state = 0
@@ -1047,6 +1122,9 @@ HELP_LINES = [
     "其它时候每 150 ms 补一帧 0x01 保活（板子 500 ms 无有效帧就进 comm_lost）。",
     "被板子丢弃的 0x16 也算保活（板子的 s_last_rx_ms 在分派之前刷新），所以放心发。",
     "",
+    "控制哪一台臂由启动参数 --arm-id 定死（0=CAN1/臂A，1=CAN2/臂B），运行中不可切换；",
+    "换一台就退出重开。板子只有一路上位机链路，两个进程同时开同一个口会互相抢字节。",
+    "",
     "退出不发 0x14：目标冻结、臂保持，约 500 ms 后板子自己因无帧进 damping。",
 ]
 
@@ -1066,8 +1144,8 @@ class Ui:
         if opts.log:
             try:
                 self.logf = open(opts.log, "a", encoding="utf-8")
-                self.logf.write("# uart_frame_cli 启动 %s port=%s fake=%s\n"
-                                % (time.strftime("%F %T"), opts.port, opts.fake))
+                self.logf.write("# uart_frame_cli 启动 %s port=%s fake=%s arm_id=%d\n"
+                                % (time.strftime("%F %T"), opts.port, opts.fake, opts.arm_id))
                 self.logf.flush()
             except OSError as e:
                 self.logf = None
@@ -1117,7 +1195,8 @@ class Ui:
         fb = snap["fb"]
         y = 0
 
-        title = "机械臂串口控制台  %s  %s" % (
+        title = "机械臂串口控制台  %s  %s  %s" % (
+            arm_label(self.opts.arm_id),
             "（--fake 假板子）" if self.opts.fake else self.opts.port.split("/")[-1],
             "%d bps" % self.opts.baud)
         self.put(y, 0, title, self.attr(C_HEAD, curses.A_BOLD))
@@ -1146,7 +1225,9 @@ class Ui:
                     "1) 接线方向：适配器 TX → PA10(板子 RX)，适配器 RX → PA9(板子 TX)，GND 共地；",
                     "2) 波特率 921600；3) 板子上跑的是不是这份固件（比对版本码 0x%08X / 版本串 %s）；"
                     % (VERSION_CODE, VERSION_STRING),
-                    "4) 版本码不符时板子**静默不回包**，只能复位板子重来。",
+                    "4) 版本码不符时板子**静默不回包**，只能复位板子重来；",
+                    "5) 双臂板子上 --arm-id 选错了也是这样（越界 arm_id 被静默丢掉），"
+                    "当前是 %s。" % arm_label(self.opts.arm_id),
                 ]):
                     self.put(y + 1 + i, 0, line, self.attr(C_WARN))
         else:
@@ -1397,7 +1478,7 @@ class Ui:
                 link = FakeLink(link.shared, self.opts)
                 link.open()
             else:
-                link = Link(self.opts.port, self.opts.baud, link.shared)
+                link = Link(self.opts.port, self.opts.baud, link.shared, self.opts.arm_id)
                 link.open()
             s.link = link
             s.seeded = False
@@ -1467,19 +1548,25 @@ def selftest():
     check("crc8(参考串) == 0x0B", crc8(ref) == 0x0B, "实际 0x%02X" % crc8(ref))
 
     # 2. 版本码（FNV-1a，抄板子算法）
-    check("版本码 == 0xF61DCF10", VERSION_CODE == 0xF61DCF10, "实际 0x%08X (%s)"
+    check("版本码 == 0xF91DD3C9", VERSION_CODE == 0xF91DD3C9, "实际 0x%08X (%s)"
           % (VERSION_CODE, VERSION_STRING))
 
-    # 3. 两个已知帧逐字节比对（板上 FrameEncode 的输出）
+    # 3. 几个已知帧逐字节比对（**板上 FrameEncode 的真实输出**，用小 host 程序
+    #    gcc 编 libs/frame/frame.c 打出来抄的）。这一条是整条编解码链的锚：
+    #    帧头布局、crc8 的覆盖范围、crc16 的落点，错一处这里就红。
     ver_frame = encode(TID_VERSION, struct.pack("<I", VERSION_CODE))
     check("版本帧字节 == 板上编码器输出",
-          ver_frame.hex() == "aa550104b210cf1df6f7c3", ver_frame.hex())
+          ver_frame.hex() == "aa550104008ec9d31df91e20", ver_frame.hex())
     init_frame = encode(TID_ARM_INIT)
-    check("0x02 空包字节 == aa550200862379",
-          init_frame.hex() == "aa550200862379", init_frame.hex())
+    check("0x02 空包字节 == aa5502000051f088",
+          init_frame.hex() == "aa5502000051f088", init_frame.hex())
     reset_frame = encode(TID_ARM_RESET)
-    check("0x18 空包字节 == aa5518008d1f31",
-          reset_frame.hex() == "aa5518008d1f31", reset_frame.hex())
+    check("0x18 空包字节 == aa5518000071fdb6",
+          reset_frame.hex() == "aa5518000071fdb6", reset_frame.hex())
+    # arm_id 只改帧头那一个字节（偏移 4），crc8/crc16 都得跟着变
+    check("arm_id=1 时整帧只差 arm_id 和两个 CRC",
+          encode(TID_VERSION, struct.pack("<I", VERSION_CODE), 1).hex()
+          == "aa55010401d0c9d31df9ef30")
 
     # 4. 反馈帧编解码往返（按 1 字节一片回灌，模拟真实串口分片）
     want = {"mode": 1, "state": 4, "lost": 0x01, "inited": 0x7F,
@@ -1490,7 +1577,7 @@ def selftest():
     payload += struct.pack("<f", want["gripper"]) + bytes(want["temp"])
     check("0x80 payload 是 63 字节", len(payload) == FB_LEN, "实际 %d" % len(payload))
     wire = encode(TID_ARM_FEEDBACK, payload)
-    check("0x80 整帧是 70 字节", len(wire) == 70, "实际 %d" % len(wire))
+    check("0x80 整帧是 71 字节", len(wire) == 71, "实际 %d" % len(wire))
     ps = FrameParser()
     got = []
     for i in range(len(wire)):          # 1 字节一片
@@ -1498,7 +1585,8 @@ def selftest():
     check("逐字节回灌解出 1 帧", len(got) == 1, "实际 %d" % len(got))
     if got:
         check("tid == 0x80", got[0][0] == 0x80)
-        d = decode_feedback(got[0][1])
+        check("arm_id == 0", got[0][1] == 0, "实际 %d" % got[0][1])
+        d = decode_feedback(got[0][2])
         # 值都挑成 float32 能精确表示的（x.25 / x.5 / x.75），所以可以直接比相等
         ok = (d["joint"] == want["joint"] and d["jvel"] == want["jvel"]
               and d["gripper"] == want["gripper"]
@@ -1525,22 +1613,76 @@ def selftest():
 
     # 7. 控制帧往返 + 长度
     ctrl = encode(TID_ARM_CTRL_POS, encode_ctrl_pos([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, -141.5]))
-    check("0x16 整帧 35 字节(7+28)", len(ctrl) == 35, "实际 %d" % len(ctrl))
+    check("0x16 整帧 36 字节(8+28)", len(ctrl) == 36, "实际 %d" % len(ctrl))
     ps = FrameParser()
     got = ps.feed(ctrl)
-    check("0x16 解出来字节数 == 28", got and len(got[0][1]) == CTRL_LEN)
+    check("0x16 解出来字节数 == 28", got and len(got[0][2]) == CTRL_LEN)
     check("0x16 解出来的角 == 发出去的",
-          got and list(struct.unpack("<7f", got[0][1])) == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, -141.5])
+          got and list(struct.unpack("<7f", got[0][2])) == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, -141.5])
 
-    # 8. 版本包也算保活帧：空 payload 长度 0，整帧 7 字节
-    check("版本帧 11 字节", len(ver_frame) == 11, "实际 %d" % len(ver_frame))
+    # 8. 版本包也算保活帧：空 payload 长度 0，整帧 8 字节
+    check("版本帧 12 字节", len(ver_frame) == 12, "实际 %d" % len(ver_frame))
 
     # 8b. 0x18 空包往返（和 0x02 同款：整包语义只在 type_id 上）
-    check("0x18 整帧 7 字节(空 payload)", len(reset_frame) == 7, "实际 %d" % len(reset_frame))
+    check("0x18 整帧 8 字节(空 payload)", len(reset_frame) == 8, "实际 %d" % len(reset_frame))
     ps = FrameParser()
     got = ps.feed(reset_frame)
     check("0x18 解出 type_id 且 payload 为空",
-          len(got) == 1 and got[0][0] == TID_ARM_RESET and got[0][1] == b"")
+          len(got) == 1 and got[0][0] == TID_ARM_RESET and got[0][2] == b"")
+
+    # 8c. arm_id 要能从字节流里原样还原（0 和 1 都试）—— 分流全靠它，
+    # 解错了不会报错，只会把 B 臂的帧当成 A 臂的。
+    ps = FrameParser()
+    got = ps.feed(encode(TID_ARM_INIT, b"", 1) + encode(TID_ARM_INIT, b"", 0))
+    check("arm_id 往返(1 和 0)",
+          len(got) == 2 and got[0][1] == 1 and got[1][1] == 0
+          and got[0][0] == got[1][0] == TID_ARM_INIT,
+          "实际 %s" % [(g[0], g[1]) for g in got])
+
+    # 8d. --arm-id 的取值闸门 + **发送侧真的把自己的 arm_id 盖上了**。
+    # 这两条是"控制错了另一台"的唯一防线：板子对越界 arm_id 是静默丢弃，症状是
+    # "一切看起来都好、状态永远不动"；而 Link.arm_id 只是一个构造参数，漏传的话
+    # 代码照样跑、帧照样发（发给了臂 A），没有任何别的症状会冒出来。
+    for s, want in (("0", 0), ("1", 1), ("0x1", 1), (" 1", 1)):
+        check("--arm-id 接受 %r" % s, parse_arm_id(s) == want,
+              "实际 %r" % (parse_arm_id(s),))
+    for s in ("2", "-1", "x", "", "1.0"):
+        try:
+            parse_arm_id(s)
+        except argparse.ArgumentTypeError:
+            check("--arm-id 拒绝 %r" % s, True)
+        except Exception as e:   # 别的异常说明这个闸门根本没接上
+            check("--arm-id 拒绝 %r" % s, False, "抛的是 %r" % (e,))
+        else:
+            check("--arm-id 拒绝 %r" % s, False, "居然通过了")
+    check("默认 arm_id 就是 DEFAULT_ARM_ID", parse_arm_id(str(DEFAULT_ARM_ID)) == DEFAULT_ARM_ID)
+
+    class _CaptureSer:
+        """假串口：只把写进来的字节攒着，供下面回解。"""
+
+        def __init__(self):
+            self.buf = b""
+
+        def write(self, b):
+            self.buf += b
+
+    # 不 open()，直接把假串口塞进 ser —— 构造函数不碰 pyserial，能离线跑。
+    lk = Link("/dev/null", 921600, SharedState(), 1)
+    lk.ser = _CaptureSer()
+    wrote = lk.send(TID_ARM_INIT)
+    got = FrameParser().feed(lk.ser.buf)
+    check("Link.send 盖上了构造时给的那台臂(1)",
+          wrote and len(got) == 1 and got[0][0] == TID_ARM_INIT and got[0][1] == 1,
+          "实际 %s" % [(g[0], g[1]) for g in got])
+
+    class _Opts:
+        pass
+
+    o = _Opts()
+    o.arm_id = 1
+    check("FakeLink 记住 arm_id", FakeLink(SharedState(), o).arm_id == 1)
+    check("FakeLink 没给 arm_id 时退回默认",
+          FakeLink(SharedState(), _Opts()).arm_id == DEFAULT_ARM_ID)
 
     # 9. clamp 边界（上位机必须自己夹，否则面板显示的目标角是骗人的）
     check("clamp j1 上限", clamp_axis(0, 200) == (90.0, True))
@@ -1704,7 +1846,7 @@ def build_session(opts):
     if opts.fake:
         link = FakeLink(shared, opts)
     else:
-        link = Link(opts.port, opts.baud, shared)
+        link = Link(opts.port, opts.baud, shared, opts.arm_id)
     return Session(link, opts)
 
 
@@ -1716,6 +1858,10 @@ def main():
     ap.add_argument("--port", default=None,
                     help="串口设备（默认自动挑：优先板子 USB 0483:5740，退回 1a86 适配器）")
     ap.add_argument("--baud", type=int, default=921600, help="波特率（默认 921600）")
+    ap.add_argument("--arm-id", type=parse_arm_id, default=DEFAULT_ARM_ID,
+                    help="控制哪一台臂：0=CAN1/臂A，1=CAN2/臂B（默认 %d）。一个进程只驱动一台，"
+                         "换一台就退出重开（板子只有一路上位机链路，不能同时开两个）"
+                         % DEFAULT_ARM_ID)
     ap.add_argument("--ctrl-hz", type=float, default=100.0, help="0x16 下发频率（默认 100）")
     ap.add_argument("--fb-hz", type=float, default=5.0, help="面板刷新率（默认 5，按键响应不受影响）")
     ap.add_argument("--step", type=float, default=1.0, help="初始步长 deg（0.1/0.5/1/2/5/10）")
@@ -1772,6 +1918,10 @@ def main():
     # 两边选反了的现象是"一切都对但一个字节都没有"，所以把链路类型也标出来。
     sess.info("链路 %s" % (describe_port(opts.port) if not opts.fake
                           else "假板子（--fake，不接硬件）"))
+    # 双臂共用一条链路，所以"哪一台"必须是开机第一眼就看得见的东西 —— 开错 arm_id
+    # 的现象是"链路全好、状态永远不动"，光看统计分不出来。
+    sess.info("控制 %s：本进程发出的每一帧都盖 arm_id=%d，收到的帧里不是这一台的一律不解读"
+              % (arm_label(opts.arm_id), opts.arm_id))
     if not opts.fake and sess.link.kind == "USB":
         sess.info("板子 USB CDC：波特率 %d 在这条上无意义（CDC 是包传输）" % opts.baud)
     elif not opts.fake and sess.link.kind is None:
@@ -1790,10 +1940,11 @@ def main():
         try:
             if opts.stop_on_exit:
                 sess.link.send(TID_ARM_STOP)
-                print("退出前已补发 0x14 停止。")
+                print("已给 %s 补发 0x14 停止。" % arm_label(opts.arm_id))
             else:
-                print("已停发 0x16（目标冻结、臂保持）。约 500 ms 后板子会因 500 ms 无有效帧"
-                      "进 comm_lost → damping；要立刻松劲按 x，或用 --stop-on-exit。")
+                print("已停发 %s 的 0x16（目标冻结、臂保持）。约 500 ms 后板子会因 500 ms 无"
+                      "有效帧进 comm_lost → damping；要立刻松劲按 x，或用 --stop-on-exit。"
+                      % arm_label(opts.arm_id))
             sess.link.close()
         except Exception:
             pass

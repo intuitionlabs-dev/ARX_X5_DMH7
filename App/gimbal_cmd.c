@@ -1,6 +1,7 @@
 #include "gimbal_cmd.h"
 #include <stdlib.h>         /* malloc */
 #include <string.h>         /* memcpy / memset */
+#include "arm.h"            /* Arm —— 反指针取本台的模式源(obj->arm->arm_mode) */
 #include "arm_auto.h"       /* Arm_Reset() 等一键模式的动作本体 */
 #include "common.h"         /* fclip */
 #include "gimbal_cmd_def.h" /* JOINT_ANGLE_MIN/MAX、PLAN_SPEED_COMP_COEF */
@@ -58,8 +59,9 @@
  * 必须跟着改，否则跟踪微分器的可行域整个变样。 */
 #define GIMBAL_CMD_PERIOD_S 0.002f
 
-/* 命令层对象，Gimbal_Cmd_Create() 之后有效 */
-Gimbal_cmd* gimbal_cmd = NULL;
+/* 命令层对象**不再是全局**：一台臂一个，挂在 App/inc/arm.h 的 `Arm` 上
+ * (g_arm[N].gimbal_cmd)。原来这里是 `Gimbal_cmd* gimbal_cmd = NULL;` —— 两台臂共用一份
+ * 的话，第二台建完就把第一台的 TD/目标值/一键模式进度整个覆盖掉。 */
 
 /* 遥控器是否在线 —— 判据就一句：100 ms 内收到过遥控帧(见 libs/rc 的 is_Offline)。
  * 抽成函数是因为它在本文件里要用两处(模式判定、run 档挑输入源)，两处必须同源；
@@ -83,14 +85,16 @@ static void Arm_Ref_Set(Gimbal_cmd* obj);          // 机械臂控制值设置
 static void joint_src_follow(Gimbal_cmd* obj);  // 关节控制源跟随反馈
 static void joint_angle_td_follow(Gimbal_cmd* obj, float ref[ARM_JOINT_NUM]);  // TD 直接跟随
 
-Gimbal_cmd* Gimbal_Cmd_Create(void) {
-    /* 命令层是挂在机械臂驱动上的，驱动没建起来就什么都不用做 */
-    if (gimbal == NULL) return NULL;
+Gimbal_cmd* Gimbal_Cmd_Create(Arm* arm) {
+    /* 命令层是挂在机械臂驱动上的：臂本身、或者它的驱动没建起来，就什么都不用做。
+     * (驱动建不起来通常是堆不够，见 Gimbal_Create() 的说明。) */
+    if (arm == NULL || arm->gimbal == NULL) return NULL;
 
     Gimbal_cmd* obj = (Gimbal_cmd*)malloc(sizeof(Gimbal_cmd));
     if (obj == NULL) return NULL;
     memset(obj, 0, sizeof(Gimbal_cmd));
-    obj->gimbal = gimbal;
+    obj->arm = arm;
+    obj->gimbal = arm->gimbal;
     /* ctrl_type 是 arm_ctrl_joint(枚举值 0)，memset 之后就是它，不用再写 */
 
     /* 关节角跟踪微分器初始化。*/
@@ -133,7 +137,11 @@ void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
      *
      * 总模式状态机**照常在跑**(握手/反馈/状态迁移都不受遥控器影响)，只是它的输出在
      * 这里被盖掉。这样不需要在状态机里维护"冻结/解冻"的第二套状态。 */
-    obj->mode = Rc_Online() ? ((rc.sw_a == 1) ? arm_run : arm_stop) : Robot_State_Arm_Mode();
+    /* 离线那一支取自**本台臂**的模式字段。原来是全局的 Robot_State_Arm_Mode() ——
+     * 两台臂读同一个值是错的：总模式状态机是按臂各跑一份的(每臂各自握手、各自看门狗)，
+     * A 台掉线进了 damping 不该把 B 台也带成 damping。 */
+    obj->mode =
+        Rc_Online() ? ((rc.sw_a == 1) ? arm_run : arm_stop) : obj->arm->arm_mode;
     /* 控制类型：源工程有 关节 / 笛卡尔 / 自定义腕点 三种(靠遥控器或图传切)，本工程
      * 只剩下关节空间这一种(见 gimbal_cmd.h 的 Arm_ctrl_type)。 */
     obj->ctrl_type = arm_ctrl_joint;
@@ -322,7 +330,7 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
      *
      * 位置走 joint_src，后面 Ctrl_Src_Calc → 软限位 → TD 照常过一遍（和遥控器点动
      * 走的是同一条路）；速度前馈不走这里，在 Arm_Ref_Set() 里单独覆盖。 */
-    const Robot_ctrl_cmd* cmd = Robot_State_Ctrl();
+    const Robot_ctrl_cmd* cmd = Robot_State_Ctrl(obj->arm);
     if (cmd == NULL || !cmd->valid) return;
 
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
@@ -486,7 +494,7 @@ static void Arm_Ref_Set(Gimbal_cmd* obj) {
          * 为什么要覆盖：TD 的 v2 是"位置目标的微分"，它只知道位置在往哪走，不知道
          * 上位机打算走多快。0x17 带的速度是上位机自己的规划速度，直接当前馈用可以让
          * 速度环提前出力，跟得上；用 TD 的 v2 会有明显滞后（尤其起停那一下）。 */
-        const Robot_ctrl_cmd* cmd = Robot_State_Ctrl();
+        const Robot_ctrl_cmd* cmd = Robot_State_Ctrl(obj->arm);
         const uint8_t use_ff = (obj->mode == arm_run && !Rc_Online() && cmd != NULL
             && cmd->valid && cmd->has_vel);
 

@@ -81,12 +81,10 @@ static const ENCOS_Ranges ENCOS_JOINT_RANGES = {
     .current = {-30.0f, 30.0f},   // 见上面「必须和电机一致」那段，实测核对
 };
 
-/* 私有变量 */
-static controller* motor_controller_list[ARM_MOTOR_NUM];  // 电机控制器数组，便于缩减代码冗余
-static monitor_item* motor_monitor_list[ARM_MOTOR_NUM];  // 电机监视器数组，便于缩减代码冗余
-
-/* 机械臂对象，Gimbal_Create() 之后有效(Create 在 StartCmdTask 里调，见 gimbal_arm.h) */
-Gimbal* gimbal;
+/* 私有变量 —— 原来这里有两个文件级数组 motor_controller_list[]/motor_monitor_list[]，
+ * 以及全局 `Gimbal* gimbal`。双臂之后它们全挪进了 Gimbal 结构体（见 gimbal_arm.h）：
+ * 一份数组被两台臂共用的话，第二台 Create() 建完就把第一台的指针覆盖了，
+ * CmdTask 里第一台就会拿着第二台的电机在跑。下面所有用到的地方都改成了显式成员访问。 */
 
 // DEBUG:
 float g_fdb_pos;
@@ -112,15 +110,19 @@ static uint8_t encos_joint_init(Gimbal* obj, uint8_t joint) {
     motor->config.arg = motor;
     motor->kp = obj->encos_kpkd[joint][0];
     motor->kd = obj->encos_kpkd[joint][1];
-    motor_controller_list[joint] = motor->motor_controller;
-    motor_monitor_list[joint] = motor->monitor;
+    obj->motor_controller_list[joint] = motor->motor_controller;
+    obj->motor_monitor_list[joint] = motor->monitor;
     return 1;
 }
 
-Gimbal* Gimbal_Create(void) {
+Gimbal* Gimbal_Create(uint8_t can_index) {
     /* 创建实例 */
     Gimbal* obj = (Gimbal*)malloc(sizeof(Gimbal));
     memset(obj, 0, sizeof(Gimbal));
+
+    /* 这台臂走哪路 CAN(= 臂号)。下面 7 台电机的 bsp_can_index 全用它，达妙反馈回调
+     * 也按它过滤（两台臂的达妙 ID 完全一样，不按总线过滤会互相吃反馈）。 */
+    obj->can_index = can_index;
 
     /* 各关节电机创建 */
     pid_init(obj);
@@ -138,7 +140,7 @@ Gimbal* Gimbal_Create(void) {
         // Joint1 ENCOS V1.20EAP。
         ENCOS_motor_config joint1_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT1],
-            .bsp_can_index = 0,  // CAN1：7 台电机合并到一条总线，见上面的分组表
+            .bsp_can_index = can_index,  // 这台臂走哪路 CAN，见函数开头
             .can_tx_id = 0x01,
             .can_rx_id = 0x01,  // ENCOS 要求收发同 id，否则 Create 直接返回 NULL
             .lost_callback_ = Joint1_Motor_Lost,
@@ -159,7 +161,7 @@ Gimbal* Gimbal_Create(void) {
         // Joint2 ENCOS V1.20EAP(原 dm8009 的位置)。CAN id 用 SDK 那套：j2 = 2
         ENCOS_motor_config joint2_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT2],
-            .bsp_can_index = 0,  // CAN1：7 台电机合并到一条总线，见上面的分组表
+            .bsp_can_index = can_index,  // 这台臂走哪路 CAN，见函数开头
             .can_tx_id = 0x02,
             .can_rx_id = 0x02,  // ENCOS 要求收发同 id，否则 Create 直接返回 NULL
             .lost_callback_ = Joint2_Motor_Lost,
@@ -180,7 +182,7 @@ Gimbal* Gimbal_Create(void) {
         // Joint3 ENCOS V1.20EAP(原 dm4340p 的位置)。CAN id 用 SDK 那套：j3 = 4
         ENCOS_motor_config joint3_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT3],
-            .bsp_can_index = 0,
+            .bsp_can_index = can_index,
             .can_tx_id = 0x04,
             .can_rx_id = 0x04,  // ENCOS 要求收发同 id，否则 Create 直接返回 NULL
             .lost_callback_ = Joint3_Motor_Lost,
@@ -219,7 +221,7 @@ Gimbal* Gimbal_Create(void) {
         // Joint4 DM4310
         DM_motor_config joint4_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT4],
-            .bsp_can_index = 0,
+            .bsp_can_index = can_index,
             .can_tx_id = 0x05,
             .can_rx_id = 0x00,
             .lost_callback_ = Joint4_Motor_Lost,
@@ -238,13 +240,13 @@ Gimbal* Gimbal_Create(void) {
         obj->joint4->config.arg = obj->joint4;
         obj->joint4->kp = obj->pid_mit_kpkd[JOINT4][0];
         obj->joint4->kd = obj->pid_mit_kpkd[JOINT4][1];
-        motor_controller_list[JOINT4] = obj->joint4->motor_controller;
-        motor_monitor_list[JOINT4] = obj->joint4->monitor;
+        obj->motor_controller_list[JOINT4] = obj->joint4->motor_controller;
+        obj->motor_monitor_list[JOINT4] = obj->joint4->monitor;
 
         // Joint5 DM4310
         DM_motor_config joint5_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT5],
-            .bsp_can_index = 0,
+            .bsp_can_index = can_index,
             .can_tx_id = 0x06,
             .can_rx_id = 0x00,  // MST_ID=0，见 JOINT4 处的说明
             .lost_callback_ = Joint5_Motor_Lost,
@@ -263,13 +265,13 @@ Gimbal* Gimbal_Create(void) {
         obj->joint5->config.arg = obj->joint5;
         obj->joint5->kp = obj->pid_mit_kpkd[JOINT5][0];
         obj->joint5->kd = obj->pid_mit_kpkd[JOINT5][1];
-        motor_controller_list[JOINT5] = obj->joint5->motor_controller;
-        motor_monitor_list[JOINT5] = obj->joint5->monitor;
+        obj->motor_controller_list[JOINT5] = obj->joint5->motor_controller;
+        obj->motor_monitor_list[JOINT5] = obj->joint5->monitor;
 
         // Joint6 DM2325
         DM_motor_config joint6_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT6],
-            .bsp_can_index = 0,
+            .bsp_can_index = can_index,
             .can_tx_id = 0x07,
             .can_rx_id = 0x00,  // MST_ID=0，见 JOINT4 处的说明
             .lost_callback_ = Joint6_Motor_Lost,
@@ -292,13 +294,13 @@ Gimbal* Gimbal_Create(void) {
         obj->joint6->config.arg = obj->joint6;
         obj->joint6->kp = obj->pid_mit_kpkd[JOINT6][0];
         obj->joint6->kd = obj->pid_mit_kpkd[JOINT6][1];
-        motor_controller_list[JOINT6] = obj->joint6->motor_controller;
-        motor_monitor_list[JOINT6] = obj->joint6->monitor;
+        obj->motor_controller_list[JOINT6] = obj->joint6->motor_controller;
+        obj->motor_monitor_list[JOINT6] = obj->joint6->monitor;
 
         // Gripper DM4310
         DM_motor_config gripper_motor_config = {
             .motor_controller_config = joint_controller_config[JOINT4],
-            .bsp_can_index = 0,
+            .bsp_can_index = can_index,
             .can_tx_id = 0x08,
             .can_rx_id = 0x00,  // MST_ID=0，见 JOINT4 处的说明
             .lost_callback_ = Gripper_Motor_Lost,
@@ -318,14 +320,14 @@ Gimbal* Gimbal_Create(void) {
         obj->gripper->config.arg = obj->gripper;
         obj->gripper->kp = obj->pid_mit_kpkd[GRIPPER][0];
         obj->gripper->kd = obj->pid_mit_kpkd[GRIPPER][1];
-        motor_controller_list[GRIPPER] = obj->gripper->motor_controller;
-        motor_monitor_list[GRIPPER] = obj->gripper->monitor;
+        obj->motor_controller_list[GRIPPER] = obj->gripper->motor_controller;
+        obj->motor_monitor_list[GRIPPER] = obj->gripper->monitor;
         /* (原来这里手工写 frequency_cnt = 1 错开夹爪与 joint4/5；
          *  现在由 config.tx_group 的相位负责。) */
     }
     // 初始重置所有电机monitor掉线!!!防止误判在线状态
     for (int i = 0; i < ARM_MOTOR_NUM; i++) {
-        motor_monitor_list[i]->count = 0;
+        obj->motor_monitor_list[i]->count = 0;
     }
 
     /* 杂项 */
@@ -340,14 +342,13 @@ void Gimbal_Update(Gimbal* obj) {
     /* 电机掉线相关处理 */
     Motor_Lost_Handle(obj);  // 放在最前面
 
-    // 首次上电自动初始化
-    {
-        static uint8_t first_init_flag = 0;
-        if (first_init_flag == 0) {
-            //成功后返回1，失败返回0
-            first_init_flag = Arm_Auto_Init(obj);
-            if (!first_init_flag) obj->arm_mode = arm_stop;  // 自动初始化未成功则停机
-        }
+    // 首次上电自动初始化。
+    /* 标志位在 obj 里(不是函数内 static)：两台臂各建一次，共用一个 static 的话
+     * 后建的那台一进来就看到标志是 1，Arm_Auto_Init() 永远不跑。 */
+    if (obj->first_init_flag == 0) {
+        //成功后返回1，失败返回0
+        obj->first_init_flag = Arm_Auto_Init(obj);
+        if (!obj->first_init_flag) obj->arm_mode = arm_stop;  // 自动初始化未成功则停机
     }
 
     /* 获取电机反馈 */
@@ -388,11 +389,11 @@ void Gimbal_Update(Gimbal* obj) {
 
     /* 电机状态。
      * j1~j3 是 ENCOS：**只改 enable 标志位，不调 ENCOSmotor_Disable()**。
-     *   - 使能根本没有接口可调(原来的 ENCOSmotor_Enable() 已并进 Calc_Send 的 ⓪，
+     *   - 使能根本没有接口可调(原来的 ENCOSmotor_Enable() 已并进 Send_Step 的 ⓪，
      *     由驱动自己抓 stop->enable 的边沿清环)；
      *   - Disable() 会 reset_controller() 并当场发一帧停止帧，和 MotorTask 里的
-     *     ENCOSmotor_Calc_Send() 抢 CAN 总线(驱动要求所有 API 由调用者串行化)。
-     * 真正的启停帧由 Calc_Send() 自己发：它看到 enable != encos_enable 或反馈不新鲜
+     *     ENCOSmotor_Send_Step() 抢 CAN 总线(驱动要求所有 API 由调用者串行化)。
+     * 真正的启停帧由 Send_Step() 自己发：它看到 enable != encos_enable 或反馈不新鲜
      * 就发停止帧，和达妙那边的行为一致。 */
     if (obj->arm_mode == arm_stop) {
         // 各电机失能
@@ -457,7 +458,7 @@ static void Motor_Lost_Handle(Gimbal* obj) {
     /* 检测 */
     uint8_t any_motor_lost = 0;  // 初始化为0
     for (int i = 0; i < ARM_MOTOR_NUM; i++) {
-        obj->arm_feedback_data.is_motor_lost[i] = is_Offline(motor_monitor_list[i]);
+        obj->arm_feedback_data.is_motor_lost[i] = is_Offline(obj->motor_monitor_list[i]);
         // 只要有一个电机掉线，就认为存在掉线
         any_motor_lost += obj->arm_feedback_data.is_motor_lost[i];
     }
@@ -485,11 +486,11 @@ static void Set_Motor_ref(Gimbal* obj) {
     if (obj->arm_mode == arm_stop) {  // stop状态
         for (int i = 0; i < ARM_MOTOR_NUM; i++) {
             // 电机位置跟随，防止跳变
-            motor_controller_list[i]->ref_position = motor_controller_list[i]->fdb_position;
+            obj->motor_controller_list[i]->ref_position = obj->motor_controller_list[i]->fdb_position;
             // 电机速度前馈置零
-            motor_controller_list[i]->speed_comp = 0;
+            obj->motor_controller_list[i]->speed_comp = 0;
             // 电机输出补偿置零
-            motor_controller_list[i]->output_comp = 0;
+            obj->motor_controller_list[i]->output_comp = 0;
         }
         for (int i = 0; i < ARM_JOINT_NUM; i++) {
             // 关节粘性摩擦前馈置零
@@ -516,11 +517,11 @@ static void Set_Motor_ref(Gimbal* obj) {
         const uint8_t gravity_on = (obj->arm_mode == arm_only_gravity_comp);
         for (int i = 0; i < ARM_MOTOR_NUM; i++) {
             // 电机位置跟随，防止跳变
-            motor_controller_list[i]->ref_position = motor_controller_list[i]->fdb_position;
+            obj->motor_controller_list[i]->ref_position = obj->motor_controller_list[i]->fdb_position;
             // 电机速度前馈置零
-            motor_controller_list[i]->speed_comp = 0;
+            obj->motor_controller_list[i]->speed_comp = 0;
             // 电机输出补偿：先全清，要重力的话下面单独给 6 个关节补
-            motor_controller_list[i]->output_comp = 0;
+            obj->motor_controller_list[i]->output_comp = 0;
         }
         for (int i = 0; i < ARM_JOINT_NUM; i++) {
             // 关节粘性摩擦前馈置零（被动模式不用它：它是给位控"削峰"用的，
@@ -529,7 +530,7 @@ static void Set_Motor_ref(Gimbal* obj) {
             if (gravity_on) {
                 /* 量纲照抄下面 run 那支的 525-527 行，只是去掉了 damp_comp 那一项。
                  * tau_comp[] 只有 6 个关节，夹爪那格保持上面清出来的 0。 */
-                motor_controller_list[i]->output_comp = MOTOR_DIR[i] * obj->tau_comp[i]
+                obj->motor_controller_list[i]->output_comp = MOTOR_DIR[i] * obj->tau_comp[i]
                     * JOINT_TORQUE_TRANS[i] * JOINT_TORQUE_TRANS_COEF[i];
             }
         }
@@ -539,25 +540,25 @@ static void Set_Motor_ref(Gimbal* obj) {
     /* 设置关节电机目标位置、速度和力矩前馈 */
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         // 位置
-        motor_controller_list[i]->ref_position =
+        obj->motor_controller_list[i]->ref_position =
             angle_to_pos(obj->arm_control_data.joint_angle[i], obj->motor_pos_init[i],
                 MOTOR_DIR[i], MOTOR_REDUCTION[i]);
         // 速度前馈
-        motor_controller_list[i]->speed_comp =
+        obj->motor_controller_list[i]->speed_comp =
             vel_to_speed(obj->arm_control_data.joint_vel[i], MOTOR_DIR[i], MOTOR_REDUCTION[i])
             * JOINT_SPEEDCOMP_COEF[i];
         // 粘性摩擦前馈
-        obj->damp_comp[i] = motor_controller_list[i]->ref_speed * DEG2RAD
+        obj->damp_comp[i] = obj->motor_controller_list[i]->ref_speed * DEG2RAD
             * JOINT_DAMPING[i] * MOTOR_DIR[i];
         // 总力矩前馈,带有修正系数
-        motor_controller_list[i]->output_comp = MOTOR_DIR[i]
+        obj->motor_controller_list[i]->output_comp = MOTOR_DIR[i]
             * (obj->tau_comp[i] + obj->damp_comp[i]) * JOINT_TORQUE_TRANS[i]
             * JOINT_TORQUE_TRANS_COEF[i];
     }
 
     /* 设置夹爪电机目标位置和力矩 */
-    motor_controller_list[GRIPPER]->ref_position = obj->arm_control_data.gripper_angle;
-    motor_controller_list[GRIPPER]->output_comp = obj->arm_control_data.gripper_torque;
+    obj->motor_controller_list[GRIPPER]->ref_position = obj->arm_control_data.gripper_angle;
+    obj->motor_controller_list[GRIPPER]->output_comp = obj->arm_control_data.gripper_torque;
 }
 
 /* 电机温度 float -> uint8_t(℃) 的转换，专门给 ENCOS 用。
@@ -572,16 +573,16 @@ static void Get_Motor_Fdb(Gimbal* obj) {
     // TODO: 考虑对反馈进行滤波
     /* 关节角 + 关节角速度。
      * fdb_speed 的单位已经是 deg/s：达妙那边 DM_Speed_Fdb_Calc() 乘了 RAD2DEG，
-     * ENCOS 那边 ENCOSmotor_Calc_Send() 乘了 180/pi，两个驱动都归一化了，所以这里
+     * ENCOS 那边 ENCOSmotor_Send_Step() 乘了 180/pi，两个驱动都归一化了，所以这里
      * 只用做 电机->关节 的减速比/方向换算，**不要再乘 RAD2DEG**。
      * 减速比和方向目前都是 1/{1,1,1}，speed_to_vel 出来就等于原值；写全是为了以后
      * 真加了减速比不用回来改这里。 */
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         obj->arm_feedback_data.joint_angle[i] =
-            pos_to_angle(motor_controller_list[i]->fdb_position, obj->motor_pos_init[i],
+            pos_to_angle(obj->motor_controller_list[i]->fdb_position, obj->motor_pos_init[i],
                 MOTOR_DIR[i], MOTOR_REDUCTION[i]);
         obj->arm_feedback_data.joint_vel[i] =
-            speed_to_vel(motor_controller_list[i]->fdb_speed, MOTOR_DIR[i],
+            speed_to_vel(obj->motor_controller_list[i]->fdb_speed, MOTOR_DIR[i],
                 MOTOR_REDUCTION[i]);
     }
 
@@ -595,7 +596,7 @@ static void Get_Motor_Fdb(Gimbal* obj) {
      * Set_Motor_ref() 里"设置夹爪电机目标位置和力矩")，deg 由 dm_mit_control.c 的
      * DM_Mit_Control() 乘 DEG2RAD 进 MIT 帧的。但这条通道**还没在真机上验过**
      * (protocol_doc.md 里"夹爪不会动"是旧话)，找零(Arm_Gripper_Zero)是它的第一个用户。 */
-    obj->arm_feedback_data.gripper_angle = motor_controller_list[GRIPPER]->fdb_position;
+    obj->arm_feedback_data.gripper_angle = obj->motor_controller_list[GRIPPER]->fdb_position;
 
     /* 电机温度 */
     obj->arm_feedback_data.motor_temp[JOINT1] = Motor_Temp_U8(obj->joint1->t_rotor);
@@ -664,6 +665,13 @@ static void Joint_Gravity_Comp_Calc(Gimbal* obj) {
 #endif
 }
 
+/* ⚠ 这两处函数内 static（last_speed[] / cnt[]）**是进程级的，不 per 臂**。
+ * 它们唯一的使用者是下面达妙时代那两个速度反馈计算函数
+ * (Joint2/3_Speed_Fdb_Calc)，而那两个函数**没有任何活的调用方**
+ * (config 里的 .speed_fdb_calc 写死 NULL)，所以这份共享状态现在碰不到、也不会串台。
+ *
+ * 真要用它们的时候必须一起处理两件事：把状态挪进 Gimbal（两台臂不能共用一个滤波器），
+ * 以及把函数体里的 (DM_motor*) 换成 (ENCOS_motor*) —— j2/j3 现在是 ENCOS。 */
 static float lowpass_filter(float current_speed, float a, uint8_t index) {
     static float last_speed[ARM_MOTOR_NUM] = {0};
     float filtered_speed = (1 - a) * current_speed + a * last_speed[index];

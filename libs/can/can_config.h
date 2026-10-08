@@ -45,6 +45,17 @@
  * (见 libs/dm_motor、libs/encos_motor)：只发不算是浪费，只算不发则 PID 会按
  * 任务周期(1 kHz)跑而不是发送周期(500 Hz)，而 libs/controller 的 PID 没有 dt，
  * 增益按调用次数算 —— KI 会凭空翻倍。 */
+/* MotorTask 一拍里"每条总线最多发几帧"，也就是轮转循环的轮数上界(见 freertos.c 的
+ * StartMotorTask)。推导：本工程的分组是 j1=G0(0x55,4/8 拍)、j2/j3=G1(0x22,2/8)、
+ * j4/j5=G2(0x44,2/8)、j6/夹爪=G3(0x88,2/8)，一个 8 拍周期共 16 帧 ⇒ **每拍最多 3 帧**
+ * (第 2、6 拍：j1+j4+j5 = 3)，均值 2。再加上达妙"每 75ms 补发一台使能帧"那一拍多出的
+ * 1 帧 ⇒ 上界 4。两路总线同相位(分组门控只看 osKernelGetTickCount()%、与总线无关)，
+ * 所以两条总线的帧数永远相等，轮数 = 每路帧数 ≤ 4。
+ *
+ * 这个上界决定最坏情况下的忙等开销：4 轮 × 200us(BSP_CAN_TX_MIN_GAP_US) = 800us/拍，
+ * 而 MotorTask 的周期就是 1ms。**改分组相位之前先回来核这个数。** */
+#define CAN_TX_MAX_FRAMES_PER_TICK 4u
+
 #define CAN_TX_GROUP_NUM 8u
 #define CAN_TX_GROUP_ALL 0xFFu /* 所有组：每拍都发(1000 Hz)，也可当"不过滤"用 */
 

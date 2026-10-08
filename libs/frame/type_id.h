@@ -65,7 +65,7 @@ typedef uint8_t FrameTypeId;
  * 下面**所有结构体**都在一对 #pragma pack(push, 1) / #pragma pack(pop) 里面。两个理由：
  *
  *   - 线格式不允许编译器插填充字节，结构体得跟线上字节一一对应；
- *   - payload 在帧里从**偏移 5** 开始，不是 4 的倍数，包里的 float 成员天生是非对齐的。
+ *   - payload 在帧里从**偏移 6** 开始，不是 4 的倍数，包里的 float 成员天生是非对齐的。
  *     压到 1 字节对齐，编译器才知道这件事，会生成逐字节访问的代码。Cortex-M7 上
  *     LDR/STR 是按对齐访问的，不告诉它就会在非对齐地址上出错。
  *
@@ -79,7 +79,7 @@ typedef uint8_t FrameTypeId;
  *     但会静默影响本文件之后、甚至别的翻译单元里的无关类型。没有任何断言能拦这个，
  *     只能靠 push/pop 成对且紧贴定义这条纪律 —— 所以下面这一对是连着的。
  *   - **漏了 push / 结构体定义在 pack 区外面**：该压的没压，对齐悄悄变成 4，
- *     payload 在偏移 5 上读 float 就出事。这个 frame.c 里的 _Alignof 断言能拦。
+ *     payload 在偏移 6 上读 float 就出事。这个 frame.c 里的 _Alignof 断言能拦。
  *
  * 加新包时注意：要挂进 FramePayload 的结构体必须在这个区内，否则断言立刻红。 */
 #pragma pack(push, 1)
@@ -126,12 +126,12 @@ typedef FramePktEmpty FramePktMotorSetZero;
  *              （DONE / TIMEOUT 是终态；跑到一半来问会看到中间态）
  *   result[i]  第 i 台的结果码，取值是 arm_zero.h 的 Arm_zero_result
  *              （索引同 Arm_Motor_Index：0..5 = j1..j6，6 = 夹爪）
- *   elapsed_ms 本轮从触发到结束的毫秒数（arm_zero_elapsed_ms）
+ *   elapsed_ms 本轮从触发到结束的毫秒数（gimbal->zero.elapsed_ms）
  *
  * 字段特意声明成 uint8_t 而不是直接引 arm_zero.h 的枚举 —— 这个头不 include App 的
  * 东西。取值含义对上就行，接上层时按枚举用。
  *
- * 没放进来的两个诊断量：arm_zero_retry[]（每台重发几次）、arm_zero_wake_mask
+ * 没放进来的两个诊断量：gimbal->zero.retry[]（每台重发几次）、gimbal->zero.wake_mask
  * （哪几台失能后要靠使能帧唤醒才读得到位置）。上位机拿这两个也没法做什么，需要时
  * 再扩包。 */
 typedef struct {

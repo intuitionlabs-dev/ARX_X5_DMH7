@@ -21,20 +21,21 @@
  *   - **j1~j3 的电机驱动**：从达妙换成 ENCOS(ENCOS V1.20EAP，就是 ARX X5 的
  *     MotorType4)。配置散在 gimbal_arm.c 的 Gimbal_Create() 里，参数来源见那里。
  *     注意 ENCOS 的 `enable` 只是标志位（驱动**没有** Enable 接口，见
- *     libs/encos_motor/ENCOS_motor.h），真正的启停帧由 ENCOSmotor_Calc_Send()
+ *     libs/encos_motor/ENCOS_motor.h），真正的启停帧由 ENCOSmotor_Send_Step()
  *     在 MotorTask 里发；别在这里调 ENCOSmotor_Disable()，理由见
  *     Gimbal_Update() 里的注释。
  *
  * 板级标定量(电机方向、减速比、零点、前馈系数)在 App/inc/gimbal_arm_def.h。
  *
  * 挂载方式：
- *   gimbal = Gimbal_Create();   // 必须在**任务里**调，别放 main() 的 USER CODE 2！
- *                               // 它栈上要 ~4 KB(kjoint_controller_config[7])，
- *                               // 而主栈 _Min_Stack_Size 只有 2 KB。
- *                               // 现在挂在 StartCmdTask 进循环之前。
- *                               // 还要在 BSP_CAN_Init()/DMmotor_Driver_Init()/
- *                               // ENCOSmotor_Driver_Init() 之后。
- *   Cmd_Loop() 里调 Gimbal_Update(gimbal);   // CmdTask 500 Hz / 2 ms
+ *   g_arm[ARM_A].gimbal = Gimbal_Create(ARM_A);   // 必须在**任务里**调，别放 main() 的
+ *   g_arm[ARM_B].gimbal = Gimbal_Create(ARM_B);   // USER CODE 2！它栈上要 ~4 KB
+ *                               // (joint_controller_config[7])，而主栈
+ *                               // _Min_Stack_Size 只有 2 KB。两台**顺序**建，峰值还是
+ *                               // 4 KB（第一台的栈帧已经还了）。现在挂在 StartCmdTask
+ *                               // 进循环之前。还要在 BSP_CAN_Init()/
+ *                               // DMmotor_Driver_Init()/ENCOSmotor_Driver_Init() 之后。
+ *   Cmd_Loop() 里逐台 Gimbal_Update(arm->gimbal);   // CmdTask 500 Hz / 2 ms
  */
 
 #include <stdint.h>
@@ -47,6 +48,7 @@
 /* HAL 层 */
 #include "DM_motor.h"
 #include "ENCOS_motor.h"
+#include "arm_zero.h" /* Arm_zero —— 设零状态机的全部跨拍状态(per 台) */
 
 /* 前三个关节是 ENCOS，后面 j4~j6 和夹爪还是达妙。
  * 两个驱动的电机类型不一样，数组下标也就分开算。 */
@@ -61,6 +63,22 @@ typedef struct Gimbal_t {
     DM_motor* joint5;   // 4310
     DM_motor* joint6;   // DM2325
     DM_motor* gripper;  // 4310
+
+    /* 这台臂走哪路 CAN。**就是臂号**（见 robot_def.h 的 Arm_Index / 帧里的 arm_id）：
+     * Gimbal_Create(can_index) 灌进来，7 台电机的 config.bsp_can_index 全用它。
+     * 两台臂完全同构，唯一的区别就是这个数 —— 也是达妙反馈路由必须按它过滤的原因
+     * （两台臂的达妙 CAN_ID 都是 5/6/7/8、MST_ID 都是 0，不看总线就串台）。 */
+    uint8_t can_index;
+
+    /* 电机控制器 / 监视器数组，便于缩减代码冗余。
+     * **per 台**：两台臂各一套，放全局数组的话第二台建完就把第一台的覆盖了。 */
+    controller* motor_controller_list[ARM_MOTOR_NUM];
+    monitor_item* motor_monitor_list[ARM_MOTOR_NUM];
+
+    /* 「首次上电自动初始化」跑过没有。
+     * **per 台**：原来是个函数内 static，两台臂共用的话后建的那台看到它已经是 1，
+     * 永远不跑 Arm_Auto_Init()（motor_pos_init[]/motor_inited[] 就一直是 0）。 */
+    uint8_t first_init_flag;
 
     PID_Config pid_cfgs[ARM_MOTOR_NUM][2];  // pid参数 //位置环0和速度环1参数
     float pid_mit_kpkd[ARM_MOTOR_NUM][2];   // 达妙 MIT 的 kp/kd —— 只用 j4/j5/j6/gripper 那几行
@@ -86,10 +104,24 @@ typedef struct Gimbal_t {
 
     Arm_feedback_data arm_feedback_data;  // 回传云台cmd的数据
     Arm_control_data arm_control_data;  // 指令，由命令层(App/gimbal_cmd.c)每拍直接写
+
+    /* 「设零点」这条独立维护路径的全部状态(App/arm_zero.c 的状态机，**per 台**)。
+     * 放这儿而不是当全局：两台臂各有各的设零进度，共用一份的话 A 台设到一半、B 台一触发
+     * 就把它的进度整个覆盖。触发/结果都在这个成员里，读法见 App/inc/arm_zero.h。 */
+    Arm_zero zero;
 } Gimbal;
 
-/* 机械臂对象，Gimbal_Create() 之后有效。DMmotor_Create() 失败时是 NULL。 */
-extern Gimbal* gimbal;
-
-Gimbal* Gimbal_Create(void);
+/* 建一台臂。**一台臂建一次，两台臂各建一次**：
+ *
+ *     g_arm[ARM_A].gimbal = Gimbal_Create(ARM_A);   // CAN1
+ *     g_arm[ARM_B].gimbal = Gimbal_Create(ARM_B);   // CAN2
+ *
+ * can_index 就是臂号、也是 CAN 总线索引（见 robot_def.h 的 Arm_Index）。它决定这台臂
+ * 的 7 台电机挂在哪条总线上；两条总线上的电机 ID 完全一样（ENCOS 1/2/4、达妙 5/6/7/8），
+ * 靠总线号区分。
+ *
+ * **必须在任务里调，而且要在 BSP_CAN_Init()/DMmotor_Driver_Init()/
+ * ENCOSmotor_Driver_Init() 之后**。返回 NULL 表示电机没建起来（配置不合法的典型是
+ * ENCOS 的 tx_id != rx_id、或同一总线上同一个 rx_id 建了两次）。 */
+Gimbal* Gimbal_Create(uint8_t can_index);
 void Gimbal_Update(Gimbal* obj);

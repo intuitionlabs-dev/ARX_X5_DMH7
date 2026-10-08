@@ -17,7 +17,7 @@
  * Formerly published under MT4 names; API renamed to ENCOS_motor / ENCOSmotor_*.
  * All ranges MUST match the motor's actual stored protocol settings.
  * No automatic motor configuration, zeroing, brake release or ID changes.
- * APIs/Rx/Calc_Send must be serialized by the caller (see README_ENCOS.md).
+ * APIs/Rx/Send_Step must be serialized by the caller (see README_ENCOS.md).
  */
 struct encos_motor_t;
 typedef void (*control_encos_func)(struct encos_motor_t *motor);
@@ -48,7 +48,7 @@ typedef struct encos_motor_config_t {
     ENCOS_output_mode output_mode;
     /* 发送分组掩码(见 libs/can/can_config.h 的 CAN_TX_xxxHZ_Gn)：
      * 这一路控制帧属于哪些组。总线只在"当前组"匹配时才真的发出去，
-     * 于是**控制频率由掩码决定**——每 1ms 调一次 Calc_Send、传 CAN_TX_500HZ_G0
+     * 于是**控制频率由掩码决定**——1ms 一拍、每拍轮着调一次 Send_Step、传 CAN_TX_500HZ_G0
      * 就是 500 Hz，不需要再在驱动里分频。0 会被兜底成 CAN_TX_GROUP_ALL
      * (不管控位掩码是"永远发不出去"，太难查)。 */
     uint8_t tx_group;
@@ -62,7 +62,7 @@ typedef struct encos_motor_config_t {
 typedef struct encos_motor_t {
     ENCOS_motor_config config;
     ENCOS_enable enable; /* 应用唯一要写的使能入口：encos_enable / encos_stop */
-    uint8_t enable_cleared; /* 驱动私有：本次使能是否已清过环(见 Calc_Send 的 ⓪)。应用别写 */
+    uint8_t enable_cleared; /* 驱动私有：本次使能是否已清过环(见 Send_Step 的 ⓪)。应用别写 */
     uint8_t update; /* set to 1 after accepted reply; caller may clear */
     uint8_t rx_data[8], rx_len, errcode;
     ENCOS_Feedback feedback; /* latest typed reply including raw query payload */
@@ -81,6 +81,11 @@ typedef struct encos_motor_t {
     uint8_t zero_pending, zero_ack_received, zero_ack_success;
     uint32_t zero_sent_ms;
     ENCOS_Result last_result;
+
+    /* "这一拍已经处理过了" —— 由 ENCOSmotor_Send_Step() 置位、ENCOSmotor_Send_Begin()
+     * 每拍清 0。轮转循环(见 freertos.c 的 StartMotorTask)一拍里会把 Send_Step 调好几次，
+     * 没有这个标志第一台电机就会被反复发。相位不匹配被跳过的电机也置位。 */
+    uint8_t sent_this_tick;
 } ENCOS_motor;
 
 #define ENCOS_CAN_ID_MIN 0x001u
@@ -92,12 +97,17 @@ typedef struct encos_motor_t {
 
 void ENCOSmotor_Driver_Init(void);
 ENCOS_motor *ENCOSmotor_Create(ENCOS_motor_config *config, control_encos_func func);
-void ENCOSmotor_Calc_Send(void);
+/* ---- 发送：一拍一帧的步进形式(见 ENCOS_motor.c 的注释) ---- */
+/* 每拍开跑前调一次，清掉所有电机的 sent_this_tick */
+void ENCOSmotor_Send_Begin(void);
+/* 在 can_id 这条总线上**最多发一帧**。返回 1 = 发了(调用方要按轮等一次最小帧间隔)，
+ * 0 = 这条总线这一拍没事干了。 */
+uint8_t ENCOSmotor_Send_Step(uint8_t can_id);
 /* **使能没有接口给应用调**：应用只写 obj->enable = encos_enable / encos_stop。
- * 驱动在自己的发送拍上(ENCOSmotor_Calc_Send 的 ⓪)抓 stop->enable 的边沿，清一次
+ * 驱动在自己的发送拍上(ENCOSmotor_Send_Step 的 ⓪)抓 stop->enable 的边沿，清一次
  * 控制器状态，再按反馈是否新鲜决定这一拍发控制帧还是停止帧 —— 所以应用层不用、
  * 也拿不到 ENCOSmotor_Enable()，别自己判"反馈新鲜了没"再决定要不要使能。
- * (原 ENCOSmotor_Enable() 于 2026-10-05 合并进 Calc_Send，不再对外。) */
+ * (原 ENCOSmotor_Enable() 于 2026-10-05 合并进发送拍，不再对外。) */
 /* Disable means software STOP, not physical power-stage disable. Sends stop frame now. */
 ENCOS_Result ENCOSmotor_Disable(ENCOS_motor *obj);
 /* Stop all motors on this CAN bus before zeroing. Bus TX pauses >500ms afterward. */

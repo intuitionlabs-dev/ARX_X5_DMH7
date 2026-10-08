@@ -1,7 +1,7 @@
 #include "arm_auto.h"
 #include <math.h>           /* fabsf(夹爪找零判定用) */
 #include <string.h>         /* memcpy */
-#include "arm_zero.h"       /* 夹爪设零那一轮(arm_zero_request / _state / 参与集覆盖) */
+#include "arm_zero.h"       /* 夹爪设零那一轮(gimbal->zero.request / _state / 参与集覆盖) */
 #include "DM_motor.h"       /* 夹爪的掉线看门狗(DM_motor::monitor) */
 #include "gimbal_cmd_def.h" /* JOINT_ANGLE_MIN/MAX(拼复位姿态)、GRIPPER_ANGLE_*(夹爪找零) */
 #include "move_plan.h"      /* move_plan_run / quintic_spline / Move_plan */
@@ -126,7 +126,7 @@ void Arm_Reset(Gimbal_cmd* obj) {
  *
  * 第三步 设零。零点得写进电机里(达妙 0xFE)，而那条帧和常规控制帧互斥、只能在 MotorTask
  *       里发 —— 所以这一步**不自己发帧**，而是把 arm_zero 那个已经验过的设零状态机叫起来，
- *       用 arm_zero_participate_override 把这一轮**缩到夹爪一台**(不缩的话它会把 j1~j6
+ *       用 gimbal->zero.participate_override 把这一轮**缩到夹爪一台**(不缩的话它会把 j1~j6
  *       一起失能，臂当场松掉)。代价：这一轮里整条 CAN 是安静的(见 arm_zero.h)，别的电机
  *       收不到常规帧，实测 0.1~1.5 s。
  *
@@ -161,22 +161,11 @@ void Arm_Reset(Gimbal_cmd* obj) {
 #define GRIPPER_ZERO_SETTLE_MS 400u   /* 设零之后等常规帧恢复(见 case 4)，ms */
 #define GRIPPER_ZERO_STEP_END 5u      /* 收尾步号：走到它就退出这个模式 */
 
-/* 找零的跨拍状态。放文件级 static 而不塞进 Gimbal_cmd —— 那个结构体的偏移调试器里存着，
- * 不想动(和它末尾那段注释同一个理由)；每次进这个动作在 case 0 里全部重置。 */
-static float gz_win_pos;      /* 当前小窗开始时的反馈角 */
-static float gz_stall_angle;  /* 认到"顶住了"那一刻的反馈角 = 机械限位；调试器里可读 */
-static float gz_back_target;  /* 退到哪儿(绝对角) = gz_stall_angle - 半个行程 */
-static uint16_t gz_win_ms;    /* 当前小窗已经量了多少 ms */
-static uint16_t gz_total_ms;  /* 推开阶段一共过了多少 ms */
-static uint16_t gz_back_ms;   /* 退回阶段一共过了多少 ms */
-static uint16_t gz_zero_ms;   /* 等设零那一轮等了多久，ms */
-static uint16_t gz_settle_ms; /* 设零之后等常规帧恢复了多久，ms */
-static uint8_t gz_stall_win;  /* 已经连续几个小窗没动 */
-static uint8_t gz_zero_sent;  /* 设零请求已经发出去了 */
-/* 设零那一轮的结果码(Arm_zero_result)，调试器里读：
- *   2=OK(位置被拉到 0) 1=UNCONFIRMED(本来就在容差内，写没写进去看不出来) 4=超时 5=没参与。
- * **第二次跑会看到 1**：那时夹爪就在行程中点上(读数≈0)，本来就分辨不出来。 */
-static uint8_t gz_zero_result;
+/* 找零的跨拍状态在 `Gimbal_cmd::gz` 里(定义见 App/inc/gimbal_cmd.h 的 Gripper_zero_state)。
+ * 原来是一组**文件级 static**(原来的名字是 gz_win_pos / gz_stall_angle / …)：那时候"Gimbal_cmd 的偏移
+ * 调试器里存着、不想动"是个合理的理由，但两台臂之后它变成了 bug —— 静态变量两台臂共用
+ * 一份，A 台推到限位、B 台刚起步时会把 A 台认到的限位角当成自己的。正文里一律
+ * `obj->gz.xxx`，每次进这个动作在 case 0 整块重置。 */
 
 /* 把夹爪目标角往 dir(+1 = 闭合 / -1 = 张开)方向挪一步，但最多领先反馈
  * GRIPPER_ZERO_LEAD_DEG —— 理由见那个宏。领先够了就不动，等反馈跟上来。 */
@@ -217,7 +206,7 @@ static void gripper_zero_finish(Gimbal_cmd* obj) {
     obj->gimbal->arm_control_data.gripper_angle =
         obj->gimbal->arm_feedback_data.gripper_angle;
     obj->gimbal->arm_control_data.gripper_torque = 0;
-    arm_zero_participate_override = 0;
+    obj->gimbal->zero.participate_override = 0;
     obj->auto_step = GRIPPER_ZERO_STEP_END;
 }
 
@@ -240,22 +229,22 @@ void Arm_Gripper_Zero(Gimbal_cmd* obj) {
          * 配套的另一半在 case 4：设零成功(OK / UNCONFIRMED)时才置回 1。两句是一对，
          * 改一个要一起看 —— 只留置 0 的话夹爪永远"未初始化"、软限位永远不生效。 */
         obj->gimbal->arm_feedback_data.motor_inited[GRIPPER] = 0;
-        arm_zero_participate_override = 0;  // 上一次没走完留下的覆盖，清掉
+        obj->gimbal->zero.participate_override = 0;  // 上一次没走完留下的覆盖，清掉
         /* 目标角先对齐反馈(免得从别处的旧目标慢慢爬过来，甚至先反向开到底) */
         obj->gimbal->arm_control_data.gripper_angle =
             obj->gimbal->arm_feedback_data.gripper_angle;
         obj->gimbal->arm_control_data.gripper_torque = GRIPPER_ZERO_TORQUE;
-        gz_win_pos = obj->gimbal->arm_feedback_data.gripper_angle;
-        gz_stall_angle = gz_win_pos;
-        gz_back_target = gz_win_pos;
-        gz_win_ms = 0;
-        gz_total_ms = 0;
-        gz_back_ms = 0;
-        gz_zero_ms = 0;
-        gz_settle_ms = 0;
-        gz_stall_win = 0;
-        gz_zero_sent = 0;
-        gz_zero_result = ARM_ZERO_RES_NONE;
+        obj->gz.win_pos = obj->gimbal->arm_feedback_data.gripper_angle;
+        obj->gz.stall_angle = obj->gz.win_pos;
+        obj->gz.back_target = obj->gz.win_pos;
+        obj->gz.win_ms = 0;
+        obj->gz.total_ms = 0;
+        obj->gz.back_ms = 0;
+        obj->gz.zero_ms = 0;
+        obj->gz.settle_ms = 0;
+        obj->gz.stall_win = 0;
+        obj->gz.zero_sent = 0;
+        obj->gz.zero_result = ARM_ZERO_RES_NONE;
         obj->auto_step++;
         break;
 
@@ -271,24 +260,24 @@ void Arm_Gripper_Zero(Gimbal_cmd* obj) {
         obj->gimbal->arm_control_data.gripper_torque = GRIPPER_ZERO_TORQUE;
 
         /* 判定：每 0.2 s 看一次"这一窗里反馈角挪了多少" */
-        gz_total_ms += GRIPPER_ZERO_TICK_MS;
-        gz_win_ms += GRIPPER_ZERO_TICK_MS;
-        if (gz_win_ms >= GRIPPER_ZERO_STALL_MS) {
-            if (fabsf(fdb - gz_win_pos) < GRIPPER_ZERO_STALL_MOVE) {
-                gz_stall_win++;  // 这一窗没动
+        obj->gz.total_ms += GRIPPER_ZERO_TICK_MS;
+        obj->gz.win_ms += GRIPPER_ZERO_TICK_MS;
+        if (obj->gz.win_ms >= GRIPPER_ZERO_STALL_MS) {
+            if (fabsf(fdb - obj->gz.win_pos) < GRIPPER_ZERO_STALL_MOVE) {
+                obj->gz.stall_win++;  // 这一窗没动
             } else {
-                gz_stall_win = 0;  // 还在动，重新数
+                obj->gz.stall_win = 0;  // 还在动，重新数
             }
-            gz_win_pos = fdb;
-            gz_win_ms = 0;
+            obj->gz.win_pos = fdb;
+            obj->gz.win_ms = 0;
         }
-        if (gz_stall_win >= GRIPPER_ZERO_STALL_WIN) {  // 顶住了：这个角就是机械限位
-            gz_stall_angle = fdb;
-            gz_back_target = gz_stall_angle - GRIPPER_ZERO_BACK_DEG;
+        if (obj->gz.stall_win >= GRIPPER_ZERO_STALL_WIN) {  // 顶住了：这个角就是机械限位
+            obj->gz.stall_angle = fdb;
+            obj->gz.back_target = obj->gz.stall_angle - GRIPPER_ZERO_BACK_DEG;
             obj->auto_step++;  // -> 2 退回中点
             break;
         }
-        if (gz_total_ms >= GRIPPER_ZERO_PUSH_TIMEOUT_MS) {  // 推不出来也别把初始化流程拖死
+        if (obj->gz.total_ms >= GRIPPER_ZERO_PUSH_TIMEOUT_MS) {  // 推不出来也别把初始化流程拖死
             gripper_zero_finish(obj);
             break;
         }
@@ -303,15 +292,15 @@ void Arm_Gripper_Zero(Gimbal_cmd* obj) {
         }
         gripper_zero_step(obj, -1.0f);
         /* 到目标就夹住(领先量那条只保证"不超速"，不管目标在哪) */
-        if (obj->gimbal->arm_control_data.gripper_angle < gz_back_target)
-            obj->gimbal->arm_control_data.gripper_angle = gz_back_target;
+        if (obj->gimbal->arm_control_data.gripper_angle < obj->gz.back_target)
+            obj->gimbal->arm_control_data.gripper_angle = obj->gz.back_target;
 
-        gz_back_ms += GRIPPER_ZERO_TICK_MS;
-        if (fabsf(fdb - gz_back_target) <= GRIPPER_ZERO_ARRIVE_DEG) {
+        obj->gz.back_ms += GRIPPER_ZERO_TICK_MS;
+        if (fabsf(fdb - obj->gz.back_target) <= GRIPPER_ZERO_ARRIVE_DEG) {
             obj->auto_step++;  // -> 3 设零
             break;
         }
-        if (gz_back_ms >= GRIPPER_ZERO_BACK_TIMEOUT_MS) {
+        if (obj->gz.back_ms >= GRIPPER_ZERO_BACK_TIMEOUT_MS) {
             /* 退不到位(夹住东西了/被挡住)：**不设零**。这时设零会把零点写在行程中点以外
              * 的地方，整条夹爪的角度口径就废了 —— 如实收工，让上层自己决定怎么办。 */
             gripper_zero_finish(obj);
@@ -332,23 +321,25 @@ void Arm_Gripper_Zero(Gimbal_cmd* obj) {
             obj->gimbal->arm_feedback_data.gripper_angle;
         obj->gimbal->arm_control_data.gripper_torque = 0;
 
-        if (!gz_zero_sent) {
-            /* 只让夹爪参与(不这么做 arm_zero 会把 7 台全失能)。**先发请求**：请求被消费
+        if (!obj->gz.zero_sent) {
+            /* 只让夹爪参与(不这么做 arm_zero 的默认集是 j1~j6，会把六个关节全失能)。
+             * **先发请求**：请求被消费
              * 之前常规帧还在发，那时目标角还是老口径的"退到位"值、是对的。 */
-            arm_zero_participate_override = (uint8_t)(1u << GRIPPER);
-            arm_zero_request = 1;
-            gz_zero_sent = 1;
+            obj->gimbal->zero.participate_override = (uint8_t)(1u << GRIPPER);
+            obj->gimbal->zero.request = 1;
+            obj->gz.zero_sent = 1;
         }
         gripper_zero_watchdog(obj);
-        gz_zero_ms += GRIPPER_ZERO_TICK_MS;
+        obj->gz.zero_ms += GRIPPER_ZERO_TICK_MS;
 
-        /* 结束判据 = "请求被消费了(arm_zero_request 由 start() 清 0) 且状态机落到
+        /* 结束判据 = "请求被消费了(zero.request 由 start() 清 0) 且状态机落到
          * DONE/TIMEOUT"。只判状态不行：上一轮(比如 JLink 触发的整臂设零)留下的 DONE 会
          * 一直挂在那儿，刚进这一步就会被当成"跑完了"。 */
-        if ((!arm_zero_request
-                && (arm_zero_state == ARM_ZERO_DONE || arm_zero_state == ARM_ZERO_TIMEOUT))
-            || gz_zero_ms >= GRIPPER_ZERO_SETZERO_TIMEOUT_MS) {
-            gz_zero_result = arm_zero_result[GRIPPER];
+        if ((!obj->gimbal->zero.request
+                && (obj->gimbal->zero.state == ARM_ZERO_DONE
+                    || obj->gimbal->zero.state == ARM_ZERO_TIMEOUT))
+            || obj->gz.zero_ms >= GRIPPER_ZERO_SETZERO_TIMEOUT_MS) {
+            obj->gz.zero_result = obj->gimbal->zero.result[GRIPPER];
             obj->auto_step++;  // -> 4 收尾(那一轮还在跑也由 case 4 等它)
             break;
         }
@@ -359,16 +350,16 @@ void Arm_Gripper_Zero(Gimbal_cmd* obj) {
             obj->gimbal->arm_feedback_data.gripper_angle;
         obj->gimbal->arm_control_data.gripper_torque = 0;
         gripper_zero_watchdog(obj);
-        if (Arm_Zero_Busy()) {  // 设零那一轮还没跑完(走了超时兜底那条路才会到这)
-            gz_settle_ms = 0;
+        if (Arm_Zero_Busy(obj->gimbal)) {  // 设零那一轮还没跑完(走了超时兜底那条路才会到这)
+            obj->gz.settle_ms = 0;
             break;
         }
         /* 设零刚结束时夹爪还是失能态：控制帧要等 libs/dm_motor 那个 75ms 轮转的使能帧
-         * (DMmotor_Calc_Send 顶部)转回来才重新生效，所以多等一会儿再把这一轮交出去 ——
+         * (DMmotor_Send_Step 顶部)转回来才重新生效，所以多等一会儿再把这一轮交出去 ——
          * 反正这点时间不影响什么，而"设零完就退出去"会让后面每一拍都在一个还没恢复的
          * 夹爪上做闭环。 */
-        gz_settle_ms += GRIPPER_ZERO_TICK_MS;
-        if (gz_settle_ms >= GRIPPER_ZERO_SETTLE_MS) {
+        obj->gz.settle_ms += GRIPPER_ZERO_TICK_MS;
+        if (obj->gz.settle_ms >= GRIPPER_ZERO_SETTLE_MS) {
             /* 设零成功了才宣布"夹爪已初始化"，和 case 0 那句置 0 配套。
              * 两种结果算成功：
              *   OK(2)          —— 位置被拉到 0，零点确实写进去了；
@@ -378,8 +369,8 @@ void Arm_Gripper_Zero(Gimbal_cmd* obj) {
              * 和软限位以为它已经标定好。
              * 置 1 之后两个后果：0x80 反馈帧的 motor_inited_mask 报 1；gimbal_cmd.c 的
              * 夹爪软限位(±142)开始真的卡目标角 —— 那正是找零想要的口径。 */
-            if (gz_zero_result == ARM_ZERO_RES_OK
-                || gz_zero_result == ARM_ZERO_RES_UNCONFIRMED) {
+            if (obj->gz.zero_result == ARM_ZERO_RES_OK
+                || obj->gz.zero_result == ARM_ZERO_RES_UNCONFIRMED) {
                 obj->gimbal->arm_feedback_data.motor_inited[GRIPPER] = 1;
             }
             gripper_zero_finish(obj);

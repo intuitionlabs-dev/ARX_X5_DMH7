@@ -25,6 +25,10 @@
  *     h = 2166136261
  *     for b in s.encode():  h = ((h ^ b) * 16777619) & 0xFFFFFFFF
  *
- * 当前这个串算出 0xF61DCF10。主机测试里把这个值钉死了，所以改完字符串测试会红 ——
- * 那是故意的，提醒你上位机那份也要同步改。 */
-#define FRAME_VERSION_STRING "Intuition-ARX-X5-2023-v0.1"
+ * 当前这个串算出 0xF91DD3C9。上位机脚本的 --selftest 里把这个值钉死了，所以改完
+ * 字符串测试会红 —— 那是故意的，提醒你上位机那份也要同步改。
+ *
+ * v0.1 → v0.2：帧头在 datalen 之后插了一字节 arm_id，payload 起点从 5 变 6、
+ * 整帧开销从 7 变 8。**旧上位机拿新帧会错位，所以必须换码**：旧上位机会在 0x01
+ * 上被版本码不匹配挡住、直接锁死，不会拿旧布局去解析新帧。 */
+#define FRAME_VERSION_STRING "Intuition-ARX-X5-2023-v0.2"

@@ -54,7 +54,6 @@ void DMmotor_FeedbackData_Update(DM_motor *obj, uint8_t *data)
 void DMmotor_RxCallBack(uint8_t can_id, uint32_t identifier, uint8_t *data, uint32_t len) {
     (void)len;
     // DEBUG_ASSERT(len == 8);
-    (void)can_id;
 
     /* 认电机要两个条件同时成立(与 ARX X5 SDK 的 MotorType2::CanAnalyze() 一致)：
      *  1. 仲裁ID == can_rx_id(= 上位机里的 MST_ID)。本工程 4 台达妙的出厂 MST_ID 都是 0，
@@ -62,11 +61,19 @@ void DMmotor_RxCallBack(uint8_t can_id, uint32_t identifier, uint8_t *data, uint
      *  2. 载荷首字节低 4 位 == can_tx_id(= 上位机里的 CAN_ID)。达妙反馈帧 data[0] 的高 4 位
      *     是错误码、低 4 位才是电机自己的 ID，四台正是靠这个字段区分。
      * 少了第 2 条，MST_ID=0 时四台会互相抢帧；少了第 1 条，别处 ID 相同的数据也会被吃进来。
-     * 若哪天把某台的 MST_ID 改成非 0，把它的 can_rx_id 跟着改即可，这个函数不用动。 */
+     * 若哪天把某台的 MST_ID 改成非 0，把它的 can_rx_id 跟着改即可，这个函数不用动。
+     *
+     * **再加一条：反馈必须来自这台电机自己的那条总线**（`can_id ==
+     * obj->config.bsp_can_index`）。双臂之后两台臂的达妙完全同构 —— 都是 MST_ID=0、
+     * CAN_ID 5/6/7/8 —— 不按总线过滤的话，CAN1 的电机 5 会把 CAN2 电机 5 的反馈吃掉
+     * (在全局 dm_motor_list 里按"仲裁ID + 载荷低 4 位"匹配，两条总线上这两台电机条件
+     * 完全一样，先遍历到谁就是谁)。ENCOS 那边一直就是按总线过滤的(ENCOS_motor.c)，
+     * 照抄过来。回调本身是按总线分别注册的(DMmotor_Create)。 */
     if (!dm_motor_list || !data) return;
     for (size_t i = 0; i < dm_motor_list->cv_len; i++) {
         DM_motor *obj = *(DM_motor **)cvector_val_at(dm_motor_list, i);
-        if (obj->config.can_rx_id == identifier &&
+        if (obj->config.bsp_can_index == can_id &&
+            obj->config.can_rx_id == identifier &&
             (data[0] & 0x0F) == obj->config.can_tx_id) {
             DMmotor_FeedbackData_Update(obj, data);
         }
@@ -149,35 +156,84 @@ DM_motor* DMmotor_Create(DM_motor_config* config , control_dm_func func)
     return obj;
 }
 
-void DMmotor_Calc_Send(void) {
-    
-    /* 每 300ms 给每台电机补发一次使能信号，防止电机不成功启动。
-     * 这帧是"载荷":达妙在 MIT 下光收控制帧不会自己使能，所以它不能删。
+/* ==================== 发送：一拍一帧的步进 ====================
+ *
+ * 原来是 DMmotor_Calc_Send() 一次把本总线上该发的电机全发完(一圈最多 3 帧)。两台臂之后
+ * 改成"**每次调用最多发一帧**"的步进形式，由 MotorTask 的轮转循环驱动(见
+ * Core/Src/freertos.c 的 StartMotorTask)：**一轮里两条总线各发一帧，一轮只等一次**
+ * 最小帧间隔(BSP_CAN_TxGapWait)。一次发完的写法会让两条总线各等一次，每路帧率砍半。
+ *
+ * 每个发送周期开始前先调 DMmotor_Send_Begin() 清 sent_this_tick —— 它保证"一台电机
+ * 一拍只发一次"，不然轮转循环会把第一台反复发。
+ */
+
+#define DM_ENABLE_RESEND_MS 75u
+
+/* 补发使能帧的轮转状态，**每条总线各一套**：一份全局的话 enable_next 会指到另一条
+ * 总线的电机上，那台被补发的就永远轮不到。每条总线上 4 台达妙 → 75ms × 4 = 300ms/台，
+ * 和单总线时逐位一致。 */
+static uint32_t dm_enable_time[DEVICE_CAN_CNT];
+static uint8_t dm_enable_next[DEVICE_CAN_CNT];
+
+void DMmotor_Send_Begin(void) {
+    if (!dm_motor_list) return;
+    for (size_t i = 0; i < dm_motor_list->cv_len; i++) {
+        DM_motor *obj = *(DM_motor **)cvector_val_at(dm_motor_list, i);
+        obj->sent_this_tick = 0;
+    }
+}
+
+uint8_t DMmotor_Send_Step(uint8_t can_id) {
+    if (!dm_motor_list || can_id >= DEVICE_CAN_CNT) return 0;
+
+    /* ---- ① 使能帧补发 ----
+     * 每台电机每 300ms 补发一次使能信号，防止电机不成功启动。
+     * 这帧是"载荷"：达妙在 MIT 下光收控制帧不会自己使能，所以它不能删。
      *
-     * **但不能像原来那样一次把 4 帧全发完。** 这 4 帧走 CAN_TX_GROUP_ALL，绕过
-     * 分组，再加上 BSP_CAN_Send 里 BSP_CAN_TX_MIN_GAP_US=200us 的最小帧间隔，
-     * 那一拍 CAN1 上要发 3(常规控制帧) + 4 = 7 帧 = 1.4ms，**必然**超过 MotorTask
-     * 的 1ms 预算。任务一超时，`tick += 1U` 就再也追不上真实时间，从此永久自由
-     * 运行(实测 ~1312 Hz)，掩码分组给出的频率全错 —— 实测就是这么把 j5/j6 饿出
+     * **但不能一次把 4 帧全发完。** 这 4 帧走 CAN_TX_GROUP_ALL，绕过分组，再叠上
+     * 我们自己的最小帧间隔，那一拍要发 3(常规控制帧) + 4 = 7 帧 = 1.4ms，**必然**超过
+     * MotorTask 的 1ms 预算。任务一超时，`tick += 1U` 就再也追不上真实时间，从此永久
+     * 自由运行(实测 ~1312 Hz)，掩码分组给出的频率全错 —— 实测就是这么把 j5/j6 饿出
      * 20ms 看门狗、把遥控器 SWA→1 打回 arm_stop 的。
      *
-     * 现在改成每 75ms 只补一台、四台轮着来：每台还是 300ms 一次，但任何一拍最多
-     * 只比别的拍多 1 帧(3+1=4 帧 = 800us)，不再有固定的超时拍。 */
-    static uint32_t enable_time = 0;
-    static size_t enable_next = 0;
-    size_t dm_cnt = dm_motor_list->cv_len;
-    if (dm_cnt && HAL_GetTick() - enable_time >= 75u) {
-        enable_time = HAL_GetTick();
-        if (enable_next >= dm_cnt) {
-            enable_next = 0;
+     * 所以：每 75ms 只补一台、四台轮着来(每台还是 300ms 一次，但任何一拍最多只比别的
+     * 拍多 1 帧)。**它占用这一轮的发送名额**：这一拍这一路就只发它，不能"使能帧 + 控制帧"
+     * 连着发(那这一路一轮就出了两帧，"一包一等"就不成立了)。代价是那条总线上被轮到的
+     * 电机这一拍少发一次控制帧，每 300ms 才一次。 */
+    if (HAL_GetTick() - dm_enable_time[can_id] >= DM_ENABLE_RESEND_MS) {
+        size_t total = 0;
+        for (size_t i = 0; i < dm_motor_list->cv_len; i++) {
+            if ((*(DM_motor **)cvector_val_at(dm_motor_list, i))->config.bsp_can_index
+                == can_id) {
+                total++;
+            }
         }
-        DMmotor_Enable(*(DM_motor **)cvector_val_at(dm_motor_list, enable_next));
-        enable_next++;
+        if (total) {
+            size_t k = 0;
+            if (dm_enable_next[can_id] >= total) dm_enable_next[can_id] = 0;
+            for (size_t i = 0; i < dm_motor_list->cv_len; i++) {
+                DM_motor *obj = *(DM_motor **)cvector_val_at(dm_motor_list, i);
+                if (obj->config.bsp_can_index != can_id) continue;
+                if (k == dm_enable_next[can_id]) {
+                    DMmotor_Enable(obj);
+                    break;
+                }
+                k++;
+            }
+            dm_enable_time[can_id] = HAL_GetTick();
+            dm_enable_next[can_id] = (uint8_t)((k + 1u) % total);
+            return 1;
+        }
     }
 
-    for (size_t i = 0; i < dm_motor_list->cv_len; i++)
-    {
+    /* ---- ② 常规控制帧：本总线上"这一拍还没轮到"的下一台 ----
+     * 相位不匹配的电机**整拍跳过(连 PID 都不算)**，但要标成"这一拍处理过了"，否则轮转
+     * 循环会一直回头找它、永远走不到后面那些。 */
+    for (size_t i = 0; i < dm_motor_list->cv_len; i++) {
         DM_motor *obj = *(DM_motor **)cvector_val_at(dm_motor_list, i);
+        if (obj->config.bsp_can_index != can_id) continue;
+        if (obj->sent_this_tick) continue;
+        obj->sent_this_tick = 1;
 
         /* 控制频率由 obj->config.tx_group 的掩码决定：不在当前组的这一拍整拍跳过，
          * 连 PID 都不算 —— 不能"算了不发"，PID_Calc 没有 dt，增益按调用次数算，
@@ -303,5 +359,9 @@ void DMmotor_Calc_Send(void) {
             //     cnt++;
             // }
         }
+        /* 走到这里就一定发出去了一帧 —— 两条控制路径(enable)和两条停/失能路径(stop)
+         * 各自都只发一帧。这个不变式变了要同步改轮转循环的等待次数。 */
+        return 1;
     }
+    return 0;
 }
