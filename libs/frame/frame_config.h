@@ -1,12 +1,12 @@
 #pragma once
 
 /* CtrBoard-H7_ALL 的串口协议配置。
- * 只有 libs/uart_frame/uart_frame.c 会 include 这个文件 —— 换协议版本只改这里。
+ * 只有 libs/frame/frame.c 会 include 这个文件 —— 换协议版本只改这里。
  * (同 libs/rc/rc_config.h、libs/can/can_config.h 的路子。)
  *
  * 这里为什么只有一项：帧格式的其余东西 —— 0xAA 0x55 帧头、各字段偏移、CRC8/CRC16
  * 多项式、包码值和 payload 布局 —— 都是**协议本身**，改了就是换协议，没有"这块板子
- * 和那块板子不一样"的余地，所以那些留在 uart_frame.h / type_id.h 里。真正随部署变、
+ * 和那块板子不一样"的余地，所以那些留在 frame.h / type_id.h 里。真正随部署变、
  * 或者需要两个人对着改的，只有下面这个版本串。 */
 
 /* ==================== 协议版本 ====================
@@ -27,4 +27,4 @@
  *
  * 当前这个串算出 0xF61DCF10。主机测试里把这个值钉死了，所以改完字符串测试会红 ——
  * 那是故意的，提醒你上位机那份也要同步改。 */
-#define UART_FRAME_VERSION_STRING "Intuition-ARX-X5-2023-v0.1"
+#define FRAME_VERSION_STRING "Intuition-ARX-X5-2023-v0.1"

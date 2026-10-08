@@ -785,6 +785,20 @@ MAYBE_UNUSED static void set_pid_normal(Gimbal* obj) {
 
     obj->gripper->motor_controller->pid_pos_data.config = obj->pid_cfgs[GRIPPER][0];
     obj->gripper->motor_controller->pid_speed_data.config = obj->pid_cfgs[GRIPPER][1];
+    /* kp/kd 必须像 j4~j6 那样显式恢复 —— 达妙是 MIT 模式，力矩里 kp/kd 是独立的两项，
+     * 光把 PID config 写对不够(理由同 set_pid_zero() 下面那两行)。
+     *
+     * **以前这里没有这两行，是个真 bug**：唯一会把夹爪 kp 打成 0 的是 set_pid_damping()
+     * (arm_damping，整臂一致的被动)，而 set_pid_normal() 是 arm_run/arm_stop 共用的收尾，
+     * 不补回来就再没人置回。后果链条：
+     *   一次初始化跑完 → robot_state 进 normal，默认档是 arm_damping → 夹爪 kp 变 0
+     *   → 同一次上电里**第二次**找零全程 kp=0。
+     * 于是第二次找零又慢又回不到行程中点：kp=0 时位置误差一点力矩都不出，退回那一段
+     * (case 2 本来就没有力矩前馈)只剩 0.1·(ref_speed-vel) ≈ 0.2 N·m，啃不动静摩擦
+     * → 6 s 退回超时 → gripper_zero_finish() 不设零、目标角对齐反馈。
+     * 顺带修掉的是"第一次找零跑完之后，夹爪在上位机正常操控下一直是软脚"这件事。 */
+    obj->gripper->kp = obj->pid_mit_kpkd[GRIPPER][0];
+    obj->gripper->kd = obj->pid_mit_kpkd[GRIPPER][1];
 
     /* 自适应输出限幅,输出系数在0~1之间调整 */
     // TODO:

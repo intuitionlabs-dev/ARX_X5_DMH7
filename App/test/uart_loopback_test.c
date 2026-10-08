@@ -5,7 +5,7 @@
 #include "bsp_uart.h"   /* 串口传输层：DMA 收发 + .RAM_D1 缓冲都封在它里面 */
 #include "main.h"       /* HAL_GetTick() */
 #include "test_config.h" /* 测试例程开关 */
-#include "uart_frame.h" /* 帧协议 + 自动解包 union */
+#include "frame.h" /* 帧协议 + 自动解包 union */
 
 #if TEST_UART_LOOPBACK_ENABLE
 
@@ -87,20 +87,20 @@ volatile uint32_t uart_lb_round;
  * 另一路收到的字节一律丢弃并计 uart_lb_offdir_cnt(见 UartLoopbackTest_OnRx)。
  */
 
-/* 每路一个解析器(UartFrameParser 约 270 字节)。**普通静态即可** —— 解析器是上层
+/* 每路一个解析器(FrameParser 约 270 字节)。**普通静态即可** —— 解析器是上层
  * 自己的变量，从来不参与 DMA，不需要任何段属性；只有 BSP 的收发缓冲才需要。
  * 照 BSP_UART_CNT 开、用端口号当下标（同上，下标 0 那格不用）。 */
-static UartFrameParser s_parser[BSP_UART_CNT];
+static FrameParser s_parser[BSP_UART_CNT];
 
 /* 本轮接收方刚解出一整帧。中断里置，任务里读并清。 */
 static volatile uint8_t s_rx_ready;
 
-/* 本轮发出去的东西，下一轮结算时拿来比。用 UartFramePayload 而不是裸数组，
+/* 本轮发出去的东西，下一轮结算时拿来比。用 FramePayload 而不是裸数组，
  * 这样"期望值"和"收到的值"走的是同一个 union 视图，比较时两边都不用强转。 */
-static UartFramePayload s_tx_payload;
+static FramePayload s_tx_payload;
 /* 发送源。**普通静态**：BSP_UART_Send() 会把它拷进自己的 .RAM_D1 缓冲再发。 */
-static uint8_t s_tx_frame[UART_FRAME_MAX_LEN];
-static UartFrameTypeId s_tx_type_id;
+static uint8_t s_tx_frame[FRAME_MAX_LEN];
+static FrameTypeId s_tx_type_id;
 static uint8_t s_tx_len;
 
 static uint8_t s_rx_idx;  /* 本轮的接收方，**BSP 端口号**(UART_LB_U2/U3)，不是 0/1 */
@@ -116,12 +116,12 @@ static uint32_t s_round_bytes_base;
 #define UART_LB_TYPE_ID_UNASSIGNED 0x7FU
 
 /* 空包用例轮转用的码表。这几个包"语义全在 type_id 上"，payload 为空。 */
-static const UartFrameTypeId s_empty_ids[] = {
-    UART_FRAME_TYPE_ID_MOTOR_SET_ZERO,
-    UART_FRAME_TYPE_ID_ARM_START,
-    UART_FRAME_TYPE_ID_ARM_GRAVITY,
-    UART_FRAME_TYPE_ID_ARM_STOP,
-    UART_FRAME_TYPE_ID_ARM_DAMPING,
+static const FrameTypeId s_empty_ids[] = {
+    FRAME_TYPE_ID_MOTOR_SET_ZERO,
+    FRAME_TYPE_ID_ARM_START,
+    FRAME_TYPE_ID_ARM_GRAVITY,
+    FRAME_TYPE_ID_ARM_STOP,
+    FRAME_TYPE_ID_ARM_DAMPING,
 };
 #define UART_LB_EMPTY_CNT (sizeof s_empty_ids / sizeof s_empty_ids[0])
 
@@ -129,7 +129,7 @@ static const UartFrameTypeId s_empty_ids[] = {
  *
  * 值全部用轮次 seq 播种：上一轮残留的帧(哪怕是合法的)对不上这一轮的值，
  * 不可能蒙混过关 —— 这是"丢了但没发现"唯一的防线，因为帧层没有序号，
- * 它自己发现不了丢帧(见 uart_frame.h 解析器那段说明)。
+ * 它自己发现不了丢帧(见 frame.h 解析器那段说明)。
  * 结果全部写进 s_tx_type_id / s_tx_len / s_tx_payload 三个静态量，**不返回值** ——
  * 之前返回长度、由调用方再往 s_tx_len 里存，结果漏存了一次，所有帧都被判成错的。
  * 现在只有一处出口，漏不掉。 */
@@ -145,15 +145,15 @@ static uint8_t UartLoopbackTest_CaseOf(uint32_t seq) {
 }
 
 static void UartLoopbackTest_Build(uint32_t seq) {
-    UartFrameTypeId id = UART_FRAME_TYPE_ID_NONE;
+    FrameTypeId id = FRAME_TYPE_ID_NONE;
     uint8_t len = 0U;
     uint32_t i;
 
     switch (UartLoopbackTest_CaseOf(seq)) {
     case 0: /* 版本匹配包：4 字节，唯一一个真去算哈希的用例 */
-        s_tx_payload.version.code = UartFrameVersionCode();
-        len = (uint8_t)sizeof(UartPktVersion);
-        id = UART_FRAME_TYPE_ID_VERSION;
+        s_tx_payload.version.code = FrameVersionCode();
+        len = (uint8_t)sizeof(FramePktVersion);
+        id = FRAME_TYPE_ID_VERSION;
         break;
 
     case 1: /* 空包：datalen 必须是 0，整帧只剩 7 字节 */
@@ -163,41 +163,41 @@ static void UartLoopbackTest_Build(uint32_t seq) {
 
     case 2: /* 设零回复包：12 字节，里面有个 uint32_t，验非对齐的 4 字节访问 */
         s_tx_payload.motor_set_zero_ack.state = (uint8_t)(seq & 0xFFU);
-        for (i = 0U; i < UART_FRAME_PKT_MOTOR_NUM; i++) {
+        for (i = 0U; i < FRAME_PKT_MOTOR_NUM; i++) {
             s_tx_payload.motor_set_zero_ack.result[i] = (uint8_t)(seq + i);
         }
         s_tx_payload.motor_set_zero_ack.elapsed_ms = 1000U + seq;
-        len = (uint8_t)sizeof(UartPktMotorSetZeroAck);
-        id = UART_FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK;
+        len = (uint8_t)sizeof(FramePktMotorSetZeroAck);
+        id = FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK;
         break;
 
     case 3: /* 位置控制包：7 个 float，全落在非 4 倍数地址上 */
-        for (i = 0U; i < UART_FRAME_PKT_JOINT_NUM; i++) {
+        for (i = 0U; i < FRAME_PKT_JOINT_NUM; i++) {
             s_tx_payload.arm_ctrl_pos.joint_angle[i] =
                 (float)((int32_t)(seq % 200U) - 100) + (float)i * 0.25f;
         }
         s_tx_payload.arm_ctrl_pos.gripper_angle = (float)(seq % 90U) * 0.5f;
-        len = (uint8_t)sizeof(UartPktArmCtrlPos);
-        id = UART_FRAME_TYPE_ID_ARM_CTRL_POS;
+        len = (uint8_t)sizeof(FramePktArmCtrlPos);
+        id = FRAME_TYPE_ID_ARM_CTRL_POS;
         break;
 
     case 4: /* 位置+速度控制包：13 个 float，最长的一包 */
-        for (i = 0U; i < UART_FRAME_PKT_JOINT_NUM; i++) {
+        for (i = 0U; i < FRAME_PKT_JOINT_NUM; i++) {
             s_tx_payload.arm_ctrl_pos_vel.joint_angle[i] =
                 (float)((int32_t)(seq % 360U) - 180) * 0.5f;
             s_tx_payload.arm_ctrl_pos_vel.joint_vel[i] =
                 (float)((int32_t)(seq % 100U) - 50) * 1.5f;
         }
         s_tx_payload.arm_ctrl_pos_vel.gripper_angle = (float)(seq % 90U) * 0.5f;
-        len = (uint8_t)sizeof(UartPktArmCtrlPosVel);
-        id = UART_FRAME_TYPE_ID_ARM_CTRL_POS_VEL;
+        len = (uint8_t)sizeof(FramePktArmCtrlPosVel);
+        id = FRAME_TYPE_ID_ARM_CTRL_POS_VEL;
         break;
 
-    default: /* 边界帧：payload 顶满 255 字节，整帧 262 —— UartFrameBuf 的上限 */
-        for (i = 0U; i < UART_FRAME_MAX_DATA; i++) {
+    default: /* 边界帧：payload 顶满 255 字节，整帧 262 —— FrameBuf 的上限 */
+        for (i = 0U; i < FRAME_MAX_DATA; i++) {
             s_tx_payload.raw[i] = (uint8_t)(seq + i);
         }
-        len = (uint8_t)UART_FRAME_MAX_DATA;
+        len = (uint8_t)FRAME_MAX_DATA;
         id = UART_LB_TYPE_ID_UNASSIGNED;
         break;
     }
@@ -217,7 +217,7 @@ static void UartLoopbackTest_Build(uint32_t seq) {
  *     一遍才知道 pack(1) 有没有真的让 GCC 生成逐字节访问的代码。
  *     float 直接 == 比是故意的：同一份二进制值来回一趟必须逐位相等。 */
 /* 记一次"对不上"的现场，供调试器看。只记最后一次，够定位了。 */
-static void UartLoopbackTest_Snapshot(const UartFrameParser *p) {
+static void UartLoopbackTest_Snapshot(const FrameParser *p) {
     uint32_t got_hdr = 0U;
     uint32_t exp_hdr = 0U;
     uint32_t wire = 0U;
@@ -241,7 +241,7 @@ static void UartLoopbackTest_Snapshot(const UartFrameParser *p) {
                              : 0U;
 }
 
-static int UartLoopbackTest_Match(const UartFrameParser *p) {
+static int UartLoopbackTest_Match(const FrameParser *p) {
     uint32_t i;
 
     if ((p->type_id != s_tx_type_id) || (p->data_len != s_tx_len)) {
@@ -252,16 +252,16 @@ static int UartLoopbackTest_Match(const UartFrameParser *p) {
     }
 
     switch (p->type_id) {
-    case UART_FRAME_TYPE_ID_VERSION:
+    case FRAME_TYPE_ID_VERSION:
         return (p->buf.f.payload.version.code == s_tx_payload.version.code);
 
-    case UART_FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK: {
-        const UartPktMotorSetZeroAck *got = &p->buf.f.payload.motor_set_zero_ack;
-        const UartPktMotorSetZeroAck *exp = &s_tx_payload.motor_set_zero_ack;
+    case FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK: {
+        const FramePktMotorSetZeroAck *got = &p->buf.f.payload.motor_set_zero_ack;
+        const FramePktMotorSetZeroAck *exp = &s_tx_payload.motor_set_zero_ack;
         if ((got->state != exp->state) || (got->elapsed_ms != exp->elapsed_ms)) {
             return 0;
         }
-        for (i = 0U; i < UART_FRAME_PKT_MOTOR_NUM; i++) {
+        for (i = 0U; i < FRAME_PKT_MOTOR_NUM; i++) {
             if (got->result[i] != exp->result[i]) {
                 return 0;
             }
@@ -269,10 +269,10 @@ static int UartLoopbackTest_Match(const UartFrameParser *p) {
         return 1;
     }
 
-    case UART_FRAME_TYPE_ID_ARM_CTRL_POS: {
-        const UartPktArmCtrlPos *got = &p->buf.f.payload.arm_ctrl_pos;
-        const UartPktArmCtrlPos *exp = &s_tx_payload.arm_ctrl_pos;
-        for (i = 0U; i < UART_FRAME_PKT_JOINT_NUM; i++) {
+    case FRAME_TYPE_ID_ARM_CTRL_POS: {
+        const FramePktArmCtrlPos *got = &p->buf.f.payload.arm_ctrl_pos;
+        const FramePktArmCtrlPos *exp = &s_tx_payload.arm_ctrl_pos;
+        for (i = 0U; i < FRAME_PKT_JOINT_NUM; i++) {
             if (got->joint_angle[i] != exp->joint_angle[i]) {
                 return 0;
             }
@@ -280,10 +280,10 @@ static int UartLoopbackTest_Match(const UartFrameParser *p) {
         return (got->gripper_angle == exp->gripper_angle);
     }
 
-    case UART_FRAME_TYPE_ID_ARM_CTRL_POS_VEL: {
-        const UartPktArmCtrlPosVel *got = &p->buf.f.payload.arm_ctrl_pos_vel;
-        const UartPktArmCtrlPosVel *exp = &s_tx_payload.arm_ctrl_pos_vel;
-        for (i = 0U; i < UART_FRAME_PKT_JOINT_NUM; i++) {
+    case FRAME_TYPE_ID_ARM_CTRL_POS_VEL: {
+        const FramePktArmCtrlPosVel *got = &p->buf.f.payload.arm_ctrl_pos_vel;
+        const FramePktArmCtrlPosVel *exp = &s_tx_payload.arm_ctrl_pos_vel;
+        for (i = 0U; i < FRAME_PKT_JOINT_NUM; i++) {
             if ((got->joint_angle[i] != exp->joint_angle[i]) ||
                 (got->joint_vel[i] != exp->joint_vel[i])) {
                 return 0;
@@ -321,14 +321,14 @@ static void UartLoopbackTest_OnRx(uint8_t id, const uint8_t *data, uint16_t len)
     uart_lb_byte_dir[id] += (uint32_t)len;
 
     for (i = 0U; i < (uint32_t)len; i++) {
-        UartFrameStatus st = UartFrameParserFeed(&s_parser[id], data[i]);
+        FrameStatus st = FrameParserFeed(&s_parser[id], data[i]);
 
-        if (st == UART_FRAME_OK) {
+        if (st == FRAME_OK) {
             s_rx_ready = 1U;
             uart_lb_rx_dir[id]++;
-        } else if (st == UART_FRAME_ERR_CRC8) {
+        } else if (st == FRAME_ERR_CRC8) {
             uart_lb_crc8_err++;
-        } else if (st == UART_FRAME_ERR_CRC16) {
+        } else if (st == FRAME_ERR_CRC16) {
             uart_lb_crc16_err++;
         } else {
             /* INCOMPLETE：绝大多数字节走这条，正常 */
@@ -370,7 +370,7 @@ static void UartLoopbackTest_RefreshStat(void) {
 /* ==================== 结算 ==================== */
 
 static void UartLoopbackTest_Verify(void) {
-    const UartFrameParser *p;
+    const FrameParser *p;
 
     if (!s_pending) {
         return;
@@ -386,7 +386,7 @@ static void UartLoopbackTest_Verify(void) {
         uart_lb_lost_state = (uint32_t)s_parser[s_rx_idx].state;
         uart_lb_lost_len = (uint32_t)s_parser[s_rx_idx].len;
         uart_lb_lost_got = uart_lb_byte_dir[s_rx_idx] - s_round_bytes_base;
-        uart_lb_lost_need = (uint32_t)s_tx_len + UART_FRAME_OVERHEAD;
+        uart_lb_lost_need = (uint32_t)s_tx_len + FRAME_OVERHEAD;
         uart_lb_lost_cnt++;
         {
             uint32_t state_now = (uint32_t)s_parser[s_rx_idx].state;
@@ -454,11 +454,11 @@ static void UartLoopbackTest_RunOneRound(void) {
      * 反过来的话帧头那几个字节会在解析器还没清干净的时候进来，整帧报废 ——
      * 而且这事和接线对不对没关系。 */
     s_rx_idx = rx_idx;
-    UartFrameParserReset(&s_parser[rx_idx]);
+    FrameParserReset(&s_parser[rx_idx]);
     s_rx_ready = 0U;
     s_round_bytes_base = uart_lb_byte_dir[rx_idx]; /* 这一轮"收到多少字节"从这个值起算 */
 
-    n = UartFrameEncode(s_tx_frame, UART_FRAME_MAX_LEN, s_tx_type_id,
+    n = FrameEncode(s_tx_frame, FRAME_MAX_LEN, s_tx_type_id,
                         (s_tx_len > 0U) ? s_tx_payload.raw : NULL, s_tx_len);
     if (n < 0) {
         uart_lb_encode_err++;
@@ -497,8 +497,8 @@ void UartLoopbackTest_Init(void) {
      * 别再怀疑接线和 DMA 流号 —— 症状一定是 tx_cnt 几乎不涨 + hal_err 出现 0x10。 */
     uart_lb_dma_mem_bad = BSP_UART_LayoutOk();
 
-    UartFrameParserReset(&s_parser[UART_LB_U2]);
-    UartFrameParserReset(&s_parser[UART_LB_U3]);
+    FrameParserReset(&s_parser[UART_LB_U2]);
+    FrameParserReset(&s_parser[UART_LB_U3]);
 
     /* 注册回调。**必须在 BSP_UART_Init() 之后**(BSP 初始化会清回调表)，
      * 见 main.c 里的调用顺序。 */
@@ -509,7 +509,7 @@ void UartLoopbackTest_Init(void) {
     s_pending = 0U;
     s_round = 0U;
     s_rx_idx = UART_LB_U2;
-    s_tx_type_id = UART_FRAME_TYPE_ID_NONE;
+    s_tx_type_id = FRAME_TYPE_ID_NONE;
     s_tx_len = 0U;
 
     /* 顺手把 BSP 的统计搬一遍：这样**调度器还没起来**时用 JLink 读 uart_lb_no_dma /

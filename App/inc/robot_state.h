@@ -43,24 +43,52 @@
  *
  * ==================== 挂载方式 ====================
  *
- *   Robot_State_Init();   // main.c 的 USER CODE 2，**必须在 BSP_UART_Init() 之后**
- *                         // (那个函数会清空 BSP 的回调表)，调度器启动之前
+ *   Robot_State_Init();   // main.c 的 USER CODE 2，**必须在两个 BSP 的 Init 之后**
+ *                         // (它们会清空自己的回调登记)，调度器启动之前
  *   Robot_State_Loop();   // Cmd_Loop() 开头，500 Hz
  *
- * 本模块**只管一路串口**(ROBOT_UART_PORT = BSP_UART_U3)，这也是"共享状态不用临界区"
- * 的前提 —— 收包回调只有这一路会进来。
+ * 本模块**只管一条链路**：走串口还是走 USB，由下面的 ROBOT_LINK **编译期二选一**
+ * (默认 USB)。这也是"共享状态不用临界区"的前提：收包回调只可能从这一条链路进来。
  *
- * 注意 U3 上原本挂着自机回环测试 App/test/uart_loopback_test.c，两者**抢同一路**的回调。
- * 那个测试现在是关着的(TEST_UART_LOOPBACK_ENABLE = 0)；就算打开也不冲突，因为它的
- * UartLoopbackTest_Init() 在 main.c 里排在本模块**前面**，而注册回调是直接赋值，
- * 本模块会把 U3 的回调**覆盖**掉 —— 只是回环测试从此在 U3 上收不到东西了。 */
+ * 那个前提还有另一半：**只有被选中的那条链路会注册本模块的回调**。没选中的那条
+ * 外设照样是活的(比如 USB 那边 MX_USB_DEVICE_Init() 是无条件调的，在 freertos.c 里)，
+ * 但没人注册 Robot_State_OnRx()，所以它碰不到任何共享状态。
+ *
+ * 走串口 (ROBOT_LINK_UART) 时注意 U3 上原本挂着自机回环测试
+ * App/test/uart_loopback_test.c，两者**抢同一路**的回调。那个测试现在是关着的
+ * (TEST_UART_LOOPBACK_ENABLE = 0)；就算打开也不冲突，因为它的 UartLoopbackTest_Init()
+ * 在 main.c 里排在本模块**前面**，而注册回调是直接赋值，本模块会把 U3 的回调**覆盖**掉
+ * —— 只是回环测试从此在 U3 上收不到东西了。 */
 
 #include <stdint.h>
 
-#include "bsp_uart.h"  /* BSP_UART_U3 —— 本模块固定用这一路 */
 #include "robot_def.h" /* ARM_JOINT_NUM / Arm_mode */
 
-/* 本模块用哪一路串口。写死：见上面"只管一路串口"。
+/* ==================== 走哪条链路（编译期二选一）====================
+ *
+ * 改下面 ROBOT_LINK 那一行就切换。两条链路的 BSP 接口是**同形**的
+ * (对照表在 libs/usb/bsp_usb.h 开头)，所以 App/robot_state.c 的正文一句都不用动 ——
+ * 差异全收在 .c 顶部那一小段别名宏里，见那里的注释。
+ *
+ * 为什么是编译期二选一，不是运行期切换、也不是双路并行：本模块的接收侧
+ * (s_parser + 收包环)是单生产者单消费者的，靠"只有一个中断上下文会碰它"省掉了所有
+ * 临界区。两条链路同时活着就有两个中断源，那条前提立刻不成立。 */
+#define ROBOT_LINK_UART 0
+#define ROBOT_LINK_USB  1
+
+/* ← 改这一行切换链路。默认 USB：实测 250.4 Hz 反馈、crc 错 0，比走 RS485 的
+ * ~244 Hz 干净(USB 是包传输，没有半双工那种收发碰撞)，而且不用额外适配器。
+ * 换回串口就把它写成 ROBOT_LINK_UART —— 前提是那路 USART3 上接着
+ * USB 转 RS485 适配器(见下面那段)；否则板子 USB 口插上不会有任何反应。 */
+#define ROBOT_LINK ROBOT_LINK_USB
+
+#if ROBOT_LINK == ROBOT_LINK_USB
+#include "bsp_usb.h" /* BSP_USB_PORT —— 板载 USB CDC(OTG_HS, PA11/PA12) */
+#else
+#include "bsp_uart.h" /* BSP_UART_U3 —— 板载 RS485 半双工 */
+#endif
+
+/* ---- 串口那条 (ROBOT_LINK_UART，现在不是默认) ----
  *
  * **USART3 = PD8(TX)/PD9(RX)**，板上接的是 **RS485 半双工收发器**：方向由外设硬件
  * 控制(PB14 = USART3_DE，见 Core/Src/usart.c 的 HAL_RS485Ex_Init)，软件不用管 DE。
@@ -69,8 +97,16 @@
  * 上位机这侧是 **USB 转 RS485 适配器**，接这一路的 A/B 差分对。
  *
  * 之前是 USART1 = PA9/PA10（普通异步口，端对端接 USB 转 TTL：适配器 TX → PA10、
- * 适配器 RX → PA9、GND 互连）。2026-10-08 对端换成 RS485 适配器，所以挪到 U3。 */
-#define ROBOT_UART_PORT BSP_UART_U3
+ * 适配器 RX → PA9、GND 互连）。2026-10-08 对端换成 RS485 适配器，所以挪到 U3。
+ *
+ * ---- USB 那条 (ROBOT_LINK_USB，默认) ----
+ *
+ * 板子自己的 USB CDC 口，主机侧认出来是 VID:PID = **0483:5740**
+ * ("STM32 Virtual ComPort")，挂在 /dev/ttyACM* 上。
+ *
+ * 两条链路**只走一条**，不用同时插。USB 这条上"波特率"是没有意义的(CDC 是包传输)，
+ * 上位机设成多少都一样。 */
+
 
 /* 通信超时，ms。握手通过之后，这么久没收到任何有效帧就进通信离线模式。 */
 #define ROBOT_COMM_TIMEOUT_MS 500U
@@ -143,7 +179,8 @@ typedef struct {
 
 /* ---- 初始化 / 调用 ---- */
 
-/* 登记串口回调 + 清状态。**必须在 BSP_UART_Init() 之后**（那个函数会清空回调表）。
+/* 登记链路回调 + 清状态。**必须在两个 BSP 的 Init 之后**（它们会清空自己的回调登记）。
+ * 只登记 ROBOT_LINK 选中的那一条。
  * 放在 main.c 的 USER CODE 2 里（用户约定：libs 下的初始化都放 main.c，不放测试入口）。 */
 void Robot_State_Init(void);
 

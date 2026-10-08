@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""机械臂上位机串口控制台（curses 全屏面板）。
+"""机械臂上位机控制台（curses 全屏面板）。UART 和 USB 两条链路都能跑。
 
-按 libs/uart_frame/protocol_doc.md 的线协议和板子说话：
+**协议和传输无关**：帧格式、码表、版本码两条链路完全一样，所以这个脚本不区分
+"串口版/ USB 版"—— 只按 USB 身份去认口子，认出哪条就用哪条（见 pick_default_port）。
+板子那侧走哪条是**编译期**定死的（App/inc/robot_state.h 的 ROBOT_LINK），两边选反了
+的现象是"一切都对但一个字节都没有"。
+
+按 libs/frame/protocol_doc.md 的线协议和板子说话：
 
   * **周期发 0x16**（6 个关节角 + 夹爪角，deg）当控制帧，**它同时就是保活帧** ——
     板子那边 500 ms 没收到任意有效帧就进 comm_lost(damping)，而被丢掉的 0x16 也算
@@ -21,13 +26,16 @@ j1-integral-window-and-ff），调试时反而不好解释。需要时再扩。
     ③ 待初始化 —— 按 i 发 0x02
     ④ 初始化中（板子自己跑一键复位 → 一键夹爪找零，约 7 s，期间必须保持保活）
     ⑤ 正常运行（**默认 damping**！按 s 发 0x12 才进 run，run 下 0x16 才被接受）
+       ↑ 这一档（stop/damping）下**也能按 i 重跑一遍初始化**；跑完回 ⑤ 而不是 ③。
+         （板侧闸门放开是用户要求的口径；run 档下按 i 仍会被静默丢弃。）
     ⑥ 按 z 发 0x10 设零点 → 校准，跑完回 ③
     ⑦ 500 ms 无有效帧 → comm_lost；再来一帧就回 ②
 上层会用、脚本里没做的：0x11 设零回复（收了，会显示）、0x17（不做）。
 
 用法：
-    python3 scripts/uart_frame_cli.py                # 真机：自动找那条 1a86 适配器，921600
-                                                     # （接板子的 USART3，RS485 半双工）
+    python3 scripts/uart_frame_cli.py                # 真机：自动挑口子（板子 USB 优先，
+                                                     # 退回 1a86 RS485 适配器），921600
+    python3 scripts/uart_frame_cli.py --port /dev/ttyACM0   # 指定口子
     python3 scripts/uart_frame_cli.py --fake         # 假板子，不接硬件就能把面板/按键/状态机走一遍
     python3 scripts/uart_frame_cli.py --selftest     # 协议层离线自测（CRC/版本码/编解码/重同步）
 面板里按 h 看按键表。
@@ -53,7 +61,7 @@ from collections import deque
 # ============================================================================
 
 # crc16 = CRC-16/MODBUS(多项式 0x8408 反射式, 初值 0xFFFF)、crc8 = CRC-8/MAXIM(0x31, 初值 0xFF)。
-# 两张表是从 libs/soft_crc/soft_crc.c 抠出来的，并且和板上 UartFrameEncode() 的输出
+# 两张表是从 libs/soft_crc/soft_crc.c 抠出来的，并且和板上 FrameEncode() 的输出
 # **逐字节比对**过，别手改。
 T16 = [0, 4489, 8978, 12955, 17956, 22445, 25910, 29887, 35912, 40385, 44890, 48851, 51820, 56293, 59774, 63735, 4225, 264, 13203, 8730, 22181, 18220, 30135, 25662, 40137, 36160, 49115, 44626, 56045, 52068, 63999, 59510, 8450, 12427, 528, 5017, 26406, 30383, 17460, 21949, 44362, 48323, 36440, 40913, 60270, 64231, 51324, 55797, 12675, 8202, 4753, 792, 30631, 26158, 21685, 17724, 48587, 44098, 40665, 36688, 64495, 60006, 55549, 51572, 16900, 21389, 24854, 28831, 1056, 5545, 10034, 14011, 52812, 57285, 60766, 64727, 34920, 39393, 43898, 47859, 21125, 17164, 29079, 24606, 5281, 1320, 14259, 9786, 57037, 53060, 64991, 60502, 39145, 35168, 48123, 43634, 25350, 29327, 16404, 20893, 9506, 13483, 1584, 6073, 61262, 65223, 52316, 56789, 43370, 47331, 35448, 39921, 29575, 25102, 20629, 16668, 13731, 9258, 5809, 1848, 65487, 60998, 56541, 52564, 47595, 43106, 39673, 35696, 33800, 38273, 42778, 46739, 49708, 54181, 57662, 61623, 2112, 6601, 11090, 15067, 20068, 24557, 28022, 31999, 38025, 34048, 47003, 42514, 53933, 49956, 61887, 57398, 6337, 2376, 15315, 10842, 24293, 20332, 32247, 27774, 42250, 46211, 34328, 38801, 58158, 62119, 49212, 53685, 10562, 14539, 2640, 7129, 28518, 32495, 19572, 24061, 46475, 41986, 38553, 34576, 62383, 57894, 53437, 49460, 14787, 10314, 6865, 2904, 32743, 28270, 23797, 19836, 50700, 55173, 58654, 62615, 32808, 37281, 41786, 45747, 19012, 23501, 26966, 30943, 3168, 7657, 12146, 16123, 54925, 50948, 62879, 58390, 37033, 33056, 46011, 41522, 23237, 19276, 31191, 26718, 7393, 3432, 16371, 11898, 59150, 63111, 50204, 54677, 41258, 45219, 33336, 37809, 27462, 31439, 18516, 23005, 11618, 15595, 3696, 8185, 63375, 58886, 54429, 50452, 45483, 40994, 37561, 33584, 31687, 27214, 22741, 18780, 15843, 11370, 7921, 3960]
 T8 = [0, 94, 188, 226, 97, 63, 221, 131, 194, 156, 126, 32, 163, 253, 31, 65, 157, 195, 33, 127, 252, 162, 64, 30, 95, 1, 227, 189, 62, 96, 130, 220, 35, 125, 159, 193, 66, 28, 254, 160, 225, 191, 93, 3, 128, 222, 60, 98, 190, 224, 2, 92, 223, 129, 99, 61, 124, 34, 192, 158, 29, 67, 161, 255, 70, 24, 250, 164, 39, 121, 155, 197, 132, 218, 56, 102, 229, 187, 89, 7, 219, 133, 103, 57, 186, 228, 6, 88, 25, 71, 165, 251, 120, 38, 196, 154, 101, 59, 217, 135, 4, 90, 184, 230, 167, 249, 27, 69, 198, 152, 122, 36, 248, 166, 68, 26, 153, 199, 37, 123, 58, 100, 134, 216, 91, 5, 231, 185, 140, 210, 48, 110, 237, 179, 81, 15, 78, 16, 242, 172, 47, 113, 147, 205, 17, 79, 173, 243, 112, 46, 204, 146, 211, 141, 111, 49, 178, 236, 14, 80, 175, 241, 19, 77, 206, 144, 114, 44, 109, 51, 209, 143, 12, 82, 176, 238, 50, 108, 142, 208, 83, 13, 239, 177, 240, 174, 76, 18, 145, 207, 45, 115, 202, 148, 118, 40, 171, 245, 23, 73, 8, 86, 180, 234, 105, 55, 213, 139, 87, 9, 235, 181, 54, 104, 138, 212, 149, 203, 41, 119, 244, 170, 72, 22, 233, 183, 85, 11, 136, 214, 52, 106, 43, 117, 151, 201, 74, 20, 246, 168, 116, 42, 200, 150, 21, 75, 169, 247, 182, 232, 10, 84, 215, 137, 107, 53]
@@ -74,21 +82,22 @@ def crc8(data):
 
 
 def fnv1a32(s):
-    """板子算版本码用的就是 FNV-1a 32（uart_frame.c）。"""
+    """板子算版本码用的就是 FNV-1a 32（frame.c）。"""
     h = 0x811C9DC5
     for b in s.encode("utf-8"):
         h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
     return h
 
 
-# 版本串抄自 libs/uart_frame/uart_frame_config.h 的 UART_FRAME_VERSION_STRING。
+# 版本串抄自 libs/frame/frame_config.h 的 FRAME_VERSION_STRING。
 # **版本码不硬写**，开机自己算 —— 板子上改了串这里就跟上，不用记 0xF61DCF10。
 VERSION_STRING = "Intuition-ARX-X5-2023-v0.1"
 VERSION_CODE = fnv1a32(VERSION_STRING)
 
-# 码表（libs/uart_frame/type_id.h）
+# 码表（libs/frame/type_id.h）
 TID_VERSION = 0x01        # 版本，双向
-TID_ARM_INIT = 0x02       # 初始化（空 payload），只能从「待初始化」发
+TID_ARM_INIT = 0x02       # 初始化（空 payload）。两个入口：「待初始化」，或「正常运行」的
+                          # stop/damping 档（见 robot_state.c 的 HandleArmInit）
 TID_MOTOR_SET_ZERO = 0x10  # 设零点（空 payload）
 TID_SET_ZERO_ACK = 0x11   # 设零回复：u8 state + u8 result[7] + u32 elapsed_ms = 12 B
 TID_ARM_START = 0x12      # 进 run
@@ -271,14 +280,28 @@ class FrameParser:
 # B 层：串口 + 后台读线程 + 线程间状态
 # ============================================================================
 
-DEFAULT_PORT = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+BY_ID_DIR = "/dev/serial/by-id"
+DEFAULT_PORT = BY_ID_DIR + "/usb-1a86_USB_Serial-if00-port0"
 # 硬约束：绝不打开 J-Link 自带的 VCOM（那是探针，占着它 JLink 就连不上/烧不了了）。
 # 注意**不能按名字判**：适配器那条 by-id 路径 realpath 出来也是 /dev/ttyACM*，
 # 一刀切"含 ttyacm 就拒"会把好口子也拒掉。
 # 所以去 /sys 读 USB 身份：J-Link = idVendor 1366 / manufacturer SEGGER / product J-Link。
 SEGGER_VID = "1366"
 ADAPTER_VID = "1a86"  # CH340/CH343 那类 USB 转串口/转 RS485 适配器（沁恒）
+
+# 板子自己的 USB CDC 口。板子的 USB 设备栈是 CubeMX 生成的 USB CDC，
+# 描述符里 VID:PID 就是 ST 给虚拟串口的标准值（USB_DEVICE/App/usbd_desc.c）。
+BOARD_VID = "0483"
+BOARD_PID = "5740"
+
 FORBIDDEN_HINTS = ("segger", "j-link", "jlink")
+
+# 链路类型 → 人话。板子这侧对应 App/inc/robot_state.h 的 ROBOT_LINK：
+#   ROBOT_LINK_UART → 板子跑的是串口那条 → **必须**用 RS485 适配器接 USART3
+#   ROBOT_LINK_USB  → 板子跑的是 USB 那条   → **必须**用板子 USB 口
+# 两边选反了的现象是"一切都对但一个字节都没有"，所以下面挑口子时优先板子 USB，
+# 并且在面板/日志里把选中了哪种链路写出来。
+KIND_NAMES = {"USB": "板子 USB CDC", "RS485": "USB 转 RS485 适配器"}
 
 
 def _read_sys(p):
@@ -309,12 +332,89 @@ def usb_identity(path):
     return None
 
 
+def classify_port(ident):
+    """USB 身份 → 这是哪条链路（"USB" / "RS485" / None）。
+
+    **纯函数，不碰 /sys** —— 喂一个假的 ident 就能测，--selftest 里就是这么用的。
+    顺序不在这里定，见 _pick_from()。
+    """
+    if ident is None:
+        return None
+    vid = ident["idVendor"].lower()
+    if vid == BOARD_VID and ident["idProduct"].lower() == BOARD_PID:
+        return "USB"
+    if vid == ADAPTER_VID:
+        return "RS485"
+    return None
+
+
+def _pick_from(candidates):
+    """[(path, ident), ...] → 该用哪条。纯函数，优先级就在这里。
+
+    板子 USB 优先、RS485 退回（用户定的）。同一档里按路径字典序，保证可复现 ——
+    插两个同型号适配器时"随便挑一个"会让日志没法复现。
+    """
+    for want in ("USB", "RS485"):
+        for path, ident in sorted(candidates, key=lambda c: c[0]):
+            if classify_port(ident) == want:
+                return path
+    return None
+
+
+def _port_candidates():
+    """扫一遍机器上所有可能是链路的 tty，带上各自的 USB 身份。
+
+    /dev/serial/by-id/* 都是指向 ttyUSB*/ttyACM* 的符号链接，所以按 realpath 去重，
+    免得同一条设备出现两次（by-id 那条一般名字更可读，保留先扫到的 by-id 那条）。
+    """
+    out, seen = [], set()
+    paths = []
+    if os.path.isdir(BY_ID_DIR):
+        paths += sorted(os.path.join(BY_ID_DIR, n) for n in os.listdir(BY_ID_DIR))
+    for pat in ("/dev/ttyUSB*", "/dev/ttyACM*"):
+        paths += sorted(glob.glob(pat))
+    for p in paths:
+        real = os.path.realpath(p)
+        if real in seen:
+            continue
+        seen.add(real)
+        out.append((p, usb_identity(p)))
+    return out
+
+
+def pick_default_port():
+    """自动找那条链路。**按 USB 身份找，不按名字找**。
+
+    名字靠不住：适配器的 by-id 名字随型号变（本机就换过一次：
+    `usb-1a86_USB_Single_Serial_*` → 换 RS485 适配器之后是
+    `usb-1a86_USB_Serial-if00-port0`），写死一个必然过一阵就失效。
+
+    优先级（_pick_from）：**板子 USB(0483:5740) → RS485 适配器(1a86) → 写死那条兜底**。
+    **永远排除 SEGGER(1366)** —— 它根本不是这两类，classify_port 就返回 None。
+    都没有就返回写死的那条（好让报错信息里有个具体路径可看）。"""
+    got = _pick_from(_port_candidates())
+    if got:
+        return got
+    return DEFAULT_PORT
+
+
 def describe_port(path):
+    """给日志/面板用的一行描述。带上"这是哪种链路" —— 插错口子时一眼看得出来。"""
     ident = usb_identity(path)
     if ident is None:
         return "%s（查不到 USB 身份）" % path
-    return "%s（USB %s:%s %s %s）" % (path, ident["idVendor"], ident["idProduct"],
-                                      ident["product"], ident["manufacturer"])
+    kind = classify_port(ident)
+    tag = "，%s" % KIND_NAMES[kind] if kind else "，**不是链路设备**"
+    return "%s（USB %s:%s %s %s%s）" % (path, ident["idVendor"], ident["idProduct"],
+                                        ident["product"], ident["manufacturer"], tag)
+
+
+def link_hint():
+    """没找到合适口子时给的提示。两条链路各要配什么，一起说清楚。"""
+    return ("跑 UART 那条(ROBOT_LINK_UART)要接 USB 转 RS485 适配器；\n"
+            "  跑 USB 那条(ROBOT_LINK_USB)要把板子自己的 USB 口插上（%s:%s）。\n"
+            "  用 --port 可以指定；--fake 则完全不用硬件。"
+            % (BOARD_VID, BOARD_PID))
 
 
 def assert_port_allowed(path):
@@ -327,8 +427,8 @@ def assert_port_allowed(path):
         if ident["idVendor"].lower() == SEGGER_VID or any(h in blob for h in FORBIDDEN_HINTS):
             raise SystemExit(
                 "拒绝打开 %s：查出来是 J-Link 探针的 VCOM 口（%s）。\n"
-                "  探针要留给 JLink/烧录用（占着它连不上），请用 USB 转串口适配器那条：\n  %s"
-                % (path, describe_port(path), pick_default_port()))
+                "  探针要留给 JLink/烧录用（占着它连不上）。\n  %s"
+                % (path, describe_port(path), link_hint()))
         return
     # 查不到身份（没有 /sys、设备还没枚举出来）：名字里带 SEGGER 的直接拒；
     # 名字是裸 ttyACM* 的也拒（宁可不连，也不赌它是探针）
@@ -338,30 +438,7 @@ def assert_port_allowed(path):
             os.path.basename(real).lower().startswith("ttyacm"):
         raise SystemExit(
             "拒绝打开 %s：查不到它的 USB 身份，而名字像 J-Link 的探针口。\n"
-            "  别赌 —— 请用 USB 转串口适配器那条：%s" % (path, pick_default_port()))
-
-
-def pick_default_port():
-    """自动找那条 USB 转串口适配器。**按 USB 身份找，不按名字找**。
-
-    适配器的 by-id 名字随型号变（本机就换过一次：`usb-1a86_USB_Single_Serial_*` →
-    换 RS485 适配器之后是 `usb-1a86_USB_Serial-if00-port0`），写死一个必然过一阵就失效。
-    顺序：写死的那条 → /dev/serial/by-id 里 idVendor 是 1a86 的 → /dev/ttyUSB*/ttyACM*
-    逐个读 sysfs 认 1a86。**永远排除 SEGGER(1366)**。都没有就返回写死的那条（好让报错
-    信息里有个具体路径可看）。"""
-    if os.path.exists(DEFAULT_PORT):
-        return DEFAULT_PORT
-    by_id = os.path.dirname(DEFAULT_PORT)
-    if os.path.isdir(by_id):
-        for name in sorted(os.listdir(by_id)):
-            if ADAPTER_VID in name.lower():
-                return os.path.join(by_id, name)
-    for pat in ("/dev/ttyUSB*", "/dev/ttyACM*"):
-        for p in sorted(glob.glob(pat)):
-            ident = usb_identity(p)
-            if ident and ident["idVendor"].lower() == ADAPTER_VID:
-                return p
-    return DEFAULT_PORT
+            "  别赌（探针那条多半也在 ttyACM* 上）。\n  %s" % (path, link_hint()))
 
 
 class SharedState:
@@ -407,12 +484,17 @@ class Link:
         self.port = port
         self.baud = baud
         self.shared = shared
+        # 这条口子是哪种链路（"USB" / "RS485" / None）。只用来在面板/日志里标出来。
+        self.kind = classify_port(usb_identity(port))
         self.ser = None
         self._alive = False
         self._thr = None
 
     def open(self):
         import serial  # 只有真要连的时候才需要 pyserial
+        # 板子 USB(CDC) 那条上波特率是没意义的 —— CDC 是包传输，tcsetattr 会把
+        # SET_LINE_CODING 交给设备，STM32 那边 CDC_Control_HS 对它是 no-op 直接返回 OK。
+        # 所以照设不误，只是别据此以为它有用。
         self.ser = serial.Serial(self.port, self.baud, timeout=0.1)
         self._alive = True
         with self.shared.lock:
@@ -606,9 +688,14 @@ class Session:
         if fb is None:
             self.warn("还没有反馈帧，不发 0x02")
             return
-        if fb["state"] != 2:
-            self.warn("当前是「%s」，0x02 只能从「待初始化」发（否则板子静默丢弃）"
-                      % STATE_NAME.get(fb["state"], fb["state"]))
+        # 板子的两个入口（robot_state.c 的 HandleArmInit）：
+        #   待初始化(2)，或 正常运行(4) 的 stop(0)/damping(2) 档。
+        # run 档下按 i 仍被静默丢弃 —— 不让"臂正在被位控"的时候被一键动作接管。
+        if not (fb["state"] == 2 or (fb["state"] == 4 and fb["mode"] in (0, 2))):
+            self.warn("当前是「%s」/ %s 档，0x02 只能从「待初始化」或「正常运行」的 "
+                      "stop/damping 档发（否则板子静默丢弃）"
+                      % (STATE_NAME.get(fb["state"], fb["state"]),
+                         MODE_NAME.get(fb["mode"], fb["mode"])))
             return
         if fb["lost"]:
             self.warn("有电机掉线（%s），0x02 多半会被拒：%s"
@@ -823,7 +910,12 @@ class FakeLink:
             if tid == TID_VERSION:
                 with self.shared.lock:
                     self.shared.board_version = VERSION_CODE
-            elif tid == TID_ARM_INIT and self.state == 2:
+            elif tid == TID_ARM_INIT and (self.state == 2
+                                          or (self.state == 4 and self.mode in (0, 2))):
+                # 板侧两个入口(robot_state.c 的 HandleArmInit)：待初始化(2)，或 正常运行(4)
+                # 的 stop(0)/damping(2) 档 —— run 档下静默丢弃。跑完都落回 4(板子不按入口区分，
+                # 见 robot_state.c 的 Init_Step)。**注意条件里读的 self.mode 必须是初始化前
+                # 那个档**，所以 self.mode = 1 只能留在最后。
                 self.state = 3
                 self.init_end = self.t + 3.0
                 self.mode = 1
@@ -944,7 +1036,8 @@ HELP_LINES = [
     "[ / ]              步长档 0.1 0.5 1 2 5 10（默认 1.0）",
     "c                  目标角对齐当前反馈（重播种；板子切档/掉线后建议先按一下）",
     "s / d / v / x      0x12 进 run / 0x15 阻尼 / 0x13 重力补偿 / 0x14 停止(松劲)",
-    "i                  0x02 初始化（板子跑一键复位 → 一键夹爪找零，约 7 s；待初始化态发）",
+    "i                  0x02 初始化（板子跑一键复位 → 一键夹爪找零，约 7 s；待初始化态、"
+    "或正常运行态的 stop/damping 档发）",
     "o                  0x18 一键复位（只收臂回 {0, 0.5, 0.5, 0, 0, 0}，约 2 s；正常运行态发）",
     "z                  0x10 设零点 —— 要逐字敲 SETZERO 再敲 CONFIRM 才发！",
     "Space              暂停/继续发 0x16（冻结目标，臂保持不动，不是停机）",
@@ -1377,7 +1470,7 @@ def selftest():
     check("版本码 == 0xF61DCF10", VERSION_CODE == 0xF61DCF10, "实际 0x%08X (%s)"
           % (VERSION_CODE, VERSION_STRING))
 
-    # 3. 两个已知帧逐字节比对（板上 UartFrameEncode 的输出）
+    # 3. 两个已知帧逐字节比对（板上 FrameEncode 的输出）
     ver_frame = encode(TID_VERSION, struct.pack("<I", VERSION_CODE))
     check("版本帧字节 == 板上编码器输出",
           ver_frame.hex() == "aa550104b210cf1df6f7c3", ver_frame.hex())
@@ -1472,6 +1565,26 @@ def selftest():
     ack = decode_setzero_ack(bytes([5, 5, 5, 5, 2, 2, 2, 1]) + struct.pack("<I", 420))
     check("0x11 ack 解码", ack["state"] == 5 and ack["result"][3] == 2 and ack["elapsed_ms"] == 420)
 
+    # 13. 自动挑口子的优先级。_pick_from / classify_port 是纯函数，喂假身份就能测 ——
+    # 这个"板子 USB 优先、RS485 退回"的顺序错了会让每次连上都挑到另一个口，插错线还查不出来。
+    def _ident(vid, pid, name=""):
+        return {"idVendor": vid, "idProduct": pid, "product": name, "manufacturer": ""}
+
+    board = ("/dev/ttyACM0", _ident("0483", "5740", "STM32 Virtual ComPort"))
+    rs485 = ("/dev/ttyACM1", _ident("1a86", "7523", "USB Serial"))
+    jlink = ("/dev/ttyACM9", _ident("1366", "0105", "J-Link"))
+    check("口子识别：板子 USB", classify_port(board[1]) == "USB")
+    check("口子识别：RS485 适配器", classify_port(rs485[1]) == "RS485")
+    check("口子识别：探针不是链路设备", classify_port(jlink[1]) is None)
+    check("口子识别：没有 USB 身份", classify_port(None) is None)
+    check("挑口子：板子 USB 优先于 RS485", _pick_from([rs485, board]) == board[0])
+    check("挑口子：只有 RS485 时退回它", _pick_from([jlink, rs485]) == rs485[0])
+    check("挑口子：只有探针时挑不出来", _pick_from([jlink]) is None)
+    check("挑口子：同档按路径排序可复现", _pick_from([board, board]) == board[0])
+    # 0483 但 PID 不对（别的 ST 板子/别的 CDC 功能）不该被当成板子
+    check("口子识别：0483 但非 5740 不算",
+          classify_port(_ident("0483", "0001")) is None)
+
     print()
     if fails:
         print("自测失败 %d 项：%s" % (len(fails), "，".join(fails)))
@@ -1510,28 +1623,28 @@ def check_limits_against_header(check):
 
 
 def check_typeids_against_header(check):
-    """把 libs/uart_frame/type_id.h 的码表和脚本里的常数对一遍。
+    """把 libs/frame/type_id.h 的码表和脚本里的常数对一遍。
 
     码表错了不会"报错"，只会把 0x16 的 28 字节载荷塞进一个语义完全不同的包 —— 所以值得对。
     """
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        os.pardir, "libs", "uart_frame", "type_id.h")
+                        os.pardir, "libs", "frame", "type_id.h")
     if not os.path.exists(path):
         print("%-46s 跳过（找不到 %s）" % ("码表与 type_id.h 一致", path))
         return
     want = {
-        "UART_FRAME_TYPE_ID_VERSION": TID_VERSION,
-        "UART_FRAME_TYPE_ID_ARM_INIT": TID_ARM_INIT,
-        "UART_FRAME_TYPE_ID_MOTOR_SET_ZERO": TID_MOTOR_SET_ZERO,
-        "UART_FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK": TID_SET_ZERO_ACK,
-        "UART_FRAME_TYPE_ID_ARM_START": TID_ARM_START,
-        "UART_FRAME_TYPE_ID_ARM_GRAVITY": TID_ARM_GRAVITY,
-        "UART_FRAME_TYPE_ID_ARM_STOP": TID_ARM_STOP,
-        "UART_FRAME_TYPE_ID_ARM_DAMPING": TID_ARM_DAMPING,
-        "UART_FRAME_TYPE_ID_ARM_CTRL_POS": TID_ARM_CTRL_POS,
-        "UART_FRAME_TYPE_ID_ARM_CTRL_POS_VEL": TID_ARM_CTRL_POS_VEL,
-        "UART_FRAME_TYPE_ID_ARM_RESET": TID_ARM_RESET,
-        "UART_FRAME_TYPE_ID_ARM_FEEDBACK": TID_ARM_FEEDBACK,
+        "FRAME_TYPE_ID_VERSION": TID_VERSION,
+        "FRAME_TYPE_ID_ARM_INIT": TID_ARM_INIT,
+        "FRAME_TYPE_ID_MOTOR_SET_ZERO": TID_MOTOR_SET_ZERO,
+        "FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK": TID_SET_ZERO_ACK,
+        "FRAME_TYPE_ID_ARM_START": TID_ARM_START,
+        "FRAME_TYPE_ID_ARM_GRAVITY": TID_ARM_GRAVITY,
+        "FRAME_TYPE_ID_ARM_STOP": TID_ARM_STOP,
+        "FRAME_TYPE_ID_ARM_DAMPING": TID_ARM_DAMPING,
+        "FRAME_TYPE_ID_ARM_CTRL_POS": TID_ARM_CTRL_POS,
+        "FRAME_TYPE_ID_ARM_CTRL_POS_VEL": TID_ARM_CTRL_POS_VEL,
+        "FRAME_TYPE_ID_ARM_RESET": TID_ARM_RESET,
+        "FRAME_TYPE_ID_ARM_FEEDBACK": TID_ARM_FEEDBACK,
     }
     try:
         text = open(path, encoding="utf-8", errors="replace").read()
@@ -1600,7 +1713,8 @@ def main():
         description=__doc__.split("\n")[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="按 h 看按键表；--selftest / --fake 都不需要硬件。")
-    ap.add_argument("--port", default=None, help="串口设备（默认自动找那条 1a86 适配器）")
+    ap.add_argument("--port", default=None,
+                    help="串口设备（默认自动挑：优先板子 USB 0483:5740，退回 1a86 适配器）")
     ap.add_argument("--baud", type=int, default=921600, help="波特率（默认 921600）")
     ap.add_argument("--ctrl-hz", type=float, default=100.0, help="0x16 下发频率（默认 100）")
     ap.add_argument("--fb-hz", type=float, default=5.0, help="面板刷新率（默认 5，按键响应不受影响）")
@@ -1627,8 +1741,14 @@ def main():
         opts.port = opts.port or pick_default_port()
         assert_port_allowed(opts.port)
         if not os.path.exists(opts.port):
-            print("串口 %s 不存在。插上适配器，或用 --port 指定（--fake 可以完全不用硬件）。"
-                  % opts.port)
+            print("链路设备 %s 不存在。\n  %s\n  现在机器上认出来的候选："
+                  % (opts.port, link_hint()))
+            cands = _port_candidates()
+            if cands:
+                for p, ident in cands:
+                    print("    %s" % describe_port(p))
+            else:
+                print("    （一个都没有：两条链路都没插）")
             return 2
         try:
             import serial  # noqa: F401
@@ -1647,9 +1767,16 @@ def main():
         if "Permission" in str(e):
             print("（多半是权限：把用户加进 dialout 组，或 sudo 跑）")
         return 2
-    # 面板第一行就把"抓的是哪个设备"写清楚 —— 抓错口子是这里最容易犯的错
-    sess.info("串口 %s" % (describe_port(opts.port) if not opts.fake
+    # 面板第一行就把"抓的是哪个设备"写清楚 —— 抓错口子是这里最容易犯的错。
+    # 板子那侧走哪条链路是**编译期**定死的（App/inc/robot_state.h 的 ROBOT_LINK），
+    # 两边选反了的现象是"一切都对但一个字节都没有"，所以把链路类型也标出来。
+    sess.info("链路 %s" % (describe_port(opts.port) if not opts.fake
                           else "假板子（--fake，不接硬件）"))
+    if not opts.fake and sess.link.kind == "USB":
+        sess.info("板子 USB CDC：波特率 %d 在这条上无意义（CDC 是包传输）" % opts.baud)
+    elif not opts.fake and sess.link.kind is None:
+        sess.warn("这个口子既不是板子 USB(0483:5740)也不是 1a86 适配器，"
+                  "确认板子的 ROBOT_LINK 和它是对得上的")
 
     ui = Ui(None, sess, opts)
 

@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include "bsp_can.h"
 #include "bsp_uart.h"  /* libs/uart: 串口传输层(DMA 收发 + .RAM_D1 缓冲都在它里面) */
+#include "bsp_usb.h"   /* libs/usb: USB CDC 传输层(形状和 bsp_uart 一样，上层二选一) */
 #include "DM_motor.h"
 #include "ENCOS_motor.h"
 #include "monitor.h"
@@ -269,17 +270,25 @@ int main(void)
    * 此后收发都由它管 —— 上层不用再碰 HAL 的 UART DMA 接口，也不用管缓冲区在哪个内存段。
    * 注意顺序：BSP_UART_Init() 会清空回调表，所以注册回调的 UartLoopbackTest_Init() 必须在它后面。 */
   BSP_UART_Init();
+  /* USB CDC 传输层(libs/usb)，接口形状和 bsp_uart 一样(对照表在 libs/usb/bsp_usb.h 开头)，
+   * 但它没有硬件要配 —— OTG_HS 的时钟和 PA11/PA12 在 MX_USB_DEVICE_Init() 那边
+   * (USB_DEVICE/Target/usbd_conf.c)，这里只是清统计和回调登记。
+   * 无条件调，不管 ROBOT_LINK 选哪条：它不注册任何回调，所以选 UART 时就算主机
+   * 打开了板子 USB 口也碰不到任何共享状态 —— "单中断上下文"的前提保住了。 */
+  BSP_USB_Init();
   UartLoopbackTest_Init();
   /* USART1 接 PC 的连通性(回显)测试：同样必须在 BSP_UART_Init() 之后(回调表会被清空)。
    * 它占的是 USART1(PA9/PA10)，已经和下面的 Robot_State_Init() 错开了 —— 那个挪到了
    * USART3 (TEST_UART_ECHO_ENABLE 现在是 0)。 */
   UartEchoTest_Init();
-  /* 机器人总模式状态机(App/robot_state.c)：在 **USART3**(RS485 半双工，PD8/PD9 + PB14
-   * 硬件 DE)上收上位机的帧、跑总模式状态机、250 Hz 发反馈帧。同样必须在
-   * BSP_UART_Init() 之后(回调表会被清空)、调度器之前。
+  /* 机器人总模式状态机(App/robot_state.c)：在**一条链路**上收上位机的帧、跑总模式
+   * 状态机、250 Hz 发反馈帧。走哪条链路由 App/inc/robot_state.h 的 ROBOT_LINK
+   * 编译期定死(默认 ROBOT_LINK_USB = 板载 USB CDC，PA11/PA12；另一条是 USART3，
+   * RS485 半双工，PD8/PD9 + PB14 硬件 DE)。
+   * 两个 BSP 都得先 Init 过：BSP_UART_Init() 清回调表，BSP_USB_Init() 清回调登记。
    * 放 main.c 而不是任务里，是按"libs/App 的初始化都放 main.c"的约定。
-   * 注意它和上面的 UartLoopbackTest_Init() 同抢 USART3，注册是直接赋值所以本函数
-   * 排在后面 = 本模块的回调胜出(见 App/inc/robot_state.h 顶部那段)。 */
+   * 走 UART 时它和上面的 UartLoopbackTest_Init() 同抢 USART3，注册是直接赋值所以
+   * 本函数排在后面 = 本模块的回调胜出(见 App/inc/robot_state.h 顶部那段)。 */
   Robot_State_Init();
   /* 遥控器 PWM 输入捕获(TIM1/TIM2)，必须在 MX_TIM1_Init()/MX_TIM2_Init() 之后 */
   Rc_Init();

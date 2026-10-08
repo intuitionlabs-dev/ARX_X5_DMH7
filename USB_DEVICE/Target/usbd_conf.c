@@ -70,6 +70,24 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef* pcdHandle)
   {
   /* USER CODE BEGIN USB_OTG_HS_MspInit 0 */
 
+  GPIO_InitTypeDef GPIO_InitStruct = { 0 };
+
+  /* PA11/PA12 = USB_OTG_HS_DM/DP (Device_Only_FS, see the .ioc).
+   *
+   * CubeMX did NOT generate these into Core/Src/gpio.c -- that file has no OTG pin
+   * at all -- and without them the USB peripheral never enumerates. The failure mode
+   * is "absolutely nothing happens", with no error anywhere.
+   *
+   * Kept here instead of gpio.c because gpio.c's generated region is overwritten on
+   * every CubeMX regeneration, while this USER CODE block survives. */
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  GPIO_InitStruct.Pin       = GPIO_PIN_11 | GPIO_PIN_12;
+  GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull      = GPIO_NOPULL;
+  GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+  GPIO_InitStruct.Alternate = GPIO_AF10_OTG1_HS;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
   /* USER CODE END USB_OTG_HS_MspInit 0 */
 
   /** Initializes the peripherals clock

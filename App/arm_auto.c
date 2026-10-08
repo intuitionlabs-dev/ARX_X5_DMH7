@@ -144,9 +144,9 @@ void Arm_Reset(Gimbal_cmd* obj) {
  *      60°，顶住限位的力矩越顶越大。
  *   ② 第二步退的时候目标角和反馈差 142°，不限住的话位置环一上来就出 ~5 N·m，会甩着
  *      夹爪撞到张开端。
- * 它同时是这里**唯一的限位**：gimbal_cmd.c 的 Motor_Angle_Limit() 对夹爪只在
- * motor_inited[GRIPPER] 为真时才卡，而那个标志本工程**从头到尾没有地方置 1**
- * (gimbal_arm.c 的 Arm_Auto_Init() 只置 j1~j6)，指望不上。 */
+ * 它同时是这里**唯一的限位**：gimbal_cmd.c 的 Motor_Angle_Limit() 对夹爪的 ±142 软限位
+ * 只在 motor_inited[GRIPPER] 为真时才卡，而找零的 case 0 **故意**先把那个标志清 0
+ * (见那里的注释：这一轮本来就要越过旧口径的边界)，所以找零期间软限位一定是不生效的。 */
 #define GRIPPER_ZERO_LEAD_DEG 20.0f
 #define GRIPPER_ZERO_STALL_MS 200u     /* 判定小窗的长度，ms */
 #define GRIPPER_ZERO_STALL_MOVE 0.5f   /* 小窗里反馈角挪动小于这个值 = 没动，deg */
@@ -192,8 +192,8 @@ static void gripper_zero_step(Gimbal_cmd* obj, float dir) {
  * 于是被误判成"找到限位"。停机档位走不到这儿(Stop_Mode_Update 每拍把 auto_mode 清 0)，
  * 阻尼/仅重力才会。
  *
- * 这里**不查 motor_inited[GRIPPER]**：那个标志本工程没有地方置 1(见 GRIPPER_ZERO_LEAD_DEG
- * 的注释)，拿它当门槛等于永远不干活。 */
+ * 这里**不查 motor_inited[GRIPPER]**：找零自己就是那个标志的唯一维护者(case 0 置 0、
+ * case 4 置回 1)，拿它当门槛等于"没初始化过就永远不许初始化"，自锁。 */
 static uint8_t gripper_zero_can_run(Gimbal_cmd* obj) {
     if (obj->gimbal->arm_feedback_data.is_motor_lost[GRIPPER]) return 0;
     if (obj->mode != arm_run) return 0;

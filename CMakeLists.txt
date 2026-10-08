@@ -117,10 +117,18 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # 两层的真实调用方是 App/robot_state.c(总模式状态机)；测试关掉时它也在跑，
     # 所以 --gc-sections 现在**不会**再摘掉它们(以前会，那时只有回环测试在用)。
     libs/soft_crc/soft_crc.c
-    libs/uart_frame/uart_frame.c
+    # 帧层(2026-10-08 由 uart_frame 改名而来，因为它现在两条链路都要用)。和传输无关：
+    # 只负责切帧/校验/码表，字节从哪来、往哪去是上层的事。
+    libs/frame/frame.c
     # 串口的传输层(DMA 收发 + .RAM_D1 缓冲都封在它里面，上层不用管内存段)。
-    # 调用方：App/robot_state.c(USART1) + 回环测试(USART2/3，测试关掉时没有)。
+    # 调用方：App/robot_state.c(ROBOT_LINK 选 UART 时走 USART3) + 回环测试(USART2/3，测试关掉时没有)。
     libs/uart/bsp_uart.c
+    # USB CDC 的传输层。接口形状和 libs/uart **一样**(对照表在 libs/usb/bsp_usb.h 开头)，
+    # 调用方也是 App/robot_state.c —— ROBOT_LINK 选 USB 时走它，选串口时它只是编进来但
+    # 没人注册回调(见 App/inc/robot_state.h 顶部那段)。
+    # 它依赖的 USB_DEVICE/* 和 ST 的 USB 设备中间件由 CubeMX 生成的
+    # cmake/stm32cubemx/CMakeLists.txt 负责编进来，这边不用管。
+    libs/usb/bsp_usb.c
 
     # NOTE: Core/Src/freertos.c and the FreeRTOS kernel (cmsis_os2, port, heap_4)
     # are added by cmake/stm32cubemx/CMakeLists.txt, which CubeMX regenerates.
@@ -156,9 +164,11 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # 串口传输层(BSP)。只有它自己的 .c include uart_config.h，但上层要调 BSP_UART_*，
     # 所以这个目录必须在 include path 里。
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/uart
-    # uart_frame.c 里 include 的是 "soft_crc.h" 这种裸文件名，两个目录都要在
+    # frame.c 里 include 的是 "soft_crc.h" 这种裸文件名，两个目录都要在
     # include path 里(同 libs/move_plan 那两条注释说的道理)。
-    ${CMAKE_CURRENT_SOURCE_DIR}/libs/uart_frame
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/frame
+    # USB 传输层(BSP)。上层要调 BSP_USB_*，所以这个目录也得在 include path 里。
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/usb
 )
 
 # Add project symbols (macros)

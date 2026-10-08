@@ -25,9 +25,9 @@
  * ---- 分层 ----
  *
  * 本层不认识帧协议。收到的字节原样推给上层（回调），上层自己拿去喂
- * libs/uart_frame 的 UartFrameParserFeed()；要发帧也是上层自己 UartFrameEncode()
+ * libs/frame 的 FrameParserFeed()；要发帧也是上层自己 FrameEncode()
  * 完再调 BSP_UART_Send()。解析器属于上层、是上层自己的普通变量 —— 它从来不参与
- * DMA，不需要任何段属性。（libs/uart_frame 也因此保持不依赖 HAL。）
+ * DMA，不需要任何段属性。（libs/frame 也因此保持不依赖 HAL。）
  *
  * ---- 用法 ----
  *

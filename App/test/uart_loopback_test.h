@@ -31,9 +31,9 @@
  * 所以**本测试的 .c/.h 里没有一处内存段属性**，两路的接收也是常驻武装的 ——
  * 那套容易错的东西只写一遍，别的串口用户不用再背一遍。见 bsp_uart.h 开头的说明。
  *
- * 「谁做帧」这条也在代码里划清楚了:帧协议(libs/uart_frame)和解析器属于**上层**
+ * 「谁做帧」这条也在代码里划清楚了:帧协议(libs/frame)和解析器属于**上层**
  * (就是本测试)，BSP 不认识帧 —— 它只管把收到的原始字节推给注册的回调，
- * 本测试当场喂进 UartFrameParserFeed()。
+ * 本测试当场喂进 FrameParserFeed()。
  *
  * 用法:
  *   BSP_UART_Init();           // 必须先调(main.c 的 USER CODE BEGIN 2)。串口的 DMA 收发、
@@ -75,7 +75,7 @@
  * 字节是 DMA 搬进内存的，USART 中断只管 IDLE，晚几微秒不丢数据，提优先级没必要了
  * (反而会去抢 CAN/定时器的中断)。当前这一版就是 DMA 版。
  *
- * **这条对全工程都成立**:libs/uart_frame 接到别的串口上做真实收包时，只要那一路是
+ * **这条对全工程都成立**:libs/frame 接到别的串口上做真实收包时，只要那一路是
  * 逐字节中断收、而且波特率高，一样会中。三条路:改 NVIC 优先级(提到
  * configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY 以上)、打开 RX FIFO、或者改 DMA。
  * 别在协议层找原因 —— 协议层一点问题都没有。
@@ -136,7 +136,7 @@
  * 教训:用 `ReceiveToIdle_DMA` 收包时，"这是不是我要的那一路"必须由**调用方自己的
  * 轮次状态**决定，不能靠 HAL 的句柄状态 —— HAL 的 RxEvent 回调会带上一次已经结束的
  * 收发的残影。BSP 那套"常驻武装、永不 abort"的写法是绕开它的根本办法
- * (libs/uart_frame 以后接真实收包，直接照 BSP 用就行)。
+ * (libs/frame 以后接真实收包，直接照 BSP 用就行)。
  *
  * 【还没验的】HAL_RS485Ex_Init(&huart2, ...) 最后两个参数是 DE 的**提前**和**延后**
  * 时间，CubeMX 生成的是 0 和 0，即 DE 在最后一个停止位结束的同一刻就放开。上面那次
@@ -172,7 +172,7 @@ extern volatile uint32_t uart_lb_bad_cnt;     /* 解出来了但对不上 */
 extern volatile uint32_t uart_lb_lost_cnt;    /* 发出去了但没解出来 */
 extern volatile uint32_t uart_lb_crc8_err;    /* 帧头 crc8 校验失败 */
 extern volatile uint32_t uart_lb_crc16_err;   /* 整帧 crc16 校验失败(见上面 DE 时序那条) */
-extern volatile uint32_t uart_lb_encode_err;  /* UartFrameEncode 返回负值,不该发生 */
+extern volatile uint32_t uart_lb_encode_err;  /* FrameEncode 返回负值,不该发生 */
 
 /* 下面这三个是**搬运值**:BSP 的统计每轮被搬进这几个变量，好让 JLink 读的地址习惯不变
  * (真正的源头是 BSP_UART_GetStat(UART_LB_U2/U3)，也可以直接读那边)。 */
@@ -226,7 +226,7 @@ extern volatile uint32_t uart_lb_lost_case;
 #define UART_LB_SHORT_BINS 6U
 extern volatile uint32_t uart_lb_lost_short[UART_LB_SHORT_BINS];
 
-/* 丢帧时解析器停在哪个状态，索引 = UartFrameState。
+/* 丢帧时解析器停在哪个状态，索引 = FrameState。
  * 全落在 ST_SYNC0(0) = 帧头根本没看见(丢的是开头)；
  * 落在 ST_CRC16(4) = 帧身收全了只差尾巴(丢的是结尾)。 */
 #define UART_LB_STATE_BINS 5U

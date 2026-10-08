@@ -9,7 +9,31 @@
 #include "gimbal_arm.h" /* gimbal —— 反馈数据（关节角、掉线标志、温度） */
 #include "gimbal_cmd.h" /* gimbal_cmd —— 初始化流程要写它的 auto_mode */
 #include "rc.h"         /* rc / is_Offline() —— 遥控器优先的判据 */
-#include "uart_frame.h" /* UartFrameParser / UartFrameEncode() */
+#include "frame.h" /* FrameParser / FrameEncode() */
+
+/* ==================== 链路选择（本文件唯一认识传输的地方）====================
+ *
+ * ROBOT_LINK 在 App/inc/robot_state.h 里定死（编译期二选一）。两条链路的 BSP 是**同形**的
+ * (对照表在 libs/usb/bsp_usb.h 开头)，所以整个文件里只有这三个名字需要区分：
+ *
+ *     ROBOT_LINK_PORT         端口编号（USB 那边恒为 BSP_USB_PORT）
+ *     Robot_Link_RegRx(...)   登记收包回调
+ *     Robot_Link_Send(...)    发一段字节
+ *
+ * 下面正文里再没有第二个 #if —— 判 id、注册回调、发帧，三处写法完全一致。这正是
+ * "让 bsp_usb 和 bsp_uart 同形"换来的东西；不然上层就得写两套代码，那 abstraction 白做了。 */
+#if ROBOT_LINK == ROBOT_LINK_USB
+#define ROBOT_LINK_PORT       BSP_USB_PORT
+#define Robot_Link_RegRx(...) BSP_USB_RegisterRxCallback(__VA_ARGS__)
+#define Robot_Link_Send(...)  BSP_USB_Send(__VA_ARGS__)
+#else
+#define ROBOT_LINK_PORT       BSP_UART_U3
+#define Robot_Link_RegRx(...) BSP_UART_RegisterRxCallback(__VA_ARGS__)
+#define Robot_Link_Send(...)  BSP_UART_Send(__VA_ARGS__)
+#endif
+
+/* 两个 BSP 的成功码都是 0，所以这个不用跟着 #if 分。 */
+#define ROBOT_LINK_OK 0
 
 /* ==================== 这一层和上下左右的关系 ====================
  *
@@ -21,13 +45,13 @@
  *                          Gimbal_Cmd_Update），所以本模块写 gimbal_cmd->auto_mode
  *                          和 Auto_Mode_Update() 读它之间**没有并发**，不需要保护。
  *
- * 和 libs 的分工：本模块**不做**切帧/校验（那是 libs/uart_frame 的活），也**不碰**
- * DMA/缓冲（那是 libs/uart 的活）。BSP 只把字节推过来，本模块自己喂解析器。
+ * 和 libs 的分工：本模块**不做**切帧/校验（那是 libs/frame 的活），也**不碰**
+ * 收发的缓冲（那是 libs/uart 或 libs/usb 的活）。BSP 只把字节推过来，本模块自己喂解析器。
  *
  * 一个"帧"要过三道闸门才起作用，顺序不能乱：
  *   ① s_locked（版本码不符过，永久静默）
  *   ② !s_handshake_ok（没握手前只认版本包）
- *   ③ 各包自己的模式检查（比如 0x02 只在待初始化模式生效）
+ *   ③ 各包自己的模式检查（比如 0x02 只在待初始化 / 正常运行-stop|damping 生效）
  */
 
 /* ==================== 接收环 ==================== */
@@ -42,14 +66,14 @@
 
 /* 一个环槽。payload 用 union 而不是裸数组，为的是让任务侧能**按结构体读**：
  * 中断侧往 raw 里 memcpy，任务侧读 arm_ctrl_pos 这样的成员 —— 这是 C 标准 6.5.2.3
- * 认可的 type punning（和 libs/uart_frame 的 UartFrameBuf 一个道理）。
- * 换成 `*(UartPktArmCtrlPos*)slot->payload.raw` 这种指针强转就会踩 strict aliasing。 */
+ * 认可的 type punning（和 libs/frame 的 FrameBuf 一个道理）。
+ * 换成 `*(FramePktArmCtrlPos*)slot->payload.raw` 这种指针强转就会踩 strict aliasing。 */
 typedef union {
     uint8_t raw[ROBOT_RX_DATA_LEN];
-    UartPktVersion version;
-    UartPktMotorSetZeroAck motor_set_zero_ack;
-    UartPktArmCtrlPos arm_ctrl_pos;
-    UartPktArmCtrlPosVel arm_ctrl_pos_vel;
+    FramePktVersion version;
+    FramePktMotorSetZeroAck motor_set_zero_ack;
+    FramePktArmCtrlPos arm_ctrl_pos;
+    FramePktArmCtrlPosVel arm_ctrl_pos_vel;
 } Robot_rx_payload;
 
 typedef struct {
@@ -67,11 +91,17 @@ static volatile uint8_t s_rx_head; /* 中断写 */
 static volatile uint8_t s_rx_tail; /* 任务写 */
 
 /* 解析器。约 270 字节，文件级静态（别放栈上）。只在中断里被碰。 */
-static UartFrameParser s_parser;
+static FrameParser s_parser;
 
-/* 发送缓冲。UartFrameEncode() 组好一帧、BSP_UART_Send() 会**再拷一份**进它自己的
- * DMA 缓冲，所以这块只要在函数返回前有效即可 —— 用静态是为了不占任务栈。 */
-static uint8_t s_tx_buf[UART_FRAME_MAX_LEN];
+/* 发送缓冲。FrameEncode() 组好一帧再交给 BSP；**必须用静态**，而且不只是为了省任务栈：
+ *
+ *   - 走 uart：BSP_UART_Send() 会再拷一份进它自己的 DMA 缓冲，这块其实只要在这一句
+ *     返回前有效就行。
+ *   - 走 usb：BSP_USB_Send() 是**零拷贝**（见 libs/usb/bsp_usb.h 开头），直接把这块内存
+ *     交给 USB 栈，得一直有效到传输完成。
+ *
+ * 静态缓冲对两种语义都满足，所以不用跟着 ROBOT_LINK 分开写。 */
+static uint8_t s_tx_buf[FRAME_MAX_LEN];
 
 /* ==================== 状态 ==================== */
 
@@ -86,6 +116,15 @@ static uint32_t s_fb_last_ms;          /* 上一次发反馈帧的时刻（4 ms 
 
 /* 初始化流程(robot_state_initing)的子步骤：0 起复位 / 1 等复位跑完 / 2 等夹爪找零跑完 */
 static uint8_t s_init_step;
+
+/* 0x02 是从哪个总模式发起的（待初始化 / 正常运行）—— 只给 Init_Step() 的**中止**
+ * 分支用，决定打断后退回哪儿。
+ *
+ * 为什么不能统一退回「待初始化」：0x02 现在有两个入口，从「正常运行」发起的那种
+ * 被遥控器打断后如果掉进「待初始化」，上位机会被**降级**回上电流程的那个停靠点 ——
+ * 那个状态只受理 0x02/0x10，模式切换帧(0x12/0x13/0x14/0x15)一律丢弃，等于把会话
+ * 卡死在那儿，用户只能再初始化一次或复位板子。 */
+static Robot_state s_init_entry;
 
 /* 一键复位(robot_state_resetting)的子步骤：0 起复位 / 1 等它跑完。**和 s_init_step
  * 分开**：两个状态不会同时存在，但共用计数器会让"从哪个入口进来的"变得看不出来。 */
@@ -121,16 +160,16 @@ volatile uint8_t robot_locked;
 
 /* ==================== 协议常量要和 App 对上 ====================
  *
- * libs/uart_frame 那边线上有几个关节/电机是**协议定死的**（UART_FRAME_PKT_*），不是
+ * libs/frame 那边线上有几个关节/电机是**协议定死的**（FRAME_PKT_*），不是
  * 由 App 的 ARM_JOINT_NUM/ARM_MOTOR_NUM 决定的。两个数现在正好相等，接上层时在这儿
  * 对一下 —— 哪天 App 加了第 7 个关节而协议没改，这里会红，比运行时静默错位好。 */
-_Static_assert(UART_FRAME_PKT_JOINT_NUM == ARM_JOINT_NUM, "协议的关节数和 App 对不上");
-_Static_assert(UART_FRAME_PKT_MOTOR_NUM == ARM_MOTOR_NUM, "协议的电机数和 App 对不上");
+_Static_assert(FRAME_PKT_JOINT_NUM == ARM_JOINT_NUM, "协议的关节数和 App 对不上");
+_Static_assert(FRAME_PKT_MOTOR_NUM == ARM_MOTOR_NUM, "协议的电机数和 App 对不上");
 /* 反馈帧的结构体必须放得下 7 个 uint8_t 温度 + 6+6 个 float + 4 个头，正好 63 */
-_Static_assert(sizeof(UartPktArmFeedback) == 63U, "反馈帧不是 63 字节");
+_Static_assert(sizeof(FramePktArmFeedback) == 63U, "反馈帧不是 63 字节");
 /* 环槽要放得下最长的下行包，否则那个包会被静默丢掉（只在 robot_rx_over_cnt 上看得见） */
-_Static_assert(ROBOT_RX_DATA_LEN >= sizeof(UartPktArmCtrlPosVel), "环槽放不下 0x17 包");
-_Static_assert(ROBOT_RX_DATA_LEN >= sizeof(UartPktMotorSetZeroAck), "环槽放不下 0x11 包");
+_Static_assert(ROBOT_RX_DATA_LEN >= sizeof(FramePktArmCtrlPosVel), "环槽放不下 0x17 包");
+_Static_assert(ROBOT_RX_DATA_LEN >= sizeof(FramePktMotorSetZeroAck), "环槽放不下 0x11 包");
 
 /* ==================== 发送 ==================== */
 
@@ -138,40 +177,47 @@ static void SendFrame(uint8_t type_id, const uint8_t* data, uint8_t len) {
     /* 握手之前**一个字节都不发**（含反馈帧）。版本码不符时更是一个字节都不发。 */
     if (!s_handshake_ok || s_locked) return;
 
-    const int32_t n = UartFrameEncode(s_tx_buf, (uint32_t)sizeof(s_tx_buf), type_id, data, len);
+    const int32_t n = FrameEncode(s_tx_buf, (uint32_t)sizeof(s_tx_buf), type_id, data, len);
     if (n <= 0) {
         robot_tx_fail_cnt++;
         return;
     }
-    /* BSP_UART_Send() 是 DMA 非阻塞，上一笔还没发完返回 BUSY。
+    /* 两个 BSP 的发送都是非阻塞的：上一笔还没发完就返回 ERR_BUSY。
      * **丢这一帧 + 计数，不重试、不排队**：下一帧 4 ms 后就到，重试只会把积压越堆越长，
-     * 而上位机看到的是"帧晚了"而不是"帧错了"。 */
-    if (BSP_UART_Send(ROBOT_UART_PORT, s_tx_buf, (uint16_t)n) != BSP_UART_OK) {
+     * 而上位机看到的是"帧晚了"而不是"帧错了"。
+     *
+     * 走 USB 时还多一种失败：还没枚举出来（ERR_NOT_READY）—— 上电后本模块就开始按
+     * 250 Hz 发反馈，而那时候主机多半还没打开这个口，甚至线都没插。那种情况下
+     * robot_tx_fail_cnt 会一路涨，但不会有别的影响（BSP 里挡住了空指针）。 */
+    if (Robot_Link_Send(ROBOT_LINK_PORT, s_tx_buf, (uint16_t)n) != ROBOT_LINK_OK) {
         robot_tx_fail_cnt++;
     }
 }
 
 static void SendVersion(void) {
-    UartPktVersion pkt;
-    pkt.code = UartFrameVersionCode();
-    SendFrame(UART_FRAME_TYPE_ID_VERSION, (const uint8_t*)&pkt, (uint8_t)sizeof(pkt));
+    FramePktVersion pkt;
+    pkt.code = FrameVersionCode();
+    SendFrame(FRAME_TYPE_ID_VERSION, (const uint8_t*)&pkt, (uint8_t)sizeof(pkt));
 }
 
 /* ==================== 接收 ==================== */
 
 /* 中断上下文：只做"喂解析器 + 拷进环"，绝不阻塞、绝不打印、绝不调 FreeRTOS API。
- * data 指向 BSP 内部的 DMA 缓冲，返回后随时会被下一次接收覆盖 —— 这里当场消费掉，
- * 不存指针。 */
+ * data 指向 BSP 内部的接收缓冲（uart 那边是 DMA 收的，usb 那边是 USB 栈的），返回后随时
+ * 会被下一次接收覆盖 —— 这里当场消费掉，不存指针。
+ *
+ * 函数体对两条链路**完全一样**，靠的是 bsp_usb 的收包回调类型和 bsp_uart 逐字一致。 */
 static void Robot_State_OnRx(uint8_t id, const uint8_t* data, uint16_t len) {
     uint16_t i;
 
-    /* 只挂了一路，正常恒成立；留着是为了万一以后有人给别的口也挂上这个回调。 */
-    if (id != (uint8_t)ROBOT_UART_PORT) return;
+    /* 只挂了一条链路，正常恒成立；留着是为了万一以后有人给别的口也挂上这个回调。
+     * 它同时是"共享状态不用临界区"的守门人：只有 ROBOT_LINK 选中的那条会注册进来。 */
+    if (id != (uint8_t)ROBOT_LINK_PORT) return;
 
     for (i = 0U; i < len; i++) {
-        const UartFrameStatus st = UartFrameParserFeed(&s_parser, data[i]);
+        const FrameStatus st = FrameParserFeed(&s_parser, data[i]);
 
-        if (st == UART_FRAME_OK) {
+        if (st == FRAME_OK) {
             /* 整帧出来了：把 type_id + payload 拷进环。
              * 拷的是 s_parser.buf.raw 里 payload 那一段（从偏移 5 开始）—— 解析器马上
              * 会开始解下一帧，帧头会覆盖 raw[0..4]，所以不能只存指针。 */
@@ -185,16 +231,16 @@ static void Robot_State_OnRx(uint8_t id, const uint8_t* data, uint16_t len) {
             } else {
                 s_rx_slot[s_rx_head].type_id = s_parser.type_id;
                 s_rx_slot[s_rx_head].len = s_parser.data_len;
-                memcpy(s_rx_slot[s_rx_head].payload.raw, &s_parser.buf.raw[UART_FRAME_HEADER_LEN],
+                memcpy(s_rx_slot[s_rx_head].payload.raw, &s_parser.buf.raw[FRAME_HEADER_LEN],
                     s_parser.data_len);
                 __DMB(); /* payload 写完再放 index，见环上面那段说明 */
                 s_rx_head = next;
             }
             robot_rx_frame_cnt++;
 
-        } else if (st == UART_FRAME_ERR_CRC8) {
+        } else if (st == FRAME_ERR_CRC8) {
             robot_crc8_err_cnt++;
-        } else if (st == UART_FRAME_ERR_CRC16) {
+        } else if (st == FRAME_ERR_CRC16) {
             robot_crc16_err_cnt++;
         } else {
             /* INCOMPLETE：绝大多数字节走这条，正常 */
@@ -296,9 +342,9 @@ static uint8_t Rc_Online(void) { return (uint8_t)(!is_Offline(rc.monitor)); }
 /* ==================== 收帧分派 ==================== */
 
 static void HandleVersion(const Robot_rx_payload* pl, uint8_t len) {
-    if (len != (uint8_t)sizeof(UartPktVersion)) return; /* 长度不对：当噪声丢掉 */
+    if (len != (uint8_t)sizeof(FramePktVersion)) return; /* 长度不对：当噪声丢掉 */
 
-    if (pl->version.code != UartFrameVersionCode()) {
+    if (pl->version.code != FrameVersionCode()) {
         /* 版本码不符 → **锁死**：此后不解析、不回复任何帧（需求原文）。
          *
          * 注意后果：上位机侧**没有任何重试机会**，改对版本码也不行，要复位(或重新烧写)
@@ -332,10 +378,23 @@ static void HandleVersion(const Robot_rx_payload* pl, uint8_t len) {
 }
 
 static void HandleArmInit(void) {
-    /* 只能在待初始化模式发起（需求原文）。另外两条自检：
-     *   - 电机必须全在线（wait_init 本来就是从那里来的，但中途掉过线要挡住）；
-     *   - 遥控器在线则拒绝（遥控器优先）。 */
-    if (s_state != robot_state_wait_init) return;
+    /* 两个入口：
+     *   ① 「待初始化」—— 上电流程的常态入口；
+     *   ② 「正常运行」+ 松劲侧档位（stop / damping）—— 2026-10-08 加的，用途是**不
+     *      复位板子也能重走一遍上电流程**。之前只有一个入口，而 Init_Step() 跑完回的是
+     *      正常运行，于是"一旦初始化过就再也回不去"。
+     *
+     * 为什么只放 stop/damping、不放 run/gravity：初始化期间状态机会把 Arm_mode 掰到
+     * **run**（见 Robot_State_Enter，一键动作靠 auto_mode 驱动，stop 档下
+     * Stop_Mode_Update() 每拍清 auto_mode、复位撑不过一拍）。所以能接手的必须是"**没有
+     * 位置环在跑**"的档 —— run 档下臂正被位置环攥着，突然拉去做复位会打架；stop 和
+     * damping 都是"臂是软的、没人管"的档，接过去没有歧义。 */
+    const uint8_t from_wait_init = (s_state == robot_state_wait_init);
+    const uint8_t from_normal_soft =
+        (s_state == robot_state_normal
+         && (s_arm_mode == arm_stop || s_arm_mode == arm_damping));
+    if (!from_wait_init && !from_normal_soft) return;
+
     if (Rc_Online()) {
         robot_init_reject_cnt++;
         return;
@@ -345,12 +404,18 @@ static void HandleArmInit(void) {
         return;
     }
     if (!Init_Pose_Ok()) {
-        /* 偏差过大 → **拒绝，不回包**（需求原文）。停在待初始化模式，上位机看到反馈帧里
-         * robot_state 还是 wait_init、加上 robot_init_reject_cnt 涨了就知道被拒了。 */
+        /* 偏差过大 → **拒绝，不回包**（需求原文）。两个入口**都查**这条：前提是"初始化"
+         * 这件事本身要求臂在初始位附近，跟从哪个入口发起无关。停在原状态，上位机看到反馈
+         * 帧里 robot_state 没变、加上 robot_init_reject_cnt 涨了就知道被拒了。
+         * （对比 0x18 一键复位**故意不查** —— 那件事就是"把歪的臂收回原位"，见
+         * HandleArmReset。两者不是一回事。） */
         robot_init_reject_cnt++;
         return;
     }
 
+    /* 记下入口，中止时回它那儿去（见 s_init_entry 的注释）。正常跑完两种情况都回
+     * 「正常运行」，那条路不用这个变量。 */
+    s_init_entry = s_state;
     s_init_step = 0U;
     Robot_State_Enter(robot_state_initing);
 }
@@ -405,16 +470,16 @@ static void HandleModeSwitch(uint8_t type_id) {
     Ctrl_Invalidate();
 
     switch (type_id) {
-    case UART_FRAME_TYPE_ID_ARM_START:
+    case FRAME_TYPE_ID_ARM_START:
         s_arm_mode = arm_run;
         break;
-    case UART_FRAME_TYPE_ID_ARM_GRAVITY:
+    case FRAME_TYPE_ID_ARM_GRAVITY:
         s_arm_mode = arm_only_gravity_comp;
         break;
-    case UART_FRAME_TYPE_ID_ARM_STOP:
+    case FRAME_TYPE_ID_ARM_STOP:
         s_arm_mode = arm_stop;
         break;
-    case UART_FRAME_TYPE_ID_ARM_DAMPING:
+    case FRAME_TYPE_ID_ARM_DAMPING:
         s_arm_mode = arm_damping;
         break;
     default:
@@ -432,8 +497,8 @@ static void HandleCtrl(const Robot_rx_payload* pl, uint8_t len, uint8_t has_vel)
     if (s_arm_mode != arm_run) return;
     if (Rc_Online()) return;
 
-    const uint8_t need = has_vel ? (uint8_t)sizeof(UartPktArmCtrlPosVel)
-                                 : (uint8_t)sizeof(UartPktArmCtrlPos);
+    const uint8_t need = has_vel ? (uint8_t)sizeof(FramePktArmCtrlPosVel)
+                                 : (uint8_t)sizeof(FramePktArmCtrlPos);
     if (len != need) return;
 
     if (has_vel) {
@@ -461,7 +526,7 @@ static void HandleFrame(uint8_t type_id, const Robot_rx_payload* pl, uint8_t len
     if (s_locked) return;
 
     /* 闸门 ②：握手通过之前只认版本包 —— 其他一律丢弃，也不回复 */
-    if (!s_handshake_ok && type_id != UART_FRAME_TYPE_ID_VERSION) return;
+    if (!s_handshake_ok && type_id != FRAME_TYPE_ID_VERSION) return;
 
     /* 能走到这里的都算"上位机还在说话"（CRC 过了；码认不认识不论 —— 认识新包的旧版本
      * 固件不该被误判成掉线）。 */
@@ -479,28 +544,28 @@ static void HandleFrame(uint8_t type_id, const Robot_rx_payload* pl, uint8_t len
     }
 
     switch (type_id) {
-    case UART_FRAME_TYPE_ID_VERSION:
+    case FRAME_TYPE_ID_VERSION:
         HandleVersion(pl, len);
         break;
-    case UART_FRAME_TYPE_ID_ARM_INIT:
+    case FRAME_TYPE_ID_ARM_INIT:
         HandleArmInit();
         break;
-    case UART_FRAME_TYPE_ID_MOTOR_SET_ZERO:
+    case FRAME_TYPE_ID_MOTOR_SET_ZERO:
         HandleMotorSetZero();
         break;
-    case UART_FRAME_TYPE_ID_ARM_START:
-    case UART_FRAME_TYPE_ID_ARM_GRAVITY:
-    case UART_FRAME_TYPE_ID_ARM_STOP:
-    case UART_FRAME_TYPE_ID_ARM_DAMPING:
+    case FRAME_TYPE_ID_ARM_START:
+    case FRAME_TYPE_ID_ARM_GRAVITY:
+    case FRAME_TYPE_ID_ARM_STOP:
+    case FRAME_TYPE_ID_ARM_DAMPING:
         HandleModeSwitch(type_id);
         break;
-    case UART_FRAME_TYPE_ID_ARM_CTRL_POS:
+    case FRAME_TYPE_ID_ARM_CTRL_POS:
         HandleCtrl(pl, len, 0U);
         break;
-    case UART_FRAME_TYPE_ID_ARM_CTRL_POS_VEL:
+    case FRAME_TYPE_ID_ARM_CTRL_POS_VEL:
         HandleCtrl(pl, len, 1U);
         break;
-    case UART_FRAME_TYPE_ID_ARM_RESET:
+    case FRAME_TYPE_ID_ARM_RESET:
         HandleArmReset();
         break;
     default:
@@ -566,7 +631,10 @@ static void Init_Step(void) {
         }
         s_init_step = 0U;
         robot_init_abort_cnt++;
-        Robot_State_Enter(robot_state_wait_init);
+        /* 回**发起时**那个状态，不是死板的 wait_init：从「正常运行」发起的初始化被
+         * 打断后掉进「待初始化」会把会话卡死（那个状态不受理模式切换帧，见
+         * s_init_entry 的注释）。两种入口进去时都是 s_init_entry = 入口状态。 */
+        Robot_State_Enter(s_init_entry);
         return;
     }
 
@@ -649,7 +717,7 @@ static void Reset_Step(void) {
 }
 
 static void SendZeroAck(void) {
-    UartPktMotorSetZeroAck ack;
+    FramePktMotorSetZeroAck ack;
     int i;
 
     ack.state = arm_zero_state;
@@ -657,7 +725,7 @@ static void SendZeroAck(void) {
         ack.result[i] = arm_zero_result[i];
     }
     ack.elapsed_ms = arm_zero_elapsed_ms;
-    SendFrame(UART_FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK, (const uint8_t*)&ack, (uint8_t)sizeof(ack));
+    SendFrame(FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK, (const uint8_t*)&ack, (uint8_t)sizeof(ack));
 }
 
 /* 校准零点：等 arm_zero 那台独立状态机跑完，回一个 0x11 ACK，退回待初始化。 */
@@ -777,7 +845,7 @@ static void Feedback_Step(void) {
         s_fb_last_ms = now;
     }
 
-    UartPktArmFeedback fb;
+    FramePktArmFeedback fb;
     int i;
 
     /* mode 报的是**电机层真实在用的那一档**，不是我们"希望"的那一档：
@@ -815,7 +883,7 @@ static void Feedback_Step(void) {
         fb.gripper_angle = gimbal->arm_feedback_data.gripper_angle;
     }
 
-    SendFrame(UART_FRAME_TYPE_ID_ARM_FEEDBACK, (const uint8_t*)&fb, (uint8_t)sizeof(fb));
+    SendFrame(FRAME_TYPE_ID_ARM_FEEDBACK, (const uint8_t*)&fb, (uint8_t)sizeof(fb));
     robot_fb_cnt++;
 }
 
@@ -825,13 +893,16 @@ void Robot_State_Init(void) {
     memset(s_rx_slot, 0, sizeof(s_rx_slot));
     s_rx_head = 0U;
     s_rx_tail = 0U;
-    UartFrameParserReset(&s_parser);
+    FrameParserReset(&s_parser);
 
     s_handshake_ok = 0U;
     s_locked = 0U;
     s_state = robot_state_wait_handshake;
     s_arm_mode = arm_stop;
     s_init_step = 0U;
+    /* 只是给 JLink 一个干净初值：真值在 HandleArmInit() 里赋。静态变量默认本来就是 0
+     * (= robot_state_wait_handshake)，写出来是为了读寄存器时不用猜这个 0 是什么意思。 */
+    s_init_entry = robot_state_wait_handshake;
     s_reset_step = 0U;
     s_zero_seen_busy = 0U;
     s_zero_start_ms = 0U;
@@ -845,8 +916,10 @@ void Robot_State_Init(void) {
     robot_handshake_ok = 0U;
     robot_locked = 0U;
 
-    /* 必须在 BSP_UART_Init() 之后 —— 那个函数会清空回调表，注册早了会被抹掉。 */
-    BSP_UART_RegisterRxCallback(ROBOT_UART_PORT, Robot_State_OnRx);
+    /* 必须在两个 BSP 的 Init 之后 —— 它们会清空自己的回调登记，注册早了会被抹掉。
+     * **只登记 ROBOT_LINK 选中的那一条**：没选中的外设照样活着（USB 那边
+     * MX_USB_DEVICE_Init() 是无条件调的），但没人注册 = 碰不到任何共享状态。 */
+    Robot_Link_RegRx(ROBOT_LINK_PORT, Robot_State_OnRx);
 }
 
 void Robot_State_Loop(void) {

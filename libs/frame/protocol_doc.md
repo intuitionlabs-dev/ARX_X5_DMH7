@@ -1,8 +1,8 @@
 # 串口协议说明
 
-本文是 `libs/uart_frame` 这一层的线协议说明，面向**上位机/对端**（写 PC 端、写另一个板子的人）。
-这里的每一个字节都以代码为准：帧格式在 `uart_frame.h`，码表和 payload 在 `type_id.h`，
-版本串在 `uart_frame_config.h`，校验多项式在 `libs/soft_crc/soft_crc.c`。
+本文是 `libs/frame` 这一层的线协议说明，面向**上位机/对端**（写 PC 端、写另一个板子的人）。
+这里的每一个字节都以代码为准：帧格式在 `frame.h`，码表和 payload 在 `type_id.h`，
+版本串在 `frame_config.h`，校验多项式在 `libs/soft_crc/soft_crc.c`。
 
 这一层**只管切帧、校验、把 `type_id` 和 payload 交出去**，不认识任何码值的含义；
 本工程 App 侧的真实上层是 **`App/robot_state.c`（机器人总模式状态机）**，跑在 USART1 上，
@@ -19,8 +19,8 @@
 | 帧格式版本 | 见第 2 节（当前是第一版，格式常量无第二套） |
 
 版本串是**协议版本的身份**，也是版本码的唯一源头，定义在
-`libs/uart_frame/uart_frame_config.h` 的 `UART_FRAME_VERSION_STRING`。板上取当前值用
-`UartFrameVersionCode()`，**不要在两端硬写 `0xF61DCF10` 这个数字** —— 改串它自己就变。
+`libs/frame/frame_config.h` 的 `FRAME_VERSION_STRING`。板上取当前值用
+`FrameVersionCode()`，**不要在两端硬写 `0xF61DCF10` 这个数字** —— 改串它自己就变。
 
 上位机要算同一个值（任何语言三行，不必移植我们的实现）：
 
@@ -48,8 +48,8 @@ for b in s.encode():
 ```
 
 整帧长度 = `7 + datalen`，**最短 7 字节，最长 262 字节**。
-常量：`UART_FRAME_OVERHEAD` = 7、`UART_FRAME_HEADER_LEN` = 5、
-`UART_FRAME_TRAILER_LEN` = 2、`UART_FRAME_MAX_DATA` = 255、`UART_FRAME_MAX_LEN` = 262。
+常量：`FRAME_OVERHEAD` = 7、`FRAME_HEADER_LEN` = 5、
+`FRAME_TRAILER_LEN` = 2、`FRAME_MAX_DATA` = 255、`FRAME_MAX_LEN` = 262。
 
 ### 字节序与数制
 
@@ -74,7 +74,7 @@ for b in s.encode():
 
 ### 收帧状态机
 
-解析器是**逐字节流式**的（`UartFrameParserFeed()`），5 个状态：
+解析器是**逐字节流式**的（`FrameParserFeed()`），5 个状态：
 
 ```
 WAIT_SYNC0 --0xAA--> WAIT_SYNC1 --0x55--> HEADER --(够 5 字节)--> 校验 crc8
@@ -84,8 +84,8 @@ WAIT_SYNC0 --0xAA--> WAIT_SYNC1 --0x55--> HEADER --(够 5 字节)--> 校验 crc8
 
 几个约定：
 
-- 返回值可直接 `switch`：`UART_FRAME_INCOMPLETE`(0) 继续喂 / `UART_FRAME_OK`(1) 解出一帧 /
-  `UART_FRAME_ERR_CRC8`(2) / `UART_FRAME_ERR_CRC16`(3)。两个 ERR 之后解析器**已自动复位**，
+- 返回值可直接 `switch`：`FRAME_INCOMPLETE`(0) 继续喂 / `FRAME_OK`(1) 解出一帧 /
+  `FRAME_ERR_CRC8`(2) / `FRAME_ERR_CRC16`(3)。两个 ERR 之后解析器**已自动复位**，
   且**出错的那个字节会被重新喂一遍**（它可能是下一帧的帧头）。
 - `AA AA 55` 这种重复帧头：第二个 `0xAA` 当作新的首字节重新锁存，不会漏掉真帧。
 - **数据区里不搜帧头**。二进制 payload 本来就可能包含 `0xAA 0x55`，在数据区里找会把真帧切碎。
@@ -96,7 +96,7 @@ WAIT_SYNC0 --0xAA--> WAIT_SYNC1 --0x55--> HEADER --(够 5 字节)--> 校验 crc8
 
 ## 串口帧类型详解
 
-`type_id` 就是帧头偏移 2 的那个字节，用一个字节取值（`typedef uint8_t UartFrameTypeId`）。
+`type_id` 就是帧头偏移 2 的那个字节，用一个字节取值（`typedef uint8_t FrameTypeId`）。
 
 **码表：**
 
@@ -122,13 +122,13 @@ WAIT_SYNC0 --0xAA--> WAIT_SYNC1 --0x55--> HEADER --(够 5 字节)--> 校验 crc8
 是板子往上发的（现在只有反馈帧一个）。`0x03`~`0x0F` 空着，留给以后的高优先级短包。
 
 线上的关节/电机个数是**协议定死的**，不由 App 的宏决定：
-`UART_FRAME_PKT_JOINT_NUM` = 6、`UART_FRAME_PKT_MOTOR_NUM` = 7（六个关节 + 夹爪）。
+`FRAME_PKT_JOINT_NUM` = 6、`FRAME_PKT_MOTOR_NUM` = 7（六个关节 + 夹爪）。
 两个数现在和 App 的 `ARM_JOINT_NUM`/`ARM_MOTOR_NUM` 正好相等。
 
 ### 0x01 版本匹配包（双向）
 
 ```c
-typedef struct { uint32_t code; } UartPktVersion;   /* 4 字节 */
+typedef struct { uint32_t code; } FramePktVersion;   /* 4 字节 */
 ```
 
 `code` = `FNV-1a 32(版本串)`，算到 `'\0'` 为止。**两边相等才认为协议对得上、可以继续通信。**
@@ -145,9 +145,9 @@ typedef struct { uint32_t code; } UartPktVersion;   /* 4 字节 */
 ```c
 typedef struct {
     uint8_t  state;                        /* 1  */
-    uint8_t  result[UART_FRAME_PKT_MOTOR_NUM]; /* 7  */
+    uint8_t  result[FRAME_PKT_MOTOR_NUM]; /* 7  */
     uint32_t elapsed_ms;                   /* 4  */
-} UartPktMotorSetZeroAck;                  /* 共 12 字节 */
+} FramePktMotorSetZeroAck;                  /* 共 12 字节 */
 ```
 
 - `state`：本轮结束时的状态机状态，取值是 `App/inc/arm_zero.h` 的 `Arm_zero_state`。
@@ -168,7 +168,7 @@ typedef struct {
 ### 0x02 初始化命令包（下发）
 
 ```c
-typedef UartPktEmpty UartPktArmInit;   /* 0 字节，线上 datalen = 0 */
+typedef FramePktEmpty FramePktArmInit;   /* 0 字节，线上 datalen = 0 */
 ```
 
 整包语义就是"**开始初始化**"，没有参数。板子收到后的动作是"一键复位 → 一键夹爪找零
@@ -190,7 +190,7 @@ typedef UartPktEmpty UartPktArmInit;   /* 0 字节，线上 datalen = 0 */
 
 ### 0x12 / 0x13 / 0x14 / 0x15 四个空包（下发）
 
-四个都是 `UartPktEmpty`（**0 字节**，线上 `datalen` = 0），作用完全在 `type_id` 上：
+四个都是 `FramePktEmpty`（**0 字节**，线上 `datalen` = 0），作用完全在 `type_id` 上：
 
 | 码 | 包 | 语义 |
 | --- | --- | --- |
@@ -207,9 +207,9 @@ union 里的成员和码表一一对上、`payload.arm_start` 这种写法能编
 
 ```c
 typedef struct {
-    float joint_angle[UART_FRAME_PKT_JOINT_NUM];  /* 24 字节，deg */
+    float joint_angle[FRAME_PKT_JOINT_NUM];  /* 24 字节，deg */
     float gripper_angle;                          /*  4 字节      */
-} UartPktArmCtrlPos;                              /* 共 28 字节   */
+} FramePktArmCtrlPos;                              /* 共 28 字节   */
 ```
 
 - `joint_angle[]`：单位 **deg**，和 `Arm_control_data.joint_angle` 一个口径。
@@ -219,10 +219,10 @@ typedef struct {
 
 ```c
 typedef struct {
-    float joint_angle[UART_FRAME_PKT_JOINT_NUM];  /* 24 字节，deg   */
-    float joint_vel[UART_FRAME_PKT_JOINT_NUM];    /* 24 字节，deg/s */
+    float joint_angle[FRAME_PKT_JOINT_NUM];  /* 24 字节，deg   */
+    float joint_vel[FRAME_PKT_JOINT_NUM];    /* 24 字节，deg/s */
     float gripper_angle;                          /*  4 字节        */
-} UartPktArmCtrlPosVel;                           /* 共 52 字节     */
+} FramePktArmCtrlPosVel;                           /* 共 52 字节     */
 ```
 
 位置 + 速度前馈。`joint_vel[]` 喂 `Arm_control_data.joint_vel`（那一项经
@@ -237,7 +237,7 @@ typedef struct {
 ### 0x18 一键复位命令包（下发）
 
 ```c
-typedef UartPktEmpty UartPktArmReset;   /* 0 字节，线上 datalen = 0 */
+typedef FramePktEmpty FramePktArmReset;   /* 0 字节，线上 datalen = 0 */
 ```
 
 整包语义就是"**把臂收回复位位姿**"，没有参数。板子跑的是**只有一键复位**那一段：
@@ -287,7 +287,7 @@ typedef struct {
     float   joint_vel[6];       /* 24  deg/s */
     float   gripper_angle;      /*  4  deg，口径同 Gripper 反馈角 */
     uint8_t motor_temp[7];      /*  7  ℃，索引同上 */
-} UartPktArmFeedback;           /* 共 63 字节，整帧 70 */
+} FramePktArmFeedback;           /* 共 63 字节，整帧 70 */
 ```
 
 - **方向**：板子 → 上位机，**握手通过之后无论机器人处于什么总模式都以 250 Hz 固定发送**
@@ -312,22 +312,22 @@ typedef struct {
 
 1. 在 `type_id.h` 的码表里加一个 `#define`（别和已用的撞）；
 2. 同文件在 `#pragma pack(push, 1)` / `(pop)` **这一对里面**加一个 packed struct；
-3. 在 `uart_frame.h` 的 `UartFramePayload` union 里挂上成员 —— **这一处漏了就不会被解包**；
-4. 如果包长固定，在 `uart_frame.c` 里加一条 `_Static_assert(sizeof(...) == N)`。
+3. 在 `frame.h` 的 `FramePayload` union 里挂上成员 —— **这一处漏了就不会被解包**；
+4. 如果包长固定，在 `frame.c` 里加一条 `_Static_assert(sizeof(...) == N)`。
 
 `payload` 从帧的**偏移 5** 开始，不是 4 的倍数，所以包里的 float 成员天生非对齐。
 所有包结构体都压到 **1 字节对齐**，编译器才会生成逐字节访问的代码（Cortex-M7 的 LDR/STR
-按对齐访问，不告诉它在非对齐地址上会出错）。`uart_frame.c` 里有一组 `_Alignof == 1` 的静态断言守着，
+按对齐访问，不告诉它在非对齐地址上会出错）。`frame.c` 里有一组 `_Alignof == 1` 的静态断言守着，
 所以**新结构体必须定义在 pack 区里面**，否则断言立刻红。
 
 ## 通信流程
 
 ### 一次收发的字节级流程
 
-**发送方**（`UartFrameEncode(out, out_size, type_id, data, data_len)`）：
+**发送方**（`FrameEncode(out, out_size, type_id, data, data_len)`）：
 
 1. 先全部校验完再动手写 —— `out` 为 NULL、或 `data` 为 NULL 但 `data_len > 0` 返回
-   `UART_FRAME_ENC_ERR_NULL`(-1)；`out_size` 不够返回 `UART_FRAME_ENC_ERR_SIZE`(-2)。
+   `FRAME_ENC_ERR_NULL`(-1)；`out_size` 不够返回 `FRAME_ENC_ERR_SIZE`(-2)。
    **失败时 `out` 一个字节都不会被写。**
 2. 写 `AA 55`、`type_id`、`datalen`；
 3. `crc8 = CRC8_Modbus_calc(out, 4)` 写进偏移 4；
@@ -335,25 +335,25 @@ typedef struct {
 5. `crc16 = CRC16_Modbus_calc(out, 5 + data_len)`，低字节写 `5+N`、高字节写 `5+N+1`。
 6. 返回写入字节数 `7 + data_len`（失败返回负数）。
 
-**接收方**：把收到的每个字节喂进 `UartFrameParserFeed()`，一直喂到它返回 `UART_FRAME_OK`。
+**接收方**：把收到的每个字节喂进 `FrameParserFeed()`，一直喂到它返回 `FRAME_OK`。
 
 ### 零拷贝解包
 
-`UartFrameBuf` 是一个 union，"一串字节"和"一个结构体"是**同一块内存**：
+`FrameBuf` 是一个 union，"一串字节"和"一个结构体"是**同一块内存**：
 
 ```c
 union {
     uint8_t raw[262];
-    struct { uint8_t header[5]; UartFramePayload payload; uint8_t trailer[2]; } f;
-} UartFrameBuf;
+    struct { uint8_t header[5]; FramePayload payload; uint8_t trailer[2]; } f;
+} FrameBuf;
 ```
 
 所以校验通过的那一刻，`raw[5..5+N-1]` 已经**原地**就是 payload 了，不用 memcpy、不用逐字段拼：
 
 ```c
-if (UartFrameParserFeed(&parser, byte) == UART_FRAME_OK) {
-    if (parser.type_id == UART_FRAME_TYPE_ID_ARM_CTRL_POS) {
-        const UartPktArmCtrlPos *c = &parser.buf.f.payload.arm_ctrl_pos;
+if (FrameParserFeed(&parser, byte) == FRAME_OK) {
+    if (parser.type_id == FRAME_TYPE_ID_ARM_CTRL_POS) {
+        const FramePktArmCtrlPos *c = &parser.buf.f.payload.arm_ctrl_pos;
         /* c->joint_angle[0] ... c->gripper_angle */
     }
 }
@@ -362,14 +362,14 @@ if (UartFrameParserFeed(&parser, byte) == UART_FRAME_OK) {
 三件事要知道：
 
 - **必须用 union，不能把 `raw` 强转成结构体指针**。C 标准 6.5.2.3 规定读 union 的非当前成员是
-  按对象表示重新解释，这是定义良好的；而 `*(UartPktArmCtrlPos *)buf.raw` 这种指针强转会踩
+  按对象表示重新解释，这是定义良好的；而 `*(FramePktArmCtrlPos *)buf.raw` 这种指针强转会踩
   strict aliasing，优化开起来就可能被编歪。（C++ 里 union type punning 反而是 UB，这个头是给 C 用的。）
-- **取值的时机**：`UART_FRAME_OK` 返回后、**下一帧的字节进来之前**要把要用的值取走。
+- **取值的时机**：`FRAME_OK` 返回后、**下一帧的字节进来之前**要把要用的值取走。
   解析器会接着解下一帧，下一帧的帧头字节会覆盖 `raw[0..4]`，那个值就没了。
 - 原始字节也一直在 `parser.buf.raw[0 .. 6+data_len-1]`（从 `0xAA` 起），要转发整帧可以直接用它。
 
-`UartFrameParser` 约 270 字节，**放文件作用域或全局，别放栈上**。零初始化等价于
-`UartFrameParserReset()`（`INCOMPLETE` 和 `WAIT_SYNC0` 都是 0）。
+`FrameParser` 约 270 字节，**放文件作用域或全局，别放栈上**。零初始化等价于
+`FrameParserReset()`（`INCOMPLETE` 和 `WAIT_SYNC0` 都是 0）。
 
 ### 会话流程（板上已实现）
 
@@ -414,7 +414,7 @@ if (UartFrameParserFeed(&parser, byte) == UART_FRAME_OK) {
 
 ```
 1. 握手   上位机 ──0x01 VERSION(code=自己的版本码)──→ 板子
-          板子   ──0x01 VERSION(code=UartFrameVersionCode())──→ 上位机   (①→②)
+          板子   ──0x01 VERSION(code=FrameVersionCode())──→ 上位机   (①→②)
           两边比对 code；不等就别继续发指令了 —— 见下面的警告。
 
 2. 等电机 板子自己等 7 台全部上线（②→③），上位机不用做什么，看反馈帧的
