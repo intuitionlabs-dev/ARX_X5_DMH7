@@ -233,6 +233,81 @@ void BSP_CAN_TxGapWait(void) {
 void BSP_CAN_TxGapWait(void) {}
     #endif
 
+    /* ---- 发送健康：一条发不出去的总线不要拿它拖累另一条 ----------------------
+ * BSP_CAN_Send() 里"满了就等最多 1ms"那段等待**照旧保留** —— 一个周期里要连发几帧，
+ * 靠它把帧塞进 FIFO —— 但只对还能把帧发出去的总线保留。等在一路发不出去的总线上，
+ * 换来的是另一条总线上电机的控制频率被拖下来(控制律在发送步骤里算，两条总线共用
+ * MotorTask，见 DMmotor_Send_Step)，而那一帧本来也出不去。
+ *
+ * 判据见 BSP_CAN_TxHealthStep()：硬件报 error-passive(总线上已经没有能应答的节点了)，
+ * 或这一路等 FIFO 等超时攒够了次数。两条在健康总线上都恒不成立，所以正常运行时这门一帧都不影响。 */
+    #define CAN_TX_TIMEOUT_BLOCK_N 2u /* 连续等 FIFO 超时几次就关这一路 */
+    #define CAN_TX_PROBE_MS 50u       /* 关掉之后每多久重开一次试 */
+    /* Tx FIFO 的全部 32 个元素(深度见 Core/Src/fdcan.c 的 TxFifoQueueElmtsNbr=32，
+     * TxBuffersNbr=0 ⇒ 元素 0~31 就是整个 Tx FIFO)。 */
+    #define CAN_TX_ABORT_ALL 0xFFFFFFFFu
+
+typedef struct {
+    uint32_t drop_cnt;    /* 关着期间丢掉的帧数 */
+    uint32_t timeout_cnt; /* 连续超时次数；成功发出或关门时清零 */
+    uint8_t blocked;      /* 1 = 这一路暂停发送 */
+    uint32_t probe_ms;    /* blocked 期间上一次探测的时刻 */
+    uint32_t recover_cnt; /* 关着门期间做过几次探测(中止 FIFO + 清 INIT) */
+    /* 上一拍 HAL 读到的硬件状态。"门是被哪条证据关的"看它就够：
+     * blocked=1 且 ErrorPassive=1 ⇒ ①；blocked=1 且 ErrorPassive=0 ⇒ ②，看 timeout_cnt。 */
+    FDCAN_ProtocolStatusTypeDef proto_status;
+} Can_tx_health;
+
+static Can_tx_health s_tx_health[DEVICE_CAN_CNT];
+
+void BSP_CAN_TxHealthStep(void) {
+    uint32_t now = HAL_GetTick();
+    for (int i = 0; i < DEVICE_CAN_CNT; ++i) {
+        Can_tx_health *health = &s_tx_health[i];
+        /* 关门(这一路停发)有两条证据，任一成立就关：
+         *   ① 硬件报 error-passive(TEC 或 REC ≥ 128) —— 总线上已经没有能应答我们帧的节点了
+         *      (拔线、电机断电)。这条不靠等：那一路的 FIFO 永远排不空，"等 FIFO 空闲"
+         *      等不出名堂来。
+         *      拔线这一路硬件就停在 error-passive 上不动：TEC 涨到 128 之后 ISO 11898-1 的
+         *      例外规则不再让它涨(error-passive 的节点只碰到 ACK 错、发 passive error flag
+         *      时又没看到显性位 ⇒ TEC 不变)，于是 TEC 冻在 128、`PSR.BO` 恒 0
+         *      (真机实测 ECR 恒 0x80、PSR 恒 0x77B：帧在反复重试，错误计数一个都不动)。
+         *   ② 这一路等 FIFO 等超时攒够了次数 —— 硬件不报错，但帧就是塞不进队列。 */
+        HAL_FDCAN_GetProtocolStatus(can_devices[i].device, &health->proto_status);
+        if (!health->proto_status.ErrorPassive
+            && health->timeout_cnt < CAN_TX_TIMEOUT_BLOCK_N) {
+            health->blocked = 0u;
+            continue;
+        }
+        health->blocked = 1u;
+        if ((uint32_t)(now - health->probe_ms) < CAN_TX_PROBE_MS) {
+            continue;
+        }
+        health->probe_ms = now;
+        /* 先把挂在 Tx FIFO 里的旧指令**全部**中止掉：清 INIT 之后硬件会把它们立刻重发一遍，
+         * 而这一路刚被判死、必然还是发不出去 —— 刚走完的恢复序列立刻又被打断，门立刻又关上。
+         * 一帧都不能留：关门那一刻 FIFO 里堆着多少帧取决于怎么死的(死总线上每帧都发不出去、
+         * DAR 又开着，元素只进不出，要等发送路径那段 1ms 超时按 5 个一组往外放)，
+         * 堆到 30 以上时只清前 5 个就不够。 */
+        HAL_FDCAN_AbortTxRequest(can_devices[i].device, CAN_TX_ABORT_ALL);
+        /* bus-off 之后硬件置 CCCR.INIT 而没人清，硬件停在原地不动 —— 电缆插回来也回不去。
+         * 硬件只在 INIT 被清掉之后才开始 bus-off 恢复序列(在总线上数够 129 次 11 个连续
+         * 隐性位，数完自己清 PSR.BO 和 ECR 的两个计数)，所以"恢复"就是清 CCCR.INIT。
+         * HAL 里是 Stop/Start 这一对：Stop 置 INIT、Start 清 INIT，而 Start 只认 Stop 之后
+         * 的 READY 态，两个必须配对(单独 Start 直接返回 HAL_ERROR，一个寄存器都不写)。
+         * 这一对只写 CCCR，不等总线，也不碰滤波器/RX 通知。 */
+        HAL_FDCAN_Stop(can_devices[i].device);
+        HAL_FDCAN_Start(can_devices[i].device);
+        health->recover_cnt++;
+        health->timeout_cnt = 0u;
+        /* 探测这一下必须**真的把门放开**：判据①(error-passive)只有等一次发送成功(TEC 减 1)
+         * 才消得掉，关着门就永远消不掉 —— 电缆插回来了门也只在 50ms 一次的探测里开着又关上。
+         * 放开这一拍就够它试一次：FIFO 刚被清空、发帧不用等，只要总线上还有节点应答，这一帧
+         * 就成功、EP 当拍就清，下一拍门自然开着；没人应答就下一拍再关上。 */
+        health->blocked = 0u;
+    }
+}
+
 void BSP_CAN_Init(void) {
     FDCAN_HandleTypeDef *can_ports[DEVICE_CAN_CNT] = CAN_PORT_ARRAY;
     uint32_t prefix_array[DEVICE_CAN_CNT] = CAN_PREFIX_ARRAY;
@@ -271,6 +346,13 @@ FPS_t j1_tx_fps;
 void BSP_CAN_Send(uint8_t fdcan_id, uint16_t identifier, uint8_t *data, basic_data_t len) {
     #if !_BSP_DEBUG_CAN_NOT_SEND
     /* 本函数不等最小帧间隔：等待由调用方按"轮"做，见 BSP_CAN_TxGapWait() */
+    Can_tx_health *health = &s_tx_health[fdcan_id];
+    /* 这一路已判定"发不出去"(见 BSP_CAN_TxHealthStep)：丢掉这一帧，不读寄存器也不等。
+     * 在这里等的结果本来就是下面那条超时分支(abort + 丢帧)，帧一样出不去，白等。 */
+    if (health->blocked) {
+        health->drop_cnt++;
+        return;
+    }
     FDCAN_TxHeaderTypeDef txconf;
     switch (len) {
     case 0:
@@ -322,9 +404,11 @@ void BSP_CAN_Send(uint8_t fdcan_id, uint16_t identifier, uint8_t *data, basic_da
             HAL_FDCAN_AbortTxRequest(can_devices[fdcan_id].device,
                 FDCAN_TX_BUFFER0 | FDCAN_TX_BUFFER1 | FDCAN_TX_BUFFER2 | FDCAN_TX_BUFFER3 | FDCAN_TX_BUFFER4);
             // clang-format on
+            health->timeout_cnt++; /* 这一路整整 1ms 一帧都没出去 */
             return;
         }
     }
+    health->timeout_cnt = 0u;
 
     HAL_FDCAN_AddMessageToTxFifoQ(can_devices[fdcan_id].device, &txconf, data);
     #endif  //_BSP_DEBUG_CAN_NOT_SEND

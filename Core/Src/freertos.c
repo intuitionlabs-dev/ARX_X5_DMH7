@@ -315,6 +315,9 @@ void StartMotorTask(void *argument)
          * 后面的那台被"下一组的门"整拍挡掉。实测症状：j1 掩码 0x55(500 Hz) 却只有 250 Hz，
          * 而排在它前面的 j4/j5 是准的。 */
         BSP_CAN_TxGroupLatch();
+        /* 关掉"发不出去"的那一路总线(电缆掉了、电机断电)，别让它把另一条总线上的发送
+         * 节奏拖下去。判据与恢复见 bsp_can.h 的 BSP_CAN_TxHealthStep。 */
+        BSP_CAN_TxHealthStep();
         for (round = 0U; round < (uint8_t)CAN_TX_MAX_FRAMES_PER_TICK; round++) {
             uint8_t sent = 0U;
             for (bus = 0U; bus < (uint8_t)ARM_NUM; bus++) {

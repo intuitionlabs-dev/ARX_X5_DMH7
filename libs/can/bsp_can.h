@@ -46,5 +46,24 @@ void BSP_CAN_TxGroupLatch(void);
  *
  * BSP_CAN_TX_MIN_GAP_US 配 0 时本函数是空实现，调用方不用写 #if。 */
 void BSP_CAN_TxGapWait(void);
+
+/* 发送健康检查：**每拍开跑前调一次**，和 BSP_CAN_TxGroupLatch() 并排。
+ *
+ * 一条发不出去的总线(电缆掉了、电机断电、进了 bus-off)会让 BSP_CAN_Send() 里那段
+ * 等待空转。那段等待**照旧保留** —— 一个周期里要连发几帧，靠它把帧塞进 FIFO ——
+ * 但只对还能把帧发出去的总线保留：判据是硬件报了 error-passive(经 HAL_FDCAN_GetProtocolStatus
+ * 读 PSR，TEC 或 REC ≥ 128 —— 总线上已经没有能应答我们的节点了)，或这一路等 FIFO 等超时攒够了
+ * 次数(见 bsp_can.c 的 CAN_TX_TIMEOUT_BLOCK_N)。拔线时硬件正是停在 error-passive：TEC 涨到
+ * 128 就冻住了(ISO 11898-1 的例外规则)，`PSR.BO` 恒 0、`CCCR.INIT` 也不会被硬件置起来。
+ * 关掉之后发送立刻丢帧返回，每 CAN_TX_PROBE_MS 用 Stop/Start 清一次 CCCR.INIT 重开去试
+ * (硬件清掉它才开始 bus-off 恢复序列)，并**把门放开一拍**让这一路真发一次 —— error-passive
+ * 只有等一次发送成功才会消，不放行就永远消不掉；重开前先中止掉 FIFO 里挂着的**全部**旧指令，
+ * 否则它们会被立刻重发一遍、以失败告终，刚走完的恢复序列立刻又被打断，这一路再也回不来。
+ *
+ * 为什么非要关：等的结果本来就是超时分支(abort + 丢帧)，帧一样出不去，而等待时间
+ * 是花在 **MotorTask** 里的 —— 控制律在发送步骤里算，两条总线共用这一个任务，
+ * 于是一条没人应答的总线会把另一条上电机的控制频率一起拖下来。 */
+void BSP_CAN_TxHealthStep(void);
+
 void BSP_CAN_RegisterRxCallback(uint8_t can_id, can_rx_callback func);
 void BSP_ADD_Filters(uint8_t can_id);
