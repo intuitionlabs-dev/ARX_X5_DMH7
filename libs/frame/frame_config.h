@@ -25,6 +25,6 @@
  *     h = 2166136261
  *     for b in s.encode():  h = ((h ^ b) * 16777619) & 0xFFFFFFFF
  *
- * 当前这个串算出 0xF91DD3C9。上位机脚本的 --selftest 里把这个值钉死了，所以改完
+ * 当前这个串算出 0xF81DD236。上位机脚本的 --selftest 里把这个值钉死了，所以改完
  * 字符串测试会红 —— 那是故意的，提醒你上位机那份也要同步改。 */
-#define FRAME_VERSION_STRING "Intuition-ARX-X5-2023-v0.2"
+#define FRAME_VERSION_STRING "Intuition-ARX-X5-2023-v0.3"
