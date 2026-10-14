@@ -37,8 +37,9 @@
  * ==================== 三条时间约定 ====================
  *
  *   - 握手通过后**无论什么状态都以 250 Hz 发反馈帧**(0x80)，直到复位；
- *   - 握手通过后 **3 s 收不到有效帧** → 进通信离线模式、机械臂 damping；
- *     之后**收到任意有效帧**就回"离线等待模式"（**不要求重新握手**）；
+ *   - 握手通过后 **3 s 收不到有效帧** → 机械臂 damping，**总模式**看初始化跑完了没有：
+ *     跑完过（正常运行）就留在正常运行，上位机补一帧 0x12 就接着跑；没跑完过就进
+ *     "通信离线模式"，之后**收到任意有效帧**回"离线等待模式"（**不要求重新握手**）；
  *   - 反馈帧用 HAL_GetTick() 做 4 ms 门控（Robot_State_Loop 自己是 500 Hz）。
  *
  * ==================== 挂载方式 ====================
@@ -106,7 +107,8 @@
  * 上位机设成多少都一样。 */
 
 
-/* 通信超时，ms。握手通过之后，这么久没收到任何有效帧就进通信离线模式。 */
+/* 通信超时，ms。握手通过之后，这么久没收到任何有效帧就把臂切回 damping（落点见
+ * robot_state.c 的 Comm_Lost_Enter()）。 */
 #define ROBOT_COMM_TIMEOUT_MS 3000U
 
 /* 反馈帧周期，ms（4 ms = 250 Hz）。Robot_State_Loop() 是 500 Hz，用 HAL_GetTick 门控。
@@ -158,7 +160,8 @@
  *                                                                                                  复位中 ──一键复位跑完──→ 正常运行(默认 damping)
  *                                                                                                ⇒0x02 且姿态合格、档位在 stop/damping → 初始化(★见下)
  *
- *   握手通过之后**任意状态**：3 s 无有效帧 → 通信离线(damping)
+ *   握手通过之后 3 s 无有效帧：正常运行 → 留在正常运行、档位切 damping
+ *                              其余状态 → 通信离线(damping)
  *   通信离线：收到任意有效帧 → 离线等待（回到上面那条链）
  *   没握手期间：每 100 ms 主动发一帧 0x01（Handshake_Step）—— "握手前一个字节都不发"
  *   的**唯一例外**，0x01 本来就是建立握手的那个包。
@@ -178,7 +181,9 @@ typedef enum {
     robot_state_wait_init,          /* 待初始化：stop，等初始化命令帧 / 校准零点帧 */
     robot_state_initing,            /* 初始化：run，先一键复位、再一键夹爪找零 */
     robot_state_normal,             /* 正常运行：等上位机切 Arm_mode，默认 damping */
-    robot_state_comm_lost,          /* 通信离线：damping，收到任意有效帧就回离线等待 */
+    robot_state_comm_lost,          /* 通信离线：damping，收到任意有效帧就回离线等待。
+                                     * 初始化跑完过的臂掉线时**不掉进来**（留在正常运行），
+                                     * 见 robot_state.c 的 Comm_Lost_Enter() */
     robot_state_calibrating,        /* 校准零点：stop，设零状态机跑完就回待初始化 */
     robot_state_resetting,          /* 一键复位：run，只跑 arm_auto_reset，跑完回正常运行(默认阻尼) */
     ROBOT_STATE_NUM,

@@ -781,14 +781,34 @@ static void Calib_Step(Arm* arm) {
     Robot_State_Enter(arm, robot_state_wait_init);
 }
 
+/* 通信超时之后的落点。
+ *
+ * **正常运行（初始化已经跑完过）**：总模式留在正常运行，只把档位打到阻尼 —— 掉线结束
+ * 之后上位机补一帧 `0x12` 就接着跑，不用重走一遍初始化。
+ *
+ * **其余状态**：退到"通信离线"，收帧后回离线等待、再按"电机全在线"往待初始化走，让
+ * 上位机重新确认能不能发初始化命令。初始化 / 一键复位正跑到一半时也走这一档：那条
+ * 规划还挂在命令层，把总模式留在正常运行的话，等上位机切回 run 会接着往下推、把臂
+ * 拽一下。
+ *
+ * 档位已经是阻尼时直接返回：重复进会把反馈门控每拍重新触发，反馈帧变成 500 Hz 空发。 */
+static void Comm_Lost_Enter(Arm* arm) {
+    if (arm->state != robot_state_normal) {
+        Robot_State_Enter(arm, robot_state_comm_lost);
+        return;
+    }
+    if (arm->arm_mode == arm_damping) return;
+    Robot_State_Enter(arm, robot_state_normal);
+}
+
 static void Fsm_Step(Arm* arm) {
     const uint32_t now = HAL_GetTick();
 
     /* 通信超时：握手通过之后，除了"还没开始说话"(等待握手)和"已经在离线里"(不再重复
      * 进)两种，**任何状态**都算。判据是"收到有效帧"的间隔 —— 反馈帧是我们自己发的，
-     * 不算数。
+     * 不算数。落点见 Comm_Lost_Enter()。
      *
-     * 副作用要知道：上位机只握手、然后干等不发包时，会看到
+     * 副作用要知道：还没初始化时，上位机只握手、然后干等不发包，会看到
      *   wait_init(stop) ──3s──→ comm_lost(damping) ──它发一帧──→ offline_wait
      *   ──电机在线──→ wait_init(stop) ──3s──→ ...
      * 也就是 arm_stop 和 arm_damping 之间来回切。两个都是"安全态"（一个是失能、
@@ -798,7 +818,7 @@ static void Fsm_Step(Arm* arm) {
     if (arm->handshake_ok && arm->state != robot_state_wait_handshake
         && arm->state != robot_state_comm_lost
         && (now - arm->last_rx_ms) >= ROBOT_COMM_TIMEOUT_MS) {
-        Robot_State_Enter(arm, robot_state_comm_lost);
+        Comm_Lost_Enter(arm);
     }
 
     switch (arm->state) {
