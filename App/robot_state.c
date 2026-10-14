@@ -134,7 +134,7 @@ static uint8_t Tid_Index(uint8_t tid) {
 }
 
 /* 本模块其余状态**全在 Arm 里**(App/inc/arm.h)：总模式、握手、控制帧、收包环、观测量…
- * 必须按台分开(每臂各自握手、各自 500 ms 看门狗、各自状态迁移)。所以本文件里每一处
+ * 必须按台分开(每臂各自握手、各自 3 s 看门狗、各自状态迁移)。所以本文件里每一处
  * 状态访问都长成 `arm->xxx`，**每个函数都得有那个 arm**。 */
 
 /* ==================== 协议常量要和 App 对上 ====================
@@ -789,8 +789,8 @@ static void Fsm_Step(Arm* arm) {
      * 不算数。
      *
      * 副作用要知道：上位机只握手、然后干等不发包时，会看到
-     *   wait_init(stop) ──500ms──→ comm_lost(damping) ──它发一帧──→ offline_wait
-     *   ──电机在线──→ wait_init(stop) ──500ms──→ ...
+     *   wait_init(stop) ──3s──→ comm_lost(damping) ──它发一帧──→ offline_wait
+     *   ──电机在线──→ wait_init(stop) ──3s──→ ...
      * 也就是 arm_stop 和 arm_damping 之间来回切。两个都是"安全态"（一个是失能、
      * 一个是使能但不给位置力），功能上没问题，但会让电机使能位反复动。
      * 要让上位机保持 wait_init 不动，它得**定期发点东西**（比如周期性重发版本包，

@@ -323,7 +323,7 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
      *
      * 没有帧（或帧已失效）就什么都不做 —— 此时 joint_src 保持上一拍的值。这是有意的：
      * 上位机**周期性**下发，两帧之间本来就该保持；真正"上位机死了"由 robot_state 的
-     * 500 ms 超时判，判到就把模式切成 arm_damping，值就无所谓了。
+     * 3 s 超时判，判到就把模式切成 arm_damping，值就无所谓了。
      *
      * 位置走 joint_src，后面 Ctrl_Src_Calc → 软限位 → TD 照常过一遍（和遥控器点动
      * 走的是同一条路）；速度前馈不走这里，在 Arm_Ref_Set() 里单独覆盖。 */
