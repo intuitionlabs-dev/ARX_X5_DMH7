@@ -30,6 +30,7 @@ _Static_assert(sizeof(FramePktArmCtrlPosVel) == 52U, "控制包(角度+角速度
 /* 反馈帧是 250 Hz 常流里最长的一包，63 是**协议承诺给上位机**的数（两端按这个预留
  * 缓冲），改结构体就得同步改协议文档，不能让它在编译期悄悄漂移。 */
 _Static_assert(sizeof(FramePktArmFeedback) == 63U, "机械臂反馈帧不是 63 字节");
+_Static_assert(sizeof(FramePktLinkStatus) == 88U, "链路状态包不是 88 字节");
 /* 空包必须是 0 字节：线上 datalen 就靠它。sizeof 万一变成 1，空包会多带一个字节。 */
 _Static_assert(sizeof(FramePktEmpty) == 0U, "空包结构体不是 0 字节");
 
@@ -61,6 +62,7 @@ _Static_assert(_Alignof(FramePktArmReset) == 1U, "一键复位包不是 1 字节
 /* 反馈帧里有 4 个 uint8_t 开头，4 字节之后紧跟 float[6] —— 要是没压成 1 对齐，
  * 编译器会在那 4 个字节后面插 0 字节填充看着没事，但整个包会变成 64 字节。 */
 _Static_assert(_Alignof(FramePktArmFeedback) == 1U, "机械臂反馈帧不是 1 字节对齐");
+_Static_assert(_Alignof(FramePktLinkStatus) == 1U, "链路状态包不是 1 字节对齐");
 _Static_assert(_Alignof(FramePayload) == 1U, "payload union 不是 1 字节对齐");
 _Static_assert(_Alignof(FrameBuf) == 1U, "帧 union 不是 1 字节对齐");
 
@@ -130,8 +132,11 @@ void FrameParserReset(FrameParser *p) {
   p->arm_id = 0U;
 }
 
-FrameStatus FrameParserFeed(FrameParser *p, uint8_t byte) {
+static FrameStatus FrameParserStep(FrameParser *p, uint8_t byte) {
   FrameStatus result = FRAME_INCOMPLETE;
+
+  /* 计在循环**外面**：crc 出错时要靠 continue 把同一个字节重喂一遍，写在里面会重复计数。 */
+  p->bytes_in++;
 
   for (;;) {
     switch (p->state) {
@@ -203,6 +208,7 @@ FrameStatus FrameParserFeed(FrameParser *p, uint8_t byte) {
        */
       p->state = FRAME_ST_WAIT_SYNC0;
       p->len = 0U;
+      p->bytes_ok += (uint32_t)FRAME_LEN(p->data_len);
       return FRAME_OK;
 
     default:
@@ -210,4 +216,24 @@ FrameStatus FrameParserFeed(FrameParser *p, uint8_t byte) {
       return result;
     }
   }
+}
+
+FrameStatus FrameParserFeed(FrameParser *p, uint8_t byte) {
+  const FrameStatus st = FrameParserStep(p, byte);
+
+  /*
+   * 每喂完一个字节都刷新一次这个派生量。
+   *
+   * 它等于 `bytes_in - bytes_ok`，**单独存一份是有原因的**：读它的上层跑在任务里、写它的
+   * 是接收中断，两个累计量分开读会读到"中间态" —— 中断正好在两次读之间解完一帧，
+   * 上层的 bytes_ok 差值就会比 bytes_in 差值大，相减**下溢**成一个四十多亿的假数
+   * （一个窗口看着像收到了 4 GB 垃圾）。派生量在中断里跟着两个源一起更新，上层只读它，
+   * 就没有"两次读之间"这回事了。
+   *
+   * 它是**累计值**（和 bytes_in / bytes_ok 一样，不随 FrameParserReset 清零），
+   * 上层按窗口取差即可。unsigned 的模减让回绕是自动对的。
+   */
+  p->bytes_drop = p->bytes_in - p->bytes_ok;
+
+  return st;
 }

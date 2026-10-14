@@ -113,6 +113,25 @@ volatile uint32_t robot_crc8_err_cnt;   /* crc8 错 */
 volatile uint32_t robot_crc16_err_cnt;  /* crc16 错 */
 volatile uint32_t robot_tx_fail_cnt;    /* 发帧失败(BSP 忙 / 编码失败) */
 volatile uint32_t robot_rx_bad_arm_cnt; /* arm_id >= ARM_NUM 的帧数(正常恒 0) */
+volatile uint32_t robot_gated_cnt;      /* 被握手闸门挡下的帧数 */
+volatile uint32_t robot_tid_cnt[FRAME_TID_SLOT_NUM]; /* 按 type_id 分类，下标见 Tid_Index */
+
+/* 状态帧 rx_by_tid[] 的分类顺序（唯一出处是 type_id.h 的 FRAME_TID_DOWN_LIST）。 */
+static const uint8_t s_tid_order[FRAME_TID_DOWN_NUM] = { FRAME_TID_DOWN_LIST };
+
+_Static_assert(sizeof(s_tid_order) == FRAME_TID_DOWN_NUM, "分类表长度对不上");
+_Static_assert(FRAME_TID_SLOT_NUM == FRAME_TID_DOWN_NUM + 1U, "槽位数该是分类数 + 1(其他)");
+
+/* 把一个 type_id 映射到机器人 TID 统计数组的下标；表外的码一律进最后一格「其他」。
+ * 表只有 11 项，线性查比建表更省事，也不占内存。 */
+static uint8_t Tid_Index(uint8_t tid) {
+    uint8_t i;
+
+    for (i = 0U; i < (uint8_t)FRAME_TID_DOWN_NUM; i++) {
+        if (s_tid_order[i] == tid) return i;
+    }
+    return (uint8_t)FRAME_TID_DOWN_NUM;
+}
 
 /* 本模块其余状态**全在 Arm 里**(App/inc/arm.h)：总模式、握手、控制帧、收包环、观测量…
  * 必须按台分开(每臂各自握手、各自 500 ms 看门狗、各自状态迁移)。所以本文件里每一处
@@ -211,6 +230,9 @@ static void Robot_State_OnRx(uint8_t id, const uint8_t* data, uint16_t len) {
 
         if (st == FRAME_OK) {
             robot_rx_frame_cnt++;
+            /* 分类计数放在 arm_id 检查**之前**：统计口径是"解出来了多少"，
+             * 越界 arm_id 的帧也算收进来了（它另有一格自己的计数）。 */
+            robot_tid_cnt[Tid_Index(s_parser.type_id)]++;
 
             /* 帧头里的那个字节决定这一帧进哪台臂的环。
              * **越界的当场丢掉** —— g_arm[] 只有 ARM_NUM 个元素，拿越界 id 去索引就是在
@@ -522,7 +544,10 @@ static void HandleCtrl(Arm* arm, const Robot_rx_payload* pl, uint8_t len, uint8_
 /* 一帧的分派口。**两道闸门**都在这儿，别的函数不管。 */
 static void HandleFrame(Arm* arm, uint8_t type_id, const Robot_rx_payload* pl, uint8_t len) {
     /* 闸门 ①：握手通过之前只认版本包 —— 其他一律丢弃，也不回复 */
-    if (!arm->handshake_ok && type_id != FRAME_TYPE_ID_VERSION) return;
+    if (!arm->handshake_ok && type_id != FRAME_TYPE_ID_VERSION) {
+        robot_gated_cnt++; /* 上位机"发了但没回应"的那部分，从链路状态帧里能看见 */
+        return;
+    }
 
     /* 能走到这里的都算"上位机还在说话"（CRC 过了；码认不认识不论 —— 认识新包的旧版本
      * 固件不该被误判成掉线）。 */
@@ -905,6 +930,111 @@ static void Handshake_Step(Arm* arm) {
     SendVersionRaw(arm);
 }
 
+/* ==================== 链路状态帧 ====================
+ *
+ * 10 Hz 把"这段时间里我收到了你多少帧"报给上位机：总数、按 type_id 分类、各类链路错误。
+ * 全是**增量**，窗口 = 上一帧链路状态帧到这一帧之间。
+ *
+ * 链路级只有一份（统计量本身就是全链路一份），所以**不按台发**：这一帧从头到尾只发一帧，
+ * 用哪台的 arm_id 取决于谁先握上手。这跟反馈帧那种"两台各发各的"不是一回事 —— 上位机
+ * 那边也是按链路级接的（见 sdk/link.py）。
+ *
+ * 只在握手之后发：握手之前上位机还没证明自己是同一个协议，报统计没有意义；而且那时
+ * 上行已经有 10 Hz 的版本帧了。 */
+
+/* 上一帧发出那一刻的累计量快照（存进 st 的每个字段都是"现在 − 快照"）。
+ * 和 s_parser 一样是链路级只有一份的文件级静态。 */
+static uint32_t s_ls_rx_total;
+static uint32_t s_ls_crc8;
+static uint32_t s_ls_crc16;
+static uint32_t s_ls_bad_arm;
+static uint32_t s_ls_over;
+static uint32_t s_ls_ring_drop;
+static uint32_t s_ls_gated;
+static uint32_t s_ls_tx_fail;
+static uint32_t s_ls_bytes_drop; /* s_parser.bytes_drop 的快照 */
+static uint32_t s_ls_tid[FRAME_TID_SLOT_NUM];
+static uint32_t s_ls_last_ms;
+static uint8_t s_ls_started; /* 0 = 还没起窗口（没握手过，或刚握上手） */
+
+/* 把当前累计量全拍下来。起窗口和每发一帧之后都调，两处必须完全对称 ——
+ * 少存一个字段，那个字段报出来的就是"开机至今"而不是一个窗口。 */
+static void Link_Status_Take_Snapshot(void) {
+    uint8_t i;
+
+    s_ls_rx_total = robot_rx_frame_cnt;
+    s_ls_crc8 = robot_crc8_err_cnt;
+    s_ls_crc16 = robot_crc16_err_cnt;
+    s_ls_bad_arm = robot_rx_bad_arm_cnt;
+    s_ls_over = robot_rx_over_cnt;
+    s_ls_ring_drop = robot_rx_drop_cnt;
+    s_ls_gated = robot_gated_cnt;
+    s_ls_tx_fail = robot_tx_fail_cnt;
+    s_ls_bytes_drop = s_parser.bytes_drop;
+
+    for (i = 0U; i < (uint8_t)FRAME_TID_SLOT_NUM; i++) {
+        s_ls_tid[i] = robot_tid_cnt[i];
+    }
+}
+
+static void Link_Status_Step(void) {
+    /* 任一臂握手就发。两台都握了固定走 0 号；只有一个臂上了电（另一台的 gimbal 没建起来、
+     * 所以根本没人喂它握手）也不会因此拿不到统计。 */
+    Arm* arm = NULL;
+    uint8_t i;
+
+    for (i = 0U; i < (uint8_t)ARM_NUM; i++) {
+        if (g_arm[i].handshake_ok) {
+            arm = &g_arm[i];
+            break;
+        }
+    }
+    if (arm == NULL) {
+        s_ls_started = 0U; /* 没握手：窗口往后重起，握手那一刻的累计量不会被算进第一帧 */
+        return;
+    }
+
+    const uint32_t now = HAL_GetTick();
+
+    if (s_ls_started == 0U) {
+        /* 起窗口：把当前累计量全拍下来，**这一拍不发**。于是第一帧报的是一个完整的
+         * 100 ms 窗口，不会出现 dt_ms = 开机至今、或者把握手前那堆数算进来的假值。 */
+        Link_Status_Take_Snapshot();
+        s_ls_last_ms = now;
+        s_ls_started = 1U;
+        return;
+    }
+
+    /* `= now` 相位，同 Handshake_Step：累加会在任务被饿住之后连发一串补帧，
+     * 而补出来的统计窗口是空的，没有意义。 */
+    if ((now - s_ls_last_ms) < ROBOT_LINK_STATUS_PERIOD_MS) return;
+
+    FramePktLinkStatus st;
+    const uint8_t n = (uint8_t)FRAME_TID_SLOT_NUM;
+
+    st.rx_total = robot_rx_frame_cnt - s_ls_rx_total;
+    st.crc8_err = robot_crc8_err_cnt - s_ls_crc8;
+    st.crc16_err = robot_crc16_err_cnt - s_ls_crc16;
+    st.bad_arm = robot_rx_bad_arm_cnt - s_ls_bad_arm;
+    st.over_len = robot_rx_over_cnt - s_ls_over;
+    st.ring_drop = robot_rx_drop_cnt - s_ls_ring_drop;
+    st.gated = robot_gated_cnt - s_ls_gated;
+    st.tx_fail = robot_tx_fail_cnt - s_ls_tx_fail;
+    /* 没能组成有效帧的字节。解析器只给一个数（它自己在中断里算好，见 frame.c），
+     * 这里按窗口取差就是这一段的。 */
+    st.drop_bytes = s_parser.bytes_drop - s_ls_bytes_drop;
+    st.dt_ms = now - s_ls_last_ms;
+
+    for (i = 0U; i < n; i++) {
+        st.rx_by_tid[i] = robot_tid_cnt[i] - s_ls_tid[i];
+    }
+
+    Link_Status_Take_Snapshot();
+    s_ls_last_ms = now;
+
+    SendFrame(arm, FRAME_TYPE_ID_LINK_STATUS, (const uint8_t*)&st, (uint8_t)sizeof(st));
+}
+
 /* ==================== 入口 ==================== */
 
 void Robot_State_Init(void) {
@@ -949,6 +1079,21 @@ void Robot_State_Init(void) {
     s_tx_head = 0U;
     s_tx_tail = 0U;
 
+    /* 链路状态帧的窗口从零起：累计量本身是静态零初始化，快照也跟着清零，
+     * 这样两边的差从第一拍开始就是对的（不清的话快照是上一轮的值）。 */
+    memset(&s_ls_tid, 0, sizeof(s_ls_tid));
+    s_ls_rx_total = 0U;
+    s_ls_crc8 = 0U;
+    s_ls_crc16 = 0U;
+    s_ls_bad_arm = 0U;
+    s_ls_over = 0U;
+    s_ls_ring_drop = 0U;
+    s_ls_gated = 0U;
+    s_ls_tx_fail = 0U;
+    s_ls_bytes_drop = 0U;
+    s_ls_last_ms = HAL_GetTick();
+    s_ls_started = 0U;
+
     /* 必须在两个 BSP 的 Init 之后 —— 它们会清空自己的回调登记，注册早了会被抹掉。
      * **只登记 ROBOT_LINK 选中的那一条**：没选中的外设照样活着（USB 那边
      * MX_USB_DEVICE_Init() 是无条件调的），但没人注册 = 碰不到任何共享状态。 */
@@ -969,6 +1114,10 @@ void Robot_State_Loop(void) {
         Handshake_Step(arm);/* 发：没握手时那 10 Hz 版本包（只入队；握手后空转） */
         Feedback_Step(arm); /* 发：250 Hz 反馈帧（只入队） */
     }
+
+    /* 链路级的东西**不按台走**，所以在循环外面只调一次（放在排空之前，它就和这一拍的
+     * 反馈帧一起发出去）。 */
+    Link_Status_Step();     /* 发：10 Hz 链路状态帧（只入队） */
 
     /* 共享链路的出口：两台臂的帧在同一队里，**每拍只排空一次**（不在上面的循环里）。 */
     Link_DrainTx();

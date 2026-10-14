@@ -120,6 +120,7 @@ typedef union {
   FramePktArmCtrlPosVel arm_ctrl_pos_vel;
   FramePktArmReset arm_reset;
   FramePktArmFeedback arm_feedback;
+  FramePktLinkStatus link_status;
 } FramePayload;
 
 /* 整帧视图：头和尾留在结构体里，payload 夹在中间。
@@ -158,6 +159,16 @@ typedef struct {
   FrameTypeId type_id; /* 当前帧的包类型码，见 type_id.h */
   uint8_t arm_id;      /* 当前帧的 arm_id（原样，不校验范围 —— 那是上层的事） */
   FrameBuf buf;        /* 原始帧 + 解包视图，同一块内存 */
+
+  /* 字节计数：**只有这一层知道**"有多少字节白喂了"。三个都是累计值，不随
+   * FrameParserReset() 清零（复位是解帧状态的复位，不是统计的复位）。
+   * 没能组成任何有效帧的字节数 = bytes_in - bytes_ok —— 噪声、半截帧、被错位帧头吞掉的
+   * 整帧都算在里面。上面那段说明的"丢帧发现不了"由此有了个可观测的口子。
+   *
+   * 上层读 `bytes_drop`，**别自己拿前两个相减**（跨中断的两次读会下溢，见 frame.c）。 */
+  uint32_t bytes_in;   /* 喂进来的总字节数 */
+  uint32_t bytes_ok;   /* 成功解出的那些帧的线上字节数之和 */
+  uint32_t bytes_drop; /* = bytes_in - bytes_ok，每喂一个字节刷新一次 */
 } FrameParser;
 
 /**

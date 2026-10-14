@@ -59,6 +59,19 @@ typedef uint8_t FrameTypeId;
 #define FRAME_TYPE_ID_ARM_CTRL_POS_VEL 0x17U   /* 机械臂控制包(角度+角速度+夹爪) · 下发 */
 #define FRAME_TYPE_ID_ARM_RESET 0x18U          /* 一键复位命令包 · 下发 */
 #define FRAME_TYPE_ID_ARM_FEEDBACK 0x80U       /* 机械臂反馈帧 · 上报 */
+#define FRAME_TYPE_ID_LINK_STATUS 0x81U        /* 链路状态包 · 上报 */
+
+/* 链路状态包里 rx_by_tid[] 的分类顺序：**这一串就是下标表**，第 i 个码的数落在
+ * rx_by_tid[i]；表里没有的码（含板子自己发的 0x8x）一律落在最后一格「其他」。
+ * 两端都得按这个顺序解读，**改顺序 = 改协议**。槽位数 = 本表长度 + 1（那个「其他」）。 */
+#define FRAME_TID_DOWN_LIST                                                    \
+  FRAME_TYPE_ID_VERSION, FRAME_TYPE_ID_ARM_INIT, FRAME_TYPE_ID_MOTOR_SET_ZERO, \
+      FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK, FRAME_TYPE_ID_ARM_START,               \
+      FRAME_TYPE_ID_ARM_GRAVITY, FRAME_TYPE_ID_ARM_STOP, FRAME_TYPE_ID_ARM_DAMPING, \
+      FRAME_TYPE_ID_ARM_CTRL_POS, FRAME_TYPE_ID_ARM_CTRL_POS_VEL,              \
+      FRAME_TYPE_ID_ARM_RESET
+#define FRAME_TID_DOWN_NUM 11U
+#define FRAME_TID_SLOT_NUM 12U
 
 /* ==================== 各包的 payload ====================
  *
@@ -226,5 +239,38 @@ typedef struct {
   float gripper_angle;
   uint8_t motor_temp[FRAME_PKT_MOTOR_NUM];
 } FramePktArmFeedback;
+
+/* 「链路状态包」：板子 -> 上位机，**握手通过后固定 10 Hz 上报**（比 250 Hz 的反馈帧慢
+ * 两个数量级，只为报统计，不参与实时控制）。链路级只有一份，不按台发。
+ *
+ * 全部字段是**增量**：统计窗口 = "上一帧链路状态包发出"到"这一帧发出"之间。
+ * 所以丢帧只会让某个窗口的数字变小或为 0，不会让谁变负 —— 上位机按窗口累加即可。
+ *
+ *   rx_total          这段窗口里解出来的整帧数（**含**后面几项里被丢掉的，是"收到了多少"）
+ *   rx_by_tid[12]     按 type_id 分类，下标见上面的 FRAME_TID_DOWN_LIST，[11] 是「其他」
+ *   crc8_err          crc8 校验失败被丢的帧数
+ *   crc16_err         crc16 校验失败被丢的帧数
+ *   drop_bytes        喂进解析器但**没能组成任何有效帧**的字节数（噪声、半截帧）
+ *   bad_arm           arm_id >= ARM_NUM 被丢的帧数，正常恒 0
+ *   over_len          payload 超过收包环槽被丢的帧数，正常恒 0
+ *   ring_drop         收包环满被丢的帧数（处理不过来了）
+ *   gated             被握手闸门挡下的帧数（握手前发非 0x01 包都算在这里）
+ *   tx_fail           板子**发**帧失败次数（BSP 忙 / 编码失败 / 队列满）
+ *   dt_ms             距上一帧链路状态包的**实际**毫秒数（节拍漏拍时能看出来）
+ *
+ * 10 + 12 = 22 个 uint32_t = 88 字节，整帧 96。 */
+typedef struct {
+  uint32_t rx_total;
+  uint32_t rx_by_tid[FRAME_TID_SLOT_NUM];
+  uint32_t crc8_err;
+  uint32_t crc16_err;
+  uint32_t drop_bytes;
+  uint32_t bad_arm;
+  uint32_t over_len;
+  uint32_t ring_drop;
+  uint32_t gated;
+  uint32_t tx_fail;
+  uint32_t dt_ms;
+} FramePktLinkStatus;
 
 #pragma pack(pop)
