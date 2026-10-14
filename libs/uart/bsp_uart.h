@@ -14,10 +14,9 @@
  * HAL_UART_Transmit_DMA() / HAL_UARTEx_ReceiveToIdle_DMA()，谁就得记得给它挂
  * __attribute__((section(".RAM_D1")))。
  *
- * 忘了会怎样（2026-10-05 在回环测试上真踩过）：HAL 会正常返回 HAL_OK（它只负责把
+ * 忘了会怎样：HAL 会正常返回 HAL_OK（它只负责把
  * DMA 支起来），但流一使能，第一次访存就报传输错 → HAL_UART_ERROR_DMA(0x10)，
- * 收发全废，而**接线和 DMA 流号全是对的**。当时先怀疑了"两路 DMA 冲突"，换流号
- * 一点用没有。
+ * 收发全废，而**接线和 DMA 流号全是对的**。
  *
  * 这一层把缓冲收进来自己持有（见 .c 里的 BSP_UART_DMA_MEM），对外只给字节 ——
  * **调用方的数组在哪都无所谓**：栈上的、普通静态的、malloc 出来的都能直接传进来。

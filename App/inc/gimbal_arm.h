@@ -18,7 +18,7 @@
  *     型号/输出模式/开关在 gimbal_arm_def.h 的"重力补偿"那一段。
  *     所以 tau_comp[] 不再是恒 0，位置/速度/摩擦前馈照旧。
  *   - **打印**：本工程 printf 是坏的(__io_putchar 没定义)，PRINT_ANGLE 关掉了。
- *   - **j1~j3 的电机驱动**：从达妙换成 ENCOS(ENCOS V1.20EAP，就是 ARX X5 的
+ *   - **j1~j3 的电机驱动**：ENCOS(ENCOS V1.20EAP，就是 ARX X5 的
  *     MotorType4)。配置散在 gimbal_arm.c 的 Gimbal_Create() 里，参数来源见那里。
  *     注意 ENCOS 的 `enable` 只是标志位（驱动**没有** Enable 接口，见
  *     libs/encos_motor/ENCOS_motor.h），真正的启停帧由 ENCOSmotor_Send_Step()
@@ -32,7 +32,7 @@
  *   g_arm[ARM_B].gimbal = Gimbal_Create(ARM_B);   // USER CODE 2！它栈上要 ~4 KB
  *                               // (joint_controller_config[7])，而主栈
  *                               // _Min_Stack_Size 只有 2 KB。两台**顺序**建，峰值还是
- *                               // 4 KB（第一台的栈帧已经还了）。现在挂在 StartCmdTask
+ *                               // 4 KB（第一台的栈帧已经还了）。挂在 StartCmdTask
  *                               // 进循环之前。还要在 BSP_CAN_Init()/
  *                               // DMmotor_Driver_Init()/ENCOSmotor_Driver_Init() 之后。
  *   Cmd_Loop() 里逐台 Gimbal_Update(arm->gimbal);   // CmdTask 500 Hz / 2 ms
@@ -50,7 +50,7 @@
 #include "ENCOS_motor.h"
 #include "arm_zero.h" /* Arm_zero —— 设零状态机的全部跨拍状态(per 台) */
 
-/* 前三个关节是 ENCOS，后面 j4~j6 和夹爪还是达妙。
+/* 前三个关节是 ENCOS，后面 j4~j6 和夹爪是达妙。
  * 两个驱动的电机类型不一样，数组下标也就分开算。 */
 #define ARM_ENCOS_JOINT_NUM 3
 
@@ -76,7 +76,7 @@ typedef struct Gimbal_t {
     monitor_item* motor_monitor_list[ARM_MOTOR_NUM];
 
     /* 「首次上电自动初始化」跑过没有。
-     * **per 台**：原来是个函数内 static，两台臂共用的话后建的那台看到它已经是 1，
+     * **per 台**：两台臂共用的话后建的那台看到它已经是 1，
      * 永远不跑 Arm_Auto_Init()（motor_pos_init[]/motor_inited[] 就一直是 0）。 */
     uint8_t first_init_flag;
 

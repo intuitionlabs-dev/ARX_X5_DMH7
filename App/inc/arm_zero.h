@@ -38,7 +38,7 @@
  * 参与集：默认是**六个关节**。夹爪**不在默认集里** —— 它的零点是行程中点(∓142)，只能由
  * "推到限位→退回半个行程"那个找零流程给出，把当前开口设成零是错的；要动夹爪就显式写
  * participate_override 点名(一键夹爪找零就是这么用的，见 arm_auto.c)。
- * j1~j3(ENCOS) 由 arm_zero_encos_enable(2026-10-08 起为 1)控制：为 0 时它们只占位、
+ * j1~j3(ENCOS) 由 arm_zero_encos_enable 控制：为 0 时它们只占位、
  * 不参与失能也不发帧，结果记 ARM_ZERO_RES_SKIP。
  * 于是"默认触发"= j1~j6，两臂各 3 台 ENCOS + 3 台达妙。
  * 另外 Arm_zero::participate_override 能把一轮**缩到指定的几台**(一键夹爪找零就这么用)：
@@ -94,12 +94,11 @@ extern uint8_t arm_zero_encos_enable;
 
 /* ==================== 一轮设零的全部状态 ====================
  *
- * 原来这些是一组**文件级全局**(arm_zero_request / arm_zero_state / arm_zero_result[] / …)，
- * JLink 直接按符号读写。两台臂之后它们必须按台分开 —— 两台臂各有各的设零进度，共用一份的
- * 话 A 台设到一半、B 台一触发就把它的进度整个覆盖。所以整块收进这个结构体、挂在 `Gimbal`
- * 上(见 App/inc/gimbal_arm.h)，**一台臂一个**。
+ * 必须按台分开 —— 两台臂各有各的设零进度，共用一份的话 A 台设到一半、B 台一触发就把它的
+ * 进度整个覆盖。整块收在这个结构体里、挂在 `Gimbal` 上(见 App/inc/gimbal_arm.h)，
+ * **一台臂一个**。
  *
- * JLink 的读法跟着变了(原来那个符号没有了)：
+ * JLink 的读法：
  *     g_arm[0].gimbal->zero.state       // Arm_zero_state
  *     g_arm[0].gimbal->zero.result[6]   // 夹爪的结果码
  * 触发一轮：写 `g_arm[0].gimbal->zero.request = 1`。
@@ -139,12 +138,12 @@ typedef struct {
     /* 本轮的参与集，bit = Arm_Motor_Index，**在 start() 里按当时的 arm_zero_encos_enable
      * 锁定**。不能每次现问那个全局：判定成功/超时是在 finish() 里做的，若运行途中有人把
      * 开关翻回 0，现问就会把已经记成"超时"的 ENCOS 当成"本来就不参与"，于是本该报 TIMEOUT
-     * 的一轮被判成 DONE —— 实测就是这么撞出来的。 */
+     * 的一轮被判成 DONE。 */
     uint8_t participate_mask;
 
     /* 哪些 ENCOS 是在**没有 ACK** 的情况下判的(bit = 电机索引)。实测 0x7FF 的应答迟到量
-     * 0.4~5s 不等、反复触发还会更慢(见 arm_zero.c 实测记录第 5 条)，等到 1.5s 还不来就
-     * 退让到"只看设零后的新位置"(和达妙同一套判据)。这一位上的人 = 走了退让路径，
+     * 0.4~5s 不等、反复触发还会更慢，等到 1.5s 还不来就退让到"只看设零后的新位置"
+     * (和达妙同一套判据)。这一位上的人 = 走了退让路径，
      * 让"ACK 确认过的成功"和"只看位置的成功"在结果里分得开，不会混成一个 OK。 */
     uint8_t ack_missing_mask;
 } Arm_zero;

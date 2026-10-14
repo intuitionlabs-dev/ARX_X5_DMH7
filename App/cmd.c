@@ -12,12 +12,12 @@ void Cmd_Loop(void) {
      * 驱动本体在 libs/rc/ 里；rc 挂在 cmd 下(见 App/inc/cmd.h 的转发 include)，
      * 要读遥控器直接访问全局 rc 即可。
      * 注意现在只是"服务"它 —— 值还没人用：遥控器→关节角的映射(输入逻辑)按用户要求
-     * 先不做，见 App/gimbal_cmd.c 的 Remote_Mode_Update()。 */
+     * 先不做，见 App/gimbal_cmd.c 的 Run_Mode_Update()。 */
     Rc_Loop();
 
     /* 串口总模式状态机(App/robot_state.c)：收上位机的帧、跑状态迁移、发 250 Hz 反馈。
      * 放在 gimbal == NULL 判断**之前** —— 和 Rc_Loop() 一个道理：它是"输入服务"，
-     * 而后面 Gimbal_Cmd_Update() 每拍都要读它给的模式(Robot_State_Arm_Mode())，
+     * 而后面 Gimbal_Cmd_Update() 每拍都要读它给的模式(arm->arm_mode)，
      * 遥控器在线时读它给的 rc_online 判据。gimbal 没建起来(内存不够)时它也照跑：
      * 握手、状态机、反馈帧都不依赖电机，方便单独排查串口链路。 */
     Robot_State_Loop();

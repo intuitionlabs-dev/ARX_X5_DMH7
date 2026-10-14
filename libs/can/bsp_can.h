@@ -30,7 +30,7 @@ uint8_t BSP_CAN_TxGroupMatch(uint8_t tx_group);
  * (这条是原理上的必要性 —— **不是**在解释"某个 ENCOS 掩码 0x55 却只有 250 Hz 反馈"那个现象：
  * 那个已查明是电机侧应答率上不去 ~250 帧/s(问 500 答 250)，与门控相位无关。)
  *
- * 没调过这个函数时相位初值是 0(上电第一拍就是相位 0，和以前一致)；
+ * 没调过这个函数时相位初值是 0(上电第一拍就是相位 0)；
  * **非 MotorTask 的发送方(测试帧等)都用 CAN_TX_GROUP_ALL，不受相位影响**。 */
 void BSP_CAN_TxGroupLatch(void);
 

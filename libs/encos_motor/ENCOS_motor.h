@@ -7,11 +7,8 @@
 #include "encos_protocol.h"
 #include <stdint.h>
 
-/* 源工程的依赖，本工程这样补（不是搞 compat 头，是这两个根本不用引）：
- *   board_def.h —— 只为 DEVICE_CAN_CNT。那个宏在 libs/can/can_config.h 里就有，
- *                  而 bsp_can.h 已经 include 了 can_config.h，走上面那行就有了。
- *   bsp_time.h  —— 只为 BSP_sys_time_ms()，那函数体就一行 return HAL_GetTick()。
- *                  换成 HAL_GetTick()，见 ENCOS_motor.c 的 now_ms()。 */
+/* 依赖：DEVICE_CAN_CNT 在 libs/can/can_config.h（bsp_can.h 已 include 它）；
+ * 时间用 HAL_GetTick()，见 ENCOS_motor.c 的 now_ms()。 */
 
 /* ENCOS V1.20EAP driver.
  * Formerly published under MT4 names; API renamed to ENCOS_motor / ENCOSmotor_*.
@@ -26,16 +23,16 @@ typedef enum { encos_stop, encos_enable } ENCOS_enable;
 typedef enum { encos_output_normal, encos_output_reverse } ENCOS_output_mode;
 typedef enum { encos_soft_stop, encos_damping_stop } ENCOS_stop_mode;
 
-/* 2026-10-05：未使能态("停着")给电机发哪种帧 —— 实测结论是这一条决定 j3 认不认我们。
+/* 未使能态("停着")给电机发哪种帧 —— 实测结论是这一条决定 j3 认不认我们。
  *   1 = 发 8 字节零增益 mode-0 混控帧（厂商 SDK 空闲时的做法）；
- *   0 = 发 3 字节零电流 mode-3 停帧（原来的实现，`61 00 00`）。
- * 真机实测（2026-10-05 在 CAN1 上用一次性探针量的，探针已删）：
+ *   0 = 发 3 字节零电流 mode-3 停帧（`61 00 00`）。
+ * 真机实测：
  *   - j3(MT4) 只认 8 字节 mode-0 混控帧的**帧流**；3 字节停帧、2 字节查询帧它当废帧，
  *     一帧都不回。厂商 SDK 对 MT4 从头到尾也只发 8 字节帧，同一个道理。
  *   - 只发混控帧（没有短帧掺和）时，帧流够密它就按查询帧持续回型号 5 应答。
  * Kp/Kd 恒为 0：手册 §3.1 `T_ref = Kp·e_p + Kd·e_v + T_des` ⇒ 扭矩恒 0，不出力。
  * 注意手册同一段提醒"全零 **不等于** 驱动器失能"——这不是机械抱闸，只是不出力。
- * damping_stop 仍然走原来的 mode-3 阻尼刹车，不受本宏影响。 */
+ * damping_stop 走 mode-3 阻尼刹车，不受本宏影响。 */
 #define ENCOS_IDLE_USE_MIXED_FRAME 1
 
 typedef struct encos_motor_config_t {
@@ -106,8 +103,7 @@ uint8_t ENCOSmotor_Send_Step(uint8_t can_id);
 /* **使能没有接口给应用调**：应用只写 obj->enable = encos_enable / encos_stop。
  * 驱动在自己的发送拍上(ENCOSmotor_Send_Step 的 ⓪)抓 stop->enable 的边沿，清一次
  * 控制器状态，再按反馈是否新鲜决定这一拍发控制帧还是停止帧 —— 所以应用层不用、
- * 也拿不到 ENCOSmotor_Enable()，别自己判"反馈新鲜了没"再决定要不要使能。
- * (原 ENCOSmotor_Enable() 于 2026-10-05 合并进发送拍，不再对外。) */
+ * 也拿不到 ENCOSmotor_Enable()，别自己判"反馈新鲜了没"再决定要不要使能。 */
 /* Disable means software STOP, not physical power-stage disable. Sends stop frame now. */
 ENCOS_Result ENCOSmotor_Disable(ENCOS_motor *obj);
 /* Stop all motors on this CAN bus before zeroing. Bus TX pauses >500ms afterward. */

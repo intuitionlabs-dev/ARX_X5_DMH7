@@ -10,9 +10,9 @@
  *   → Custom_Update → 一键模式 → Plan_Running_Check → Ctrl_Src_Calc
  *   → Motor_Angle_Limit → Ctrl_Post_Process → Arm_Ref_Set → Rfid_Handle → Send_Data
  *
- * 斜的那些全删了 —— 它们分别是板间 socket/拓展板 uart、图传键鼠/自定义控制器、
- * RFID、正逆运动学(arm_kinematics_calc)、pub_sub/service，本工程一个都没有。
- * **一键模式搬回来了**，但只实现复位(Arm_Reset)，动作本体在 App/arm_auto.c，
+ * 板间 socket/拓展板 uart、图传键鼠/自定义控制器、RFID、正逆运动学
+ * (arm_kinematics_calc)、pub_sub/service 本工程一个都没有。
+ * **一键模式**只实现复位(Arm_Reset)，动作本体在 App/arm_auto.c，
  * 本层只留分派(Auto_Mode_Update)和规划状态检查(Plan_Running_Check)。
  * 剩下的这条管线是：
  *
@@ -31,8 +31,7 @@
  *   Cmd_Loop() 里 Gimbal_Cmd_Update(arm->gimbal_cmd) 再 Gimbal_Update(arm->gimbal);
  *   —— 顺序不能反，理由见 App/cmd.c。
  *
- * **命令层是 per 台的**(一台臂一个 Gimbal_cmd)：目标值、TD、一键模式进度全在对象里，
- * 原来那个文件级全局 `gimbal_cmd` 已经删掉。
+ * **命令层是 per 台的**(一台臂一个 Gimbal_cmd)：目标值、TD、一键模式进度全在对象里。
  */
 
 #include <stdint.h>
@@ -53,8 +52,8 @@ typedef enum {
 } Arm_ctrl_type;
 
 /* 机械臂控制数据源整合包(源工程 Arm_ctrl_data_src)。
- * 同样的理由，cartesian_src / custom_selfsaving_src 两项连字段一起删了 —— 留着字段
- * 会让人以为可以照着填。 */
+ * 同样的理由，cartesian_src / custom_selfsaving_src 两项不设字段 ——
+ * 留着字段会让人以为可以照着填。 */
 typedef struct {
     struct Joint_ctrl_data_src_t {
         /* 目标值 */
@@ -66,12 +65,10 @@ typedef struct {
 } Arm_ctrl_data_src;
 
 /* 「一键夹爪找零」的跨拍状态(Arm_Gripper_Zero 用，动作本体在 App/arm_auto.c)。
- * 原来在 arm_auto.c 里是一组**文件级 static**(gz_win_pos / gz_stall_angle / …)，理由写在
- * 那边"不想动 Gimbal_cmd 的偏移"；做了两台臂之后那个理由不成立了 —— 静态变量是所有臂
- * 共用一份，第二台一进这个动作就把第一台的进度覆盖掉(找零会拿错限位角去算退到哪儿)。
- * 所以搬进对象里，一次找零在 case 0 整块重置。
+ * 必须按台分开：静态变量是所有臂共用一份，第二台一进这个动作就把第一台的进度覆盖掉
+ * (找零会拿错限位角去算退到哪儿)。所以放对象里，一次找零在 case 0 整块重置。
  *
- * 字段名沿用原来的 gz_xxx，只是多了 `obj->gz.` 前缀；调试器里读
+ * 字段名沿用 gz_xxx，只是多了 `obj->gz.` 前缀；调试器里读
  * `g_arm[0].gimbal_cmd->gz.stall_angle`。 */
 typedef struct {
     float win_pos;      // 当前小窗开始时的反馈角，deg
@@ -124,10 +121,9 @@ typedef struct Gimbal_cmd_t {
 
     /* 反指针：这台命令层挂在**哪台臂**上。用途是**取模式源** —— `obj->arm->arm_mode`
      * 就是"这台臂现在该怎么出力"(总模式状态机给的)。之所以还要有这么一层，是因为
-     * 模式是 per 台的：原来那句 `Robot_State_Arm_Mode()` 是个全局函数，两台臂会读到同一个
-     * 值，第二台永远拿不到自己的模式。
+     * 模式是 per 台的：用全局函数的话，两台臂会读到同一个值，第二台永远拿不到自己的模式。
      * (`obj->gimbal == obj->arm->gimbal`，两者一回事；gimbal 那个指针是给正文里几十处
-     *  `obj->gimbal->arm_control_data` 用的，没改成 arm->gimbal 是不想动那么多行。) */
+     *  `obj->gimbal->arm_control_data` 用的。) */
     Arm* arm;
 } Gimbal_cmd;
 

@@ -53,39 +53,32 @@
  * 按路的数组下标是 BSP 端口号：**1 = USART2，2 = USART3，0 = USART1 一格没用**
  * (所以 byte_dir[0]/dir_ok[0]/ok_dir[0] 恒 0 是对的)。
  *
- * ---- 实测过的坑，先看这条再对着计数器猜 ----
+ * ---- 实测过的坑，先看这几条再对着计数器猜 ----
  *
- * 【已解决，2026-10-05】第一次跑时 ok 只有 ~70%，lost 一直涨，而且**丢的全是帧尾**:
- * 780 条丢帧里 542 条解析器停在 ST_CRC16(帧身全收完、只差最后一两个字节)，
- * 516 条"只差 1 个字节"。帧头几乎从不丢。crc16_err 恒为 0。
+ * 1) 丢帧尾：ok 只有 ~70%、lost 一直涨、**丢的全是帧尾**(解析器停在 ST_CRC16，
+ *    帧身全收完、只差最后一两个字节；帧头几乎从不丢)，crc16_err 恒为 0。
+ *    根因是**接收中断被挡住了**，不是接线、不是 RS485/DE、不是协议：
+ *    USART2/3 的 NVIC 优先级是 5(见 usart.c 的 HAL_NVIC_SetPriority)，正好等于
+ *    FreeRTOSConfig.h 的 configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY —— 也就是
+ *    任何一处 taskENTER_CRITICAL()(电机任务 500 Hz、CAN 发送那一摊)都能把它挡住。
+ *    而 921600 下**一个字节只有 1.086 µs**(480 MHz 下 521 个周期)。被挡超过一个
+ *    字节时间，下一个字节就把只有 1 字节深的 RDR 冲掉 —— CubeMX 还关了两路的 RX
+ *    FIFO(usart.c 的 HAL_UARTEx_DisableFifoMode)—— 于是置 ORE；而 ORE 在 HAL 里是
+ *    **阻塞型**错误，HAL_UART_IRQHandler() 会直接 UART_EndRxTransfer() 把接收停掉，
+ *    这一帧就从那个字节处截断。中断里重装也救不回来。
+ *    所以现象是"帧头好好的、尾巴没了"，而且帧越长越容易中(每字节一次风险)。
+ *    现在 USART2/3 走 DMA 收发，字节由 DMA 搬进内存、USART 中断只管 IDLE，晚几微秒
+ *    不丢数据 —— 提优先级没必要了(反而会去抢 CAN/定时器的中断)。
  *
- * 根因不是接线、不是 RS485/DE、不是协议:是**接收中断被挡住了**。
- * USART2/3 的 NVIC 优先级是 5(见 usart.c 的 HAL_NVIC_SetPriority)，正好等于
- * FreeRTOSConfig.h 的 configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY —— 也就是
- * 任何一处 taskENTER_CRITICAL()(电机任务 500 Hz、CAN 发送那一摊)都能把它挡住。
- * 而 921600 下**一个字节只有 1.086 µs**(480 MHz 下 521 个周期)。被挡超过一个
- * 字节时间，下一个字节就把只有 1 字节深的 RDR 冲掉 —— CubeMX 还关了两路的 RX
- * FIFO(usart.c 的 HAL_UARTEx_DisableFifoMode)—— 于是置 ORE；而 ORE 在 HAL 里是
- * **阻塞型**错误，HAL_UART_IRQHandler() 会直接 UART_EndRxTransfer() 把接收停掉，
- * 这一帧就从那个字节处截断。中断里重装也救不回来。
- * 所以现象是"帧头好好的、尾巴没了"，而且帧越长越容易中(每字节一次风险)。
+ *    **这条对全工程都成立**:libs/frame 接到别的串口上做真实收包时，只要那一路是
+ *    逐字节中断收、而且波特率高，一样会中。三条路:改 NVIC 优先级(提到
+ *    configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY 以上)、打开 RX FIFO、或者改 DMA。
+ *    别在协议层找原因 —— 协议层一点问题都没有。
  *
- * 当时先把这两路的中断优先级提到屏蔽线以上验证过 —— 1985 轮零丢帧、零 bad、零 ORE，
- * 根因确认。那个补丁**已经从 Init() 里拿掉了**:现在 CubeMX 把 USART2/3 改成 DMA 收发，
- * 字节是 DMA 搬进内存的，USART 中断只管 IDLE，晚几微秒不丢数据，提优先级没必要了
- * (反而会去抢 CAN/定时器的中断)。当前这一版就是 DMA 版。
- *
- * **这条对全工程都成立**:libs/frame 接到别的串口上做真实收包时，只要那一路是
- * 逐字节中断收、而且波特率高，一样会中。三条路:改 NVIC 优先级(提到
- * configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY 以上)、打开 RX FIFO、或者改 DMA。
- * 别在协议层找原因 —— 协议层一点问题都没有。
- *
- * 【已解决，2026-10-05】改成 DMA 之后第一次跑，全军覆没:tx_cnt=2 / tx_fail=1997 /
- * rx_cnt=0 / lost=1998，两路的 uart_lb_hal_err[] 都是 **0x10 = HAL_UART_ERROR_DMA**，
- * 而 byte_dir 两路各是 **293706 = 294(缓冲区长度) × 999**。当时第一反应是"DMA 冲突"，
- * 换过流号(USART3 从 DMA1_Stream3/4 挪到 DMA2_Stream0/1)—— **没用**。
- *
- * 根因是 **DTCM 陷阱，和 DMA 流号一点关系都没有**:
+ * 2) DMA 全军覆没：tx_cnt=2 / tx_fail=1997 / rx_cnt=0 / lost=1998，两路的
+ *    uart_lb_hal_err[] 都是 **0x10 = HAL_UART_ERROR_DMA**，byte_dir 两路各是
+ *    **293706 = 294(缓冲区长度) × 999**(假 RxEvent)。
+ *    根因是 **DTCM 陷阱，和 DMA 流号一点关系都没有**(换流号没用):
  * STM32H7 的 DMA1/DMA2 在 D2 域，是总线主设备，**访问不到 DTCM/ITCM**
  * (TCM 只挂在 Cortex-M7 核上，不在 AXI/AHB 总线矩阵上)。而 STM32H723xG_flash.ld 里
  * .data/.tdata/.tbss/.bss/栈/堆 **全部** `>DTCMRAM`(0x20000000)，RAM_D1(0x24000000)
@@ -95,52 +88,43 @@
  * 接收侧 DMA 写不进 DTCM，同样报 TE，HAL 的收尾路径会调一次 RxEvent 回调，于是
  * "收到 Size = 整个缓冲区长度"这种假事件每轮出现一次，把 byte_dir 刷成 294 × 轮数。
  *
- * 对策:在链接脚本里加一个 `.RAM_D1 (NOLOAD)` 段(>RAM_D1)，把两个 DMA 缓冲区用
- * `__attribute__((section(".RAM_D1")))` 挂进去。**任何走 DMA 的缓冲区都得这么放** ——
- * 这条对全工程成立(Core/Src/adc.c 的 hdma_adc1 也是 DMA1，哪天 ADC 真去 Start_DMA 了，
- * 它的缓冲区一样会中)。本工程没开 D-Cache，所以放 RAM_D1 不需要 cache 维护;哪天
- * main.c 里加了 SCB_EnableDCache()，这些缓冲区就得配 MPU 非缓存区或前后加 Clean/Invalidate。
+ *    对策：DMA 缓冲挂 `.RAM_D1`。这件事现在在 libs/uart 的 BSP 层:**段属性只写一遍**，
+ *    写在 bsp_uart.c 的收发缓冲上，上层(包括本文件)传进来的数组在哪都行 —— BSP 会拷进
+ *    自己那块 .RAM_D1 缓冲再收发，所以本文件里一个 `section` 属性都没有。代价要记住:
+ *    **BSP 只保证了"它收发用的缓冲"可 DMA**，调用方自己拿数组去调 HAL 的 DMA API 照样中招。
+ *    **任何走 DMA 的缓冲区都得这么放** —— 这条对全工程成立(Core/Src/adc.c 的 hdma_adc1
+ *    也是 DMA1，哪天 ADC 真去 Start_DMA 了，它的缓冲区一样会中)。本工程没开 D-Cache，
+ *    所以放 RAM_D1 不需要 cache 维护;哪天 main.c 里加了 SCB_EnableDCache()，这些缓冲区
+ *    就得配 MPU 非缓存区或前后加 Clean/Invalidate。
  *
- * 【收尾，2026-10-05】后来这件事整个挪进了 libs/uart 的 BSP 层:**段属性只写一遍**，
- * 写在 bsp_uart.c 的收发缓冲上，上层(包括本文件)传进来的数组在哪都行 —— BSP 会拷进
- * 自己那块 .RAM_D1 缓冲再收发。所以本文件里现在一个 `section` 属性都没有。代价要记住:
- * **BSP 只保证了"它收发用的缓冲"可 DMA**，调用方自己拿数组去调 HAL 的 DMA API 照样中招。
+ *    uart_lb_dma_mem_bad 是兜底:值来自 BSP_UART_LayoutOk() —— 链接脚本的 .RAM_D1 段要是被
+ *    CubeMX 重新生成时冲掉了，BSP 的缓冲会变孤儿段、静默回到 DTCM，这个变量就变 1 ——
+ *    免得再从头查一遍。
  *
- * uart_lb_dma_mem_bad 是兜底:值来自 BSP_UART_LayoutOk() —— 链接脚本的 .RAM_D1 段要是被
- * CubeMX 重新生成时冲掉了，BSP 的缓冲会变孤儿段、静默回到 DTCM，这个变量就变 1 ——
- * 免得再从头查一遍。
+ * 3) offdir_cnt 涨到 ≈ 轮数：每轮都有一路"非接收方"喂进解析器一整帧
+ *    (RxEventType=**TC**、Size=**整个缓冲区长度**、而 huart->RxState 已经是 READY、
+ *    CR3.DMAR=0、hdmarx->State 已经是 READY、NDTR 还停在 294 一个字节都没搬过)。
+ *    这是 HAL 在**刚被 AbortReceive 中止掉的流**上报的一次**假 RxEvent**，缓冲区里还留着
+ *    它上一轮收到的那帧，所以解析器拿这些残渣又解出一整帧 —— 无 CRC 错、无丢帧，只是把
+ *    byte_dir / rx_dir / offdir_cnt 全刷了一遍。
+ *    现在 BSP 是**常驻武装 + 收完就重装**、收发之间从不 abort，也就没有"刚被中止的流"
+ *    可以报残影，这个坑从根上没有了。所以回调里那个闸门 s_rx_idx 语义变干净了:
+ *    它只挡**发送方那一路自己听到的字节**(那一路的收发器 RE̅ 跟不跟 DE 走，取决于板子),
+ *    这些字节 uart_lb_offdir_cnt 按**字节**累计。
+ *    它 ≈ 轮数 × 帧长才是正常的;要盯的还是它涨而 ok_cnt 不涨。
  *
- * 【已解决，2026-10-05】上面那条修完，TX 通了(ok_cnt 稳定涨、bad/lost/hal_err 全 0)，
- * 但 offdir_cnt 也跟着涨到 ≈ 轮数:每轮都有一路"非接收方"喂进解析器一整帧。
+ *    **回调用 s_rx_idx 判，别用 s_rx_armed**：armed 标志在中止之后才轮到清，压在那个
+ *    窗口里的事件拦不住;而 RunOneRound() 里 s_rx_idx 在 Arm() 之前就翻好了，与标志位
+ *    时序无关。
  *
- * 现场(把那一刻的状态全存下来看的):RxEventType=**TC**、Size=**整个缓冲区长度**、
- * 而 huart->RxState 已经是 READY、CR3.DMAR=0、hdmarx->State 已经是 READY、
- * NDTR 还停在 294(一个字节都没搬过);进来的那一路是**上一轮的接收方**，
- * 此刻它刚在 Arm() 里被 HAL_UART_AbortReceive() 中止掉。
- * 也就是说:这是 HAL 在"刚被 abort 掉的流"上报的一次**假 RxEvent**，
- * 而缓冲区里还留着它上一轮收到的那帧，所以解析器能拿这些残渣又解出一整帧 ——
- * 无 CRC 错、无丢帧，只是把 byte_dir / rx_dir / offdir_cnt 全刷了一遍。
- *
- * 根因在我们的**闸门选错了**:回调里是用 s_rx_armed[] 判的，而那一刻这个标志还是 1
- * (中止之后才轮到清它)，所以拦不住。判据换成 s_rx_idx(本轮指定谁收)就与标志位时序
- * 无关了 —— RunOneRound() 里 s_rx_idx 在 Arm() 之前就翻好了，压在这个窗口里的事件
- * 一律当"上一轮的残渣"丢掉。
- *
- * 【收尾，2026-10-05】搬到 BSP 之后这个坑**从根上没有了**:假事件本来就是"换方向时
- * abort 掉另一路"这套动作引出来的，而 BSP 是**常驻武装 + 收完就重装**，收发之间从不
- * abort，也就没有"刚被中止的流"可以报残影。所以回调里那个闸门 s_rx_idx 语义变干净了:
- * 它现在只挡**发送方那一路自己听到的字节**(它自己的收发器 RE̅ 跟不跟 DE 走，取决于板子),
- * 这些字节 uart_lb_offdir_cnt 按**字节**累计(不再是"事件次数")。
- * 它 ≈ 轮数 × 帧长才是正常的;要盯的还是它涨而 ok_cnt 不涨。
- *
- * 教训:用 `ReceiveToIdle_DMA` 收包时，"这是不是我要的那一路"必须由**调用方自己的
- * 轮次状态**决定，不能靠 HAL 的句柄状态 —— HAL 的 RxEvent 回调会带上一次已经结束的
- * 收发的残影。BSP 那套"常驻武装、永不 abort"的写法是绕开它的根本办法
- * (libs/frame 以后接真实收包，直接照 BSP 用就行)。
+ *    教训:用 `ReceiveToIdle_DMA` 收包时，"这是不是我要的那一路"必须由**调用方自己的
+ *    轮次状态**决定，不能靠 HAL 的句柄状态 —— HAL 的 RxEvent 回调会带上一次已经结束的
+ *    收发的残影。BSP 那套"常驻武装、永不 abort"的写法是绕开它的根本办法
+ *    (libs/frame 以后接真实收包，直接照 BSP 用就行)。
  *
  * 【还没验的】HAL_RS485Ex_Init(&huart2, ...) 最后两个参数是 DE 的**提前**和**延后**
- * 时间，CubeMX 生成的是 0 和 0，即 DE 在最后一个停止位结束的同一刻就放开。上面那次
- * 实测里帧头从不丢、hal_err 里也没有 FE(帧错)，所以 DE 时序**目前看是够的**;
+ * 时间，CubeMX 生成的是 0 和 0，即 DE 在最后一个停止位结束的同一刻就放开。实测里帧头
+ * 从不丢、hal_err 里也没有 FE(帧错)，所以 DE 时序**目前看是够的**;
  * 但真接上长线/带隔离的收发器如果出现"每帧就差最后那一两个字节 + crc16_err 涨"，
  * 还是要回到这里，去 CubeMX 的 RS485 配置里把 Deassertion Time 加到几个位时间。
  */

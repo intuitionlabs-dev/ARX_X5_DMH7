@@ -15,10 +15,9 @@
 #include "pub_sub.h"                          指令来源，现由命令层直接写 arm_control_data
 */
 
-/* 原来的 JOINT_ONLY_COMP 开关**已删除**：它只有"位置环 PID 全关、只留前馈"这一种
- * 用法，编译期二选一。现在这个选择变成了**运行期的 arm_only_gravity_comp 模式**
- * （见 Gimbal_Update() 里的 set_pid_* 分派），调试时直接切模式就行，不用重编。
- * 别把它加回来 —— 加回来会和 arm_damping 打架（那个也要关位置环，但 kd 留着）。 */
+/* 位置环关不关由**运行期的 arm_only_gravity_comp 模式**定（见 Gimbal_Update() 里的
+ * set_pid_* 分派），调试时直接切模式就行，不用重编。
+ * 别把它做成编译期开关 —— 那会和 arm_damping 打架（那个也要关位置环，但 kd 留着）。 */
 // 打印关节角
 // #define PRINT_ANGLE   /* 本工程 printf 是坏的(__io_putchar 没定义)，别开 */
 
@@ -81,10 +80,9 @@ static const ENCOS_Ranges ENCOS_JOINT_RANGES = {
     .current = {-30.0f, 30.0f},   // 见上面「必须和电机一致」那段，实测核对
 };
 
-/* 私有变量 —— 原来这里有两个文件级数组 motor_controller_list[]/motor_monitor_list[]，
- * 以及全局 `Gimbal* gimbal`。双臂之后它们全挪进了 Gimbal 结构体（见 gimbal_arm.h）：
- * 一份数组被两台臂共用的话，第二台 Create() 建完就把第一台的指针覆盖了，
- * CmdTask 里第一台就会拿着第二台的电机在跑。下面所有用到的地方都改成了显式成员访问。 */
+/* 私有变量 —— 电机对象和 motor_controller_list[]/motor_monitor_list[] 都挂在 Gimbal 上
+ * （见 gimbal_arm.h）：一份数组被两台臂共用的话，第二台 Create() 建完就把第一台的指针
+ * 覆盖了，CmdTask 里第一台就会拿着第二台的电机在跑。 */
 
 // DEBUG:
 float g_fdb_pos;
@@ -100,8 +98,7 @@ float g_ouput_comp;
  *
  * 为什么要判空：ENCOSmotor_Create() 的入参校验比 DMmotor_Create() 严得多(量程必须
  * 合法、tx_id 必须等于 rx_id、同一总线同一个 rx_id 不能建两次……)，配置写错就是
- * 返回 NULL，而原来达妙那种 `obj->jointN->config.arg = ...` 的写法会直接空指针。
- * 达妙那几行是历史遗留，这里新写的就不跟着犯了。 */
+ * 返回 NULL，而 `obj->jointN->config.arg = ...` 这种不判空的写法会直接空指针。 */
 static uint8_t encos_joint_init(Gimbal* obj, uint8_t joint) {
     ENCOS_motor* motor = joint == JOINT1 ? obj->joint1
         : joint == JOINT2                ? obj->joint2
@@ -278,9 +275,9 @@ Gimbal* Gimbal_Create(uint8_t can_index) {
             .control_mode = dm_mit,
             .max_position = 12.5f,  // 达妙 Type2 协议量程，见上面 JOINT4 处的说明
             .max_speed = 45.0f,     // 达妙 Type2 协议量程，见上面 JOINT4 处的说明
-            /* 原来写 5(源工程注释是 DM2325)：SDK 对 Type2 这一组只有一套力气量程
-             * (binary_constants.type2_effort = ±10)，J4/J5/J6/夹爪 都按 ±10 解码，
-             * 所以这里跟其余三台取齐。真要确认得去达妙上位机读这台的 T_MAX。 */
+            /* SDK 对 Type2 这一组只有一套力气量程(binary_constants.type2_effort = ±10)，
+             * J4/J5/J6/夹爪 都按 ±10 解码，所以这台跟其余三台取齐。真要确认得去达妙上位机
+             * 读这台的 T_MAX。 */
             .max_torque = 10.0f,
             .max_kp = 500,
             .max_kd = 5,
@@ -322,8 +319,7 @@ Gimbal* Gimbal_Create(uint8_t can_index) {
         obj->gripper->kd = obj->pid_mit_kpkd[GRIPPER][1];
         obj->motor_controller_list[GRIPPER] = obj->gripper->motor_controller;
         obj->motor_monitor_list[GRIPPER] = obj->gripper->monitor;
-        /* (原来这里手工写 frequency_cnt = 1 错开夹爪与 joint4/5；
-         *  现在由 config.tx_group 的相位负责。) */
+        /* 夹爪与 joint4/5 的相位错开由 config.tx_group 负责，别手工写频率计数。 */
     }
     // 初始重置所有电机monitor掉线!!!防止误判在线状态
     for (int i = 0; i < ARM_MOTOR_NUM; i++) {
@@ -389,8 +385,7 @@ void Gimbal_Update(Gimbal* obj) {
 
     /* 电机状态。
      * j1~j3 是 ENCOS：**只改 enable 标志位，不调 ENCOSmotor_Disable()**。
-     *   - 使能根本没有接口可调(原来的 ENCOSmotor_Enable() 已并进 Send_Step 的 ⓪，
-     *     由驱动自己抓 stop->enable 的边沿清环)；
+     *   - 使能没有单独接口（已并进 Send_Step 的 ⓪：由驱动自己抓 stop->enable 的边沿清环）；
      *   - Disable() 会 reset_controller() 并当场发一帧停止帧，和 MotorTask 里的
      *     ENCOSmotor_Send_Step() 抢 CAN 总线(驱动要求所有 API 由调用者串行化)。
      * 真正的启停帧由 Send_Step() 自己发：它看到 enable != encos_enable 或反馈不新鲜
@@ -528,7 +523,7 @@ static void Set_Motor_ref(Gimbal* obj) {
             // 没有位置环就没有要削的峰，留着只是白白发热）
             obj->damp_comp[i] = 0;
             if (gravity_on) {
-                /* 量纲照抄下面 run 那支的 525-527 行，只是去掉了 damp_comp 那一项。
+                /* 量纲和下面 run 那一支的 output_comp 相同，只是少了 damp_comp 那一项。
                  * tau_comp[] 只有 6 个关节，夹爪那格保持上面清出来的 0。 */
                 obj->motor_controller_list[i]->output_comp = MOTOR_DIR[i] * obj->tau_comp[i]
                     * JOINT_TORQUE_TRANS[i] * JOINT_TORQUE_TRANS_COEF[i];
@@ -610,10 +605,8 @@ static void Get_Motor_Fdb(Gimbal* obj) {
 
 /* 重力前馈：把当前关节角喂给 libs/gravity_compensation，结果写进 obj->tau_comp[]。
  *
- * 顶替原来那个 Joint_Feedforward_Calc() —— 那个走 arm_serial_link 的整机
- * Newton-Euler(DH + 连杆质量/惯量)，本工程没移植。这里只要静态重力项，正好是
- * X5 那个模块的全部内容(它不算法速度/加速度惯性、不算科里奥利)，而且零依赖、
- * 无堆、不调 libm，比搬一整套 RNE 划算。
+ * 只要**静态重力项** —— X5 那个模块的全部内容就是它(不算法速度/加速度惯性、不算
+ * 科里奥利)，而且零依赖、无堆、不调 libm。
  *
  * 关节顺序和 tau_comp[] 的下标一致(joint1..joint6 / JOINT1..JOINT6)，单位 N·m；
  * 外层 Set_Motor_ref() 乘 JOINT_TORQUE_TRANS * JOINT_TORQUE_TRANS_COEF 再加阻尼项。
@@ -621,21 +614,17 @@ static void Get_Motor_Fdb(Gimbal* obj) {
  * **输入用的是反馈角(arm_feedback_data.joint_angle)，不是指令角** —— 重力项是
  * "当前姿态下的力矩"，用指令角会在指令跳变时给出一记假的冲击力矩。
  *
- * 原来那个函数对 j6 做了 normalize(-pi, pi)，这里**不需要**：重力项只经过
- * sin/cos(周期 2pi)，而模块自己的角度范围是 ±128 rad(约 20 圈)，正常关节都在
- * 里面。包不包回绕，sin/cos 出来的值一样，算出来的 G(q) 也一样。
+ * **不需要**对 j6 做 normalize(-pi, pi)：重力项只经过 sin/cos(周期 2pi)，而模块自己的
+ * 角度范围是 ±128 rad(约 20 圈)，正常关节都在里面。包不包回绕，sin/cos 出来的值一样，
+ * 算出来的 G(q) 也一样。
  *
  * 注意调用时机：必须在 Get_Motor_Fdb() 之后(见 Gimbal_Update())，否则用的是上
  * 一拍的关节角。
  *
- * TODO(未验证，上电前必做)：arm_feedback_data.joint_angle 的**零点和符号**是不是
- * 和 URDF/SDK 坐标系一致，还没在真机上对过。厂商 SDK 是"把电机实际位置直接写进
- * KDL"，本工程的角度也是从电机 fdb_position 直接来的(pos_to_angle() 里
- * MOTOR_DIR = 1、MOTOR_REDUCTION = 1、pos_init = 0)，量程也取自同一个 SDK，所以
- * **大概率一致**；但 j2/j3 如果被本工程的设零流程(arm_zero)动过，零点就对不上了。
- * 对的办法：把臂摆到一个已知姿态(比如各关节都读着 0 附近)，比 x5_gravity_compute()
- * 的输出和厂商 SDK 重力模式下的 effort；或者松开电机用手扶着，开重力模式看它会不会
- * 自己往下掉。**方向反了的表现是重力补偿推着臂往下走，比不补偿还危险。** */
+ * **零点和符号已真机验证正确**：开重力模式、把关节阻尼调到 0，臂能被托住；撤掉补偿
+ * 就往下掉约 0.5°。j1≡0、j6≈0 也符合几何预期。
+ * **方向反了的表现是重力补偿推着臂往下走，比不补偿还危险** —— 动了这里的零点、符号或
+ * 量程之后必须重新验一遍。 */
 static void Joint_Gravity_Comp_Calc(Gimbal* obj) {
 #if JOINT_GRAVITY_COMP_ENABLE
     /* 下面的循环按 ARM_JOINT_NUM 走，数组按 X5_GRAVITY_DOF 开 —— 两个不等就是越界 */
@@ -920,19 +909,18 @@ MAYBE_UNUSED static void set_pid_zero(Gimbal* obj) {
     obj->gripper->motor_controller->pid_pos_data.config = obj->pid_cfgs[GRIPPER][0];
     obj->gripper->motor_controller->pid_speed_data.config = obj->pid_cfgs[GRIPPER][1];
     /* kp/kd 也要显式恢复 —— 达妙是 MIT 模式，力矩里有 kp/kd 这两项，光恢复 PID
-     * config 不够。原来这里没写，是因为 JOINT_ONLY_COMP 是个编译期开关、且进这个模式
-     * 之前 kp/kd 一定还是 Gimbal_Create() 设的正常值；现在模式能在运行期互相切，
-     * 从 arm_damping 切过来时夹爪 kp 已经被打成 0 了，不补回来夹爪会松掉。 */
+     * config 不够。模式能在运行期互相切，从 arm_damping 切过来时夹爪 kp 已经被打成 0
+     * 了，不补回来夹爪会松掉。 */
     obj->gripper->kp = obj->pid_mit_kpkd[GRIPPER][0];
     obj->gripper->kd = obj->pid_mit_kpkd[GRIPPER][1];
     // obj->gripper->motor_controller->pid_pos_data.config = zero_config;
     // obj->gripper->motor_controller->pid_speed_data.config = zero_config;
 }
 
-/* 【注意】Joint2_Speed_Fdb_Calc()/Joint3_Speed_Fdb_Calc() 是达妙时代留下的，里面把
- * void* 强转成 DM_motor*，而现在 j2/j3 已经是 ENCOS_motor 了 —— 这两个函数目前没有
- * 调用方(上面 config 里的 .speed_fdb_calc 是写死的 NULL，函数名被注释掉了)，所以
- * 先留着不删，但**要启用之前必须先改成 ENCOS_motor***，否则读到的是错位的字段。
+/* 【注意】Joint2_Speed_Fdb_Calc()/Joint3_Speed_Fdb_Calc() 里把 void* 强转成
+ * DM_motor*，而 j2/j3 现在是 ENCOS_motor —— 这两个函数目前没有调用方(上面 config 里
+ * 的 .speed_fdb_calc 是写死的 NULL，函数名被注释掉了)，所以先留着不删，但**要启用之前
+ * 必须先改成 ENCOS_motor***，否则读到的是错位的字段。
  * ENCOS 的 fdb_speed 也是 rad/s，单位换算(RAD2DEG)那部分可以照抄。 */
 
 float j2_a = 0.9;

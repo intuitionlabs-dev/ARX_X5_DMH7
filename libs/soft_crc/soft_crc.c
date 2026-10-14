@@ -3,7 +3,7 @@
 /*
  * 表在编译期算好，运行时不做任何初始化。
  *
- * 生成方式（就是原来 CRC16_Create / CRC8_Create 里那段循环的结果）：
+ * 生成方式：
  *   poly = bit_reverse(CRC16_CCITT) = 0x8408
  *   for i in 0..255:
  *       crc = 0; c = i

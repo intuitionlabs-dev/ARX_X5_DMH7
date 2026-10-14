@@ -4,9 +4,8 @@
 #include <stdint.h>
 #include <string.h>
 
-/* 源工程这里是 #include "bsp_log.h"（printf_log）。本工程 printf 是坏的
- * (__io_putchar 没定义)，而且全文件唯一一处 printf_log 上游已经注释掉了，
- * 所以这个 include 直接去掉。等接入本工程日志时再加回来。 */
+/* 本工程 printf 是坏的(__io_putchar 没定义)，日志 include 就不引了；
+ * 接入本工程日志时再加回来。 */
 
 /* Monitor_Loop() 的周期(ms)，见 Core/Src/freertos.c 的 StartMonitorTask()(tick += 10)。
  * monitor 的 count 单位是"Loop 被调了几次"不是毫秒，所以下面 Monitor_Register() 要除它。 */
@@ -188,7 +187,7 @@ ENCOS_motor *ENCOSmotor_Create(ENCOS_motor_config *config, control_encos_func fu
   memset(obj, 0, sizeof(*obj));
   obj->config = *config;
   /* 掩码 0 = 哪位都不属于 = 这一路永远发不出去，是最难查的那类故障，
-   * 所以按旧语义兜底成"每拍都发"(以前 fre_rel 默认 1 就是这个意思)。 */
+   * 所以兜底成"每拍都发"。 */
   if (!obj->config.tx_group)
     obj->config.tx_group = CAN_TX_GROUP_ALL;
   if (!obj->config.feedback_timeout_ms)
@@ -202,8 +201,7 @@ ENCOS_motor *ENCOSmotor_Create(ENCOS_motor_config *config, control_encos_func fu
     return NULL;
   }
   /* count 的单位是 Monitor_Loop() 的周期，**不是毫秒**（见 libs/monitor/monitor.h）。
-   * 源工程那边 Monitor_Loop() 跑 1 kHz，传毫秒数正好；本工程是 100 Hz(10 ms)，
-   * 照抄会让 100 ms 的超时变成 1 s。所以这里要除掉周期。
+   * 本工程跑 100 Hz(10 ms)，不除的话 100 ms 的超时会变成 1 s，所以这里要除掉周期。
    * 改 StartMonitorTask() 的频率，这个换算跟着改。 */
   obj->monitor = Monitor_Register(obj->config.lost_callback_,
                                   (int)(obj->config.feedback_timeout_ms /
@@ -228,9 +226,8 @@ ENCOS_motor *ENCOSmotor_Create(ENCOS_motor_config *config, control_encos_func fu
   BSP_CAN_AddFilter(config->bsp_can_index, config->can_rx_id);
   return obj;
 }
-/* 使能原来是这里的 ENCOSmotor_Enable()，2026-10-05 把它删了：应用层只写
- * obj->enable，跳变处理搬进 ENCOSmotor_Send_Step() 的 ⓪（理由见那里）。
- * 注意 reset_controller() 现在是 Send_Step 的 ⓪ 和 ENCOSmotor_Disable() 两处调。 */
+/* 应用层只写 obj->enable，跳变处理在 ENCOSmotor_Send_Step() 的 ⓪（理由见那里）。
+ * reset_controller() 由 Send_Step 的 ⓪ 和 ENCOSmotor_Disable() 两处调。 */
 ENCOS_Result ENCOSmotor_Disable(ENCOS_motor *obj) {
   if (!obj)
     return ENCOS_INVALID;
@@ -296,16 +293,15 @@ ENCOS_Result ENCOSmotor_Broadcast_Cmd(ENCOS_motor *obj, uint8_t sub_cmd) {
 }
 /* ==================== 发送：一拍一帧的步进 ====================
  *
- * 原来是 ENCOSmotor_Calc_Send() 一次把本总线上该发的电机全发完。两台臂之后改成
- * "**每次调用最多发一帧**"的步进形式，由 MotorTask 的轮转循环驱动(见
- * Core/Src/freertos.c 的 StartMotorTask)：**一轮里两条总线各发一帧，一轮只等一次**
- * 最小帧间隔(BSP_CAN_TxGapWait)。一次发完的写法会让两条总线各等一次，每路帧率砍半。
+ * **每次调用最多发一帧**，由 MotorTask 的轮转循环驱动(见 Core/Src/freertos.c 的
+ * StartMotorTask)：**一轮里两条总线各发一帧，一轮只等一次**最小帧间隔
+ * (BSP_CAN_TxGapWait)。一次把本总线该发的全发完会让两条总线各等一次，每路帧率砍半。
  *
  * 每个发送周期开始前先调 ENCOSmotor_Send_Begin() 清 sent_this_tick —— 它保证"一台
  * 电机一拍只发一次"，不然轮转循环会把第一台反复发。
  *
- * 循环体里那几条 `continue`(反馈非法/该发停止帧)都**发过帧**了，所以改成 `return 1`：
- * 一次调用最多发一帧这条线不能破。
+ * 循环体里那几条 `continue`(反馈非法/该发停止帧)都**发过帧**了，所以这几条路径都
+ * `return 1`：一次调用最多发一帧这条线不能破。
  */
 
 void ENCOSmotor_Send_Begin(void) {
@@ -344,7 +340,7 @@ uint8_t ENCOSmotor_Send_Step(uint8_t can_id) {
 
     /* ---- ⓪ 使能边沿在驱动内部落地 ------------------------------------------
      * 应用只写 obj->enable，没有 ENCOSmotor_Enable() 可调，所以 stop -> enable
-     * 这个跳变得由驱动自己抓：抓到就清一次控制器状态（原来在 Enable() 里做），
+     * 这个跳变得由驱动自己抓：抓到就清一次控制器状态，
      * 清完紧接着 ① 就算，第一帧不会带着上面 stop 期间攒下的积分发出去。
      * 用"锁存"而不是"和上一拍比"：下面 ② 可能因为反馈不新鲜把 enable 打回
      * stop，比较法会在下一拍把环再清一次。清环**不能**挪进 ① 每拍都跑，

@@ -186,21 +186,17 @@ typedef struct Bsp_fd_can_type_def_t {
 
 Bsp_fd_can_type_def can_devices[DEVICE_CAN_CNT];  //定义对应数量的can外设，即代码中定义can总线
 
-    /* ---- 最小帧间隔(2026-10-05 起，2026-10-08 改成"按轮等") ------------------
- * 目的(当年的)：j3(ENCOS) 在达妙 500 Hz 满流量下不发声，怀疑"我们一 tick 里连着丢好几帧"
- * （4 台达妙指令帧挨着发 → 它们几乎同时回反馈）把总线的空档挤没。这里把**我们自己**
- * 的发送节奏摊平成"每帧至少隔 N 微秒"，再在达妙正常跑的情况下看 j3 活不活。
- * 注意：它只改"我们发帧"的间隔，**改不了达妙的反馈节奏**（那是电机自己发的回应），
- * 所以这个实验能区分"我们的帧挤在一起的锅"和"达妙反馈量的锅"。
+    /* ---- 最小帧间隔(按轮等) --------------------------------------------------
+ * 把**我们自己**的发送节奏摊平成"每帧至少隔 N 微秒"：一 tick 里连着发好几帧
+ * （多台电机指令帧挨着发 → 几乎同时回反馈）会把总线的空档挤没。
+ * 注意：它只改"我们发帧"的间隔，**改不了电机的反馈节奏**（那是电机自己发的回应）。
  * 计时用 DWT->CYCCNT，开机后用 HAL_GetTick() 的 1ms 边沿自校准 cycles/us ——
  * 不猜主频：H7 的 CPUCLK 和 HCLK 不是一个数，SystemCoreClock 给的是 HCLK。
  *
- * **2026-10-08 双臂之后改成按轮等**(见 BSP_CAN_TxGapWait 的声明)：等的那一下从
- * BSP_CAN_Send() 里搬到了 MotorTask 的轮转循环末尾。原来是"每帧都等"，两条总线
- * 各发各的会让每路的帧率砍半(5000 -> 2500 帧/s)；现在**一轮里两路各发一帧、
- * 一轮只等这一次**，计时器被两条总线共用，代价和只有 CAN1 时逐位相同。
- * 实测(单臂、按轮等)：CAN1 上达妙反馈 500 Hz、j3 正常(见 [[encos-motor-port]])。
- * **实验完把 BSP_CAN_TX_MIN_GAP_US 改回 0u。** */
+ * 等的那一下由 MotorTask 在轮转循环末尾做(见 BSP_CAN_TxGapWait 的声明)，不在
+ * BSP_CAN_Send() 里：**一轮里两路各发一帧、一轮只等这一次**，计时器被两条总线
+ * 共用，避免逐帧等时每路的帧率砍半(5000 -> 2500 帧/s)。
+ * 实测：CAN1 上达妙反馈 500 Hz、j3 正常。 */
     #define BSP_CAN_TX_MIN_GAP_US 200u
 
     #if BSP_CAN_TX_MIN_GAP_US
@@ -222,7 +218,7 @@ static void tx_gap_calibrate(void) {
     tx_gap_last_cyc = DWT->CYCCNT;
 }
 
-/* 距上一帧不足 N us 就原地等 —— 调用者(MotorTask)会被拖住，这是实验的代价。
+/* 距上一帧不足 N us 就原地等 —— 调用者(MotorTask)会被拖住，这是代价。
  * 由 MotorTask 每"轮"调一次(BSP_CAN_TxGapWait)，不在 BSP_CAN_Send 里调。 */
 void BSP_CAN_TxGapWait(void) {
     if (!tx_gap_cycles_per_us) {
@@ -274,7 +270,7 @@ FPS_t j1_tx_fps;
 //  仅对HAL库的can发送函数进行了形式上的封装，实际参数依然依赖外部传参
 void BSP_CAN_Send(uint8_t fdcan_id, uint16_t identifier, uint8_t *data, basic_data_t len) {
     #if !_BSP_DEBUG_CAN_NOT_SEND
-    /* 这里**不再**等最小帧间隔：等待改由调用方按"轮"做，见 BSP_CAN_TxGapWait() */
+    /* 本函数不等最小帧间隔：等待由调用方按"轮"做，见 BSP_CAN_TxGapWait() */
     FDCAN_TxHeaderTypeDef txconf;
     switch (len) {
     case 0:

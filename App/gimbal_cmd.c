@@ -27,8 +27,8 @@
  *   reset_time_calc       ★ 同上(要腕点位置)，而且只服务一键复位
  *   reset_j3_min_calc     ★ 同上(要末端/腕点位置)，只服务一键复位
  *   模式分派              ★ 图传键鼠模式 / DT7 遥控器模式。本工程换成**遥控器优先、
- *                           串口兜底**：遥控器在线时 sw_a 启停 + 摇杆点动(与改之前逐位
- *                           一致)，离线时模式由串口总模式状态机(App/robot_state.c)决定。
+ *                           串口兜底**：遥控器在线时 sw_a 启停 + 摇杆点动，离线时模式
+ *                           由串口总模式状态机(App/robot_state.c)决定。
  *                           分支按 Arm_mode 分三支：stop / run / 被动(阻尼+仅重力)
  *   Custom_Update         ★ 自定义控制器(图传链路)
  *   一键模式(arm_auto)    保留(**动作本体在 App/arm_auto.c**，本工程只做复位)，
@@ -38,7 +38,7 @@
  *   Ctrl_Src_Calc         保留(只剩关节控制源那一支)
  *   Motor_Angle_Limit     保留(单关节软限位)
  *   Ctrl_Post_Process     保留(TD，外加"规划在跑就跟着对齐")
- *   Arm_Ref_Set           保留(现在是两支：规划在跑用规划量，否则用 TD)
+ *   Arm_Ref_Set           保留(两支：规划在跑用规划量，否则用 TD)
  *   Rfid_Handle           ★ RFID
  *   杂项(go_on/skip/温度报警) ★ 都靠上游那些输入；只留 last_auto_mode 的更新
  *   Send_Data             ★ 板间 socket + 拓展板 uart + pub_sub publish；本工程没有发送
@@ -59,9 +59,8 @@
  * 必须跟着改，否则跟踪微分器的可行域整个变样。 */
 #define GIMBAL_CMD_PERIOD_S 0.002f
 
-/* 命令层对象**不再是全局**：一台臂一个，挂在 App/inc/arm.h 的 `Arm` 上
- * (g_arm[N].gimbal_cmd)。原来这里是 `Gimbal_cmd* gimbal_cmd = NULL;` —— 两台臂共用一份
- * 的话，第二台建完就把第一台的 TD/目标值/一键模式进度整个覆盖掉。 */
+/* 命令层对象挂在 App/inc/arm.h 的 `Arm` 上(g_arm[N].gimbal_cmd)，一台臂一个 ——
+ * 共用一份的话，第二台建完就把第一台的 TD/目标值/一键模式进度整个覆盖掉。 */
 
 /* 遥控器是否在线 —— 判据就一句：100 ms 内收到过遥控帧(见 libs/rc 的 is_Offline)。
  * 抽成函数是因为它在本文件里要用两处(模式判定、run 档挑输入源)，两处必须同源；
@@ -132,14 +131,13 @@ void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
      *   遥控器在线  → 完全照旧：sw_a 定 arm_run/arm_stop。这是"覆盖所有串口指令"的
      *                 落点之一(另一个是下面 run 档挑输入源) —— 在线时遥控器眼里
      *                 就像串口不存在。注意在线时**永远到不了被动模式**：那两档遥控器
-     *                 上没法选，和改之前的行为逐位一致。
+     *                 上没法选。
      *   遥控器离线  → 交给串口总模式状态机(App/robot_state.c)决定，它给什么就是什么。
      *
      * 总模式状态机**照常在跑**(握手/反馈/状态迁移都不受遥控器影响)，只是它的输出在
      * 这里被盖掉。这样不需要在状态机里维护"冻结/解冻"的第二套状态。 */
-    /* 离线那一支取自**本台臂**的模式字段。原来是全局的 Robot_State_Arm_Mode() ——
-     * 两台臂读同一个值是错的：总模式状态机是按臂各跑一份的(每臂各自握手、各自看门狗)，
-     * A 台掉线进了 damping 不该把 B 台也带成 damping。 */
+    /* 离线那一支取自**本台臂**的模式字段：总模式状态机是按臂各跑一份的(每臂各自握手、
+     * 各自看门狗)，A 台掉线进了 damping 不该把 B 台也带成 damping。 */
     obj->mode =
         Rc_Online() ? ((rc.sw_a == 1) ? arm_run : arm_stop) : obj->arm->arm_mode;
     /* 控制类型：源工程有 关节 / 笛卡尔 / 自定义腕点 三种(靠遥控器或图传切)，本工程
@@ -228,7 +226,7 @@ static void Stop_Mode_Update(Gimbal_cmd* obj) {
 
     /* 控制源跟随。
      * 源工程还有 cartesian_src_follow() / custom_selfsaving_src_follow()(各自跟反馈的
-     * 末端位姿、腕点)，那两个数据源本工程没有，删了。 */
+     * 末端位姿、腕点)，那两个数据源本工程没有。 */
     joint_src_follow(obj);
 
     /* 关节角跟踪微分器跟随：直接对齐，不要"跟"出速度来 */
@@ -283,8 +281,7 @@ static void Passive_Mode_Update(Gimbal_cmd* obj) {
  *     (连读都不读)，这就是"遥控器覆盖所有串口指令"的落点。
  *   - **遥控器离线**：用串口控制帧(App/robot_state.c 收的 0x16/0x17)写目标。
  *
- * 文件名里那个 Remote_Mode_Update 改名成 Run_Mode_Update 就是因为这个：它不再只是
- * "遥控器模式"，而是"运行模式"这一个大类的输入选择。
+ * 它是"运行模式"这一个大类的输入选择，不只是"遥控器模式"。
  *
  * 源工程这份逻辑是围着 DT7 写的：右拨杆三档选"停 / 控底盘 / 控云台"，左拨杆三档再选
  * 具体控哪几个关节，另外还有拨轮(一键模式)、四向按键(夹爪开合 / j6 重初始化)、摇杆点动。
@@ -300,7 +297,7 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
     obj->gimbal->arm_control_data.mode = arm_run;
 
     if (Rc_Online()) {
-        /* ---- 遥控器在线：和改之前逐位一致 ---- */
+        /* ---- 遥控器在线 ---- */
         if (rc.sw_a == 0) {
             return;
         }
@@ -342,8 +339,8 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
 /* 一键模式分派(源工程 Gimbal_Cmd_Update() 里那个 switch (obj->auto_mode)，位置一样)。
  * 动作本体全在 App/arm_auto.c，这里只做"哪个模式调哪个函数"。
  *
- * 谁写 auto_mode：**遥控器写不了**(没有空闲按键)，现在是串口总模式状态机
- * (App/robot_state.c 的 robot_state_initing) 在写 —— 初始化流程就靠这两步：
+ * 谁写 auto_mode：**遥控器写不了**(没有空闲按键)，由串口总模式状态机
+ * (App/robot_state.c 的 robot_state_initing) 写 —— 初始化流程就靠这两步：
  * 先 arm_auto_reset、等它跑完回 none，再 arm_auto_gripper_zero、再等回 none。
  * 调试器也可以直接写(见 arm_auto.h 的说明)，但注意 **arm_stop 档位下
  * Stop_Mode_Update() 每拍都会把它清 0**。 */
@@ -413,7 +410,7 @@ static void Ctrl_Src_Calc(Gimbal_cmd* obj) {  // 无论模式都解算各数据�
     }
 
     /* 控制源跟随：源工程那三行 if 的意思是"当前没在用的控制源跟着反馈走，防止切过去时
-     * 跳变"。本工程只剩 arm_ctrl_joint 一个源，另外两个源已经删了，所以这里没有内容。 */
+     * 跳变"。本工程只剩 arm_ctrl_joint 一个源，另外两个源没有，所以这里没有内容。 */
 
     /* 停机保护。判据是 `!= arm_run` 而不是 `== arm_stop`：**两个被动模式也要走这里**。
      * 被动模式下位置环是关的（gimbal_arm.c 的 set_pid_damping/set_pid_zero），目标值

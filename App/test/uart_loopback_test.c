@@ -75,13 +75,12 @@ volatile uint32_t uart_lb_round;
 
 /* ==================== 内部状态 ====================
  *
- * 收发底座整体搬到了 libs/uart 的 BSP 层：DMA 缓冲、武装、重装、错误恢复、
- * .RAM_D1 段属性全在那边，这里只做"造帧 → 发 → 收字节 → 摆帧 → 比对"。
+ * 收发底座在 libs/uart 的 BSP 层：DMA 缓冲、武装、重装、错误恢复、.RAM_D1 段属性
+ * 全在那边，这里只做"造帧 → 发 → 收字节 → 摆帧 → 比对"。
  *
- * 和上一版(自己管 DMA)最大的区别：**两路的接收从此是常驻武装的** ——
- * 收完一帧，BSP 在自己的回调里立刻重装，不再需要上层挑着时机 Arm()/ServiceRearm()，
- * 也不再有"换方向就 abort 掉另一路"这套动作(那套动作正是上一版假 RxEvent 的来源，
- * 见头文件"实测过的坑")。
+ * **两路的接收是常驻武装的** —— 收完一帧，BSP 在自己的回调里立刻重装，上层不用挑时机
+ * Arm()/ServiceRearm()，也没有"换方向就 abort 掉另一路"这套动作(那套动作正是假 RxEvent
+ * 的来源，见头文件"实测过的坑")。
  *
  * 闸门因此也变简单了：既然两路都在收，就用 s_rx_idx 指定"这一轮谁说的话算数"，
  * 另一路收到的字节一律丢弃并计 uart_lb_offdir_cnt(见 UartLoopbackTest_OnRx)。
@@ -485,12 +484,10 @@ static void UartLoopbackTest_RunOneRound(void) {
 }
 
 void UartLoopbackTest_Init(void) {
-    /* 这里**不再**动 USART2/3 的中断优先级。
-     * 改 DMA 之前是有这一步的：那会儿是逐字节 HAL_UART_Receive_IT，优先级 5 正好等于
-     * FreeRTOSConfig.h 的 configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY，临界区一挡
-     * 就丢字节。现在字节由 DMA 搬，USART 中断只管 IDLE，晚几微秒不丢数据 ——
-     * 所以那个提优先级的补丁不需要了(它还会去抢 CAN/定时器的中断，能不加就不加)。
-     * 全工程其它用串口收包的地方如果不是 DMA，那条仍然成立。 */
+    /* 这里**不动** USART2/3 的中断优先级。
+     * 字节由 DMA 搬，USART 中断只管 IDLE，晚几微秒不丢数据 —— 提优先级没必要(它还会去
+     * 抢 CAN/定时器的中断)。全工程其它用串口收包的地方如果不是 DMA，那条仍然成立:
+     * 优先级 5 正好等于 configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY，临界区一挡就丢字节。 */
 
     /* 兜底：确认 BSP 的收发缓冲真的落在 DMA 够得着的 RAM 里(链接脚本的 .RAM_D1 段要是
      * 被 CubeMX 重新生成时冲掉了，那些缓冲会变孤儿段、静默回到 DTCM)。变 1 的时候

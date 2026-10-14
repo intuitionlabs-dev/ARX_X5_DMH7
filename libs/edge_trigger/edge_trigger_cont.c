@@ -1,25 +1,21 @@
 #include "edge_trigger_cont.h"
 #include <stdlib.h>
 #include <string.h>
-/* #include "debug/debug_log.h" */ /* 源工程这个头只为了 printf_log()，本工程没有这个
-                                      * 模块；而且本工程的 printf 本身是坏的
-                                      * (__io_putchar 没定义，调了会跳空指针，见
-                                      * libs/move_plan 里同样处理)。下面两处非法参数
-                                      * 改成静默 return NULL —— 参数都是编译期常量，
+/* #include "debug/debug_log.h" */ /* 源工程这个头只为了 printf_log()；本工程 printf 是
+                                      * 坏的(__io_putchar 没定义，调了会跳空指针，见
+                                      * libs/move_plan 里同样处理)，所以不引这个头。
+                                      * 下面非法参数静默 return NULL —— 参数都是编译期常量，
                                       * 真写错了在 Rc_Triggers_Create() 那边一眼能看出来
                                       * (6 个指针会全是 NULL)。 */
 
 Edge_trigger_continuous* Edge_Trigger_Continuous_Create(Edge_continuous_type type,
     int16_t threshold_low, int16_t threshold_high) {
-    /* 两个参数错原本是分开的两条(各自带一句 printf_log)，合并成一条是因为去掉日志后
-     * 两个分支体一样了，留着会被 clang-tidy 报 "Repeated branch body"。 */
     if ((type != cont_pos && type != cont_neg) || threshold_low >= threshold_high) {
         return NULL;
     }
 
-    /* 源工程是 RT_MALLOC(RT-Thread 的堆)，本工程没有 RTOS 内存池 —— 和
-     * libs/controller 的 create_controller() 一样直接 malloc。顺手把源工程漏掉的
-     * NULL 判断补上：不补的话下面那行 memset 会直接跳空指针。 */
+    /* 本工程没有 RTOS 内存池，直接 malloc(和 libs/controller 的 create_controller()
+     * 一样)。这里必须判 NULL，否则下面那行 memset 会直接跳空指针。 */
     Edge_trigger_continuous* obj =
         (Edge_trigger_continuous*)malloc(sizeof(Edge_trigger_continuous));
     if (obj == NULL) {

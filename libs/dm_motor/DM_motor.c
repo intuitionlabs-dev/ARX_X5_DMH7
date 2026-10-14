@@ -64,11 +64,11 @@ void DMmotor_RxCallBack(uint8_t can_id, uint32_t identifier, uint8_t *data, uint
      * 若哪天把某台的 MST_ID 改成非 0，把它的 can_rx_id 跟着改即可，这个函数不用动。
      *
      * **再加一条：反馈必须来自这台电机自己的那条总线**（`can_id ==
-     * obj->config.bsp_can_index`）。双臂之后两台臂的达妙完全同构 —— 都是 MST_ID=0、
+     * obj->config.bsp_can_index`）。两台臂的达妙完全同构 —— 都是 MST_ID=0、
      * CAN_ID 5/6/7/8 —— 不按总线过滤的话，CAN1 的电机 5 会把 CAN2 电机 5 的反馈吃掉
      * (在全局 dm_motor_list 里按"仲裁ID + 载荷低 4 位"匹配，两条总线上这两台电机条件
-     * 完全一样，先遍历到谁就是谁)。ENCOS 那边一直就是按总线过滤的(ENCOS_motor.c)，
-     * 照抄过来。回调本身是按总线分别注册的(DMmotor_Create)。 */
+     * 完全一样，先遍历到谁就是谁)。ENCOS 那边也按总线过滤(ENCOS_motor.c)。
+     * 回调本身是按总线分别注册的(DMmotor_Create)。 */
     if (!dm_motor_list || !data) return;
     for (size_t i = 0; i < dm_motor_list->cv_len; i++) {
         DM_motor *obj = *(DM_motor **)cvector_val_at(dm_motor_list, i);
@@ -142,12 +142,11 @@ DM_motor* DMmotor_Create(DM_motor_config* config , control_dm_func func)
     obj->control_calc = func;
     BSP_CAN_AddFilter(obj->config.bsp_can_index, obj->config.can_rx_id);
     /* count 的单位是 Monitor_Loop() 的周期(现 10 ms)：2 -> 连续 20 ms 收不到反馈
-     * 就算掉线(1 kHz 时代写的是 20，周期 10 ms 时正好是 2，时间没变)。
-     * Monitor_Loop() 的频率改了这里要跟着改。 */
+     * 就算掉线。Monitor_Loop() 的频率改了这里要跟着改。 */
     obj->monitor = Monitor_Register(obj->config.lost_callback_, 2, obj);
     obj->check_motor_inplace = DMMotor_Check_InPlace;
     /* 掩码 0 = 哪位都不属于 = 这一路永远发不出去，是最难查的那类故障，
-     * 所以按旧语义兜底成"每拍都发"(以前 fre_rel 默认 1 就是这个意思)。 */
+     * 所以兜底成"每拍都发"。 */
     if (obj->config.tx_group == 0) {
         obj->config.tx_group = CAN_TX_GROUP_ALL;
     }
@@ -158,10 +157,9 @@ DM_motor* DMmotor_Create(DM_motor_config* config , control_dm_func func)
 
 /* ==================== 发送：一拍一帧的步进 ====================
  *
- * 原来是 DMmotor_Calc_Send() 一次把本总线上该发的电机全发完(一圈最多 3 帧)。两台臂之后
- * 改成"**每次调用最多发一帧**"的步进形式，由 MotorTask 的轮转循环驱动(见
- * Core/Src/freertos.c 的 StartMotorTask)：**一轮里两条总线各发一帧，一轮只等一次**
- * 最小帧间隔(BSP_CAN_TxGapWait)。一次发完的写法会让两条总线各等一次，每路帧率砍半。
+ * **每次调用最多发一帧**，由 MotorTask 的轮转循环驱动(见 Core/Src/freertos.c 的
+ * StartMotorTask)：**一轮里两条总线各发一帧，一轮只等一次**最小帧间隔
+ * (BSP_CAN_TxGapWait)。一次把本总线该发的全发完会让两条总线各等一次，每路帧率砍半。
  *
  * 每个发送周期开始前先调 DMmotor_Send_Begin() 清 sent_this_tick —— 它保证"一台电机
  * 一拍只发一次"，不然轮转循环会把第一台反复发。
@@ -170,8 +168,7 @@ DM_motor* DMmotor_Create(DM_motor_config* config , control_dm_func func)
 #define DM_ENABLE_RESEND_MS 75u
 
 /* 补发使能帧的轮转状态，**每条总线各一套**：一份全局的话 enable_next 会指到另一条
- * 总线的电机上，那台被补发的就永远轮不到。每条总线上 4 台达妙 → 75ms × 4 = 300ms/台，
- * 和单总线时逐位一致。 */
+ * 总线的电机上，那台被补发的就永远轮不到。每条总线上 4 台达妙 → 75ms × 4 = 300ms/台。 */
 static uint32_t dm_enable_time[DEVICE_CAN_CNT];
 static uint8_t dm_enable_next[DEVICE_CAN_CNT];
 

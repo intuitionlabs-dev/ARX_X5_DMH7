@@ -6,8 +6,8 @@
  * frame 帧头的第 3 个字节（偏移 2）就是 type_id，标记这一包是干什么的；payload
  * 怎么解释完全由它决定：
  *
- *     AA 55 | type_id | datalen | crc8 | data[datalen] | crc16
- *      0 1  |    2    |    3    |  4   |  5..5+N-1     | 5+N 5+N+1
+ *     AA 55 | type_id | datalen | arm_id | crc8 | data[datalen] | crc16
+ *      0 1  |    2    |    3    |   4    |  5   |  6..6+N-1     | 6+N 6+N+1
  *
  * 加新包：下面码表加一个 #define，再照着现有结构体加一个 packed struct，最后在
  * frame.h 的 FramePayload union 里挂上成员（那一处漏了就不会被解包）。

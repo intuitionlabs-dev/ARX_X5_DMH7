@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later
  * Static specialization of KDL RNE; original algorithm (C) 2009 Ruben Smits
- * and Dominick Vanthienen. Modified 2026-10-03: X5-specific C99 implementation,
+ * and Dominick Vanthienen. Modified: X5-specific C99 implementation,
  * subtree first-moment reduction, axis rotations, internal bounded sin/cos.
  */
 #include "x5_gravity.h"
