@@ -49,10 +49,15 @@
  * 和 libs 的分工：本模块**不做**切帧/校验（那是 libs/frame 的活），也**不碰**
  * 收发的缓冲（那是 libs/uart 或 libs/usb 的活）。BSP 只把字节推过来，本模块自己喂解析器。
  *
- * 一个"帧"要过三道闸门才起作用，顺序不能乱：
- *   ① arm->locked（版本码不符过，永久静默）
- *   ② !arm->handshake_ok（没握手前只认版本包）
- *   ③ 各包自己的模式检查（比如 0x02 只在待初始化 / 正常运行-stop|damping 生效）
+ * 一个"帧"要过两道闸门才起作用，顺序不能乱：
+ *   ① !arm->handshake_ok（没握手前只认版本包）
+ *   ② 各包自己的模式检查（比如 0x02 只在待初始化 / 正常运行-stop|damping 生效）
+ *
+ * 版本码不符只丢掉那一帧：状态一动不动，上位机把版本串改对后再发一帧就能握手，
+ * 不用复位板子。
+ *
+ * 出帧侧只有一个例外：握手帧 0x01 在**没握手期间按 10 Hz 主动发**（Handshake_Step），
+ * 其余所有包都只走 SendFrame()，握手通过之前一个字节都不发。
  */
 
 /* ==================== 共享链路的状态 ====================
@@ -82,8 +87,8 @@ static FrameParser s_parser;
  *
  * 缓冲为什么能立刻重用：走 USB 时 BSP 是零拷贝的(把这块内存直接交给 USB 栈)，理论上
  * 要等传输完成才能改写。这里靠的是**间隔**而不是握手：一帧 71 字节的 HS 批量传输是
- * 微秒级的，而同一个槽要绕 8 个位置、按 250 Hz 算至少 32 ms 才会被重新写到 —— 比
- * 原来的单缓冲(只隔 4 ms)还宽裕。真出现"发出去了但上位机收不到"的怪事，先看这里。 */
+ * 微秒级的，而同一个槽要绕 8 个位置、按 250 Hz 算至少 32 ms 才会被重新写到 —— 单缓冲
+ * 只隔 4 ms 都够，这里更宽裕。真出现"发出去了但上位机收不到"的怪事，先看这里。 */
 #define ROBOT_TX_Q_NUM 8U
 
 typedef struct {
@@ -110,9 +115,8 @@ volatile uint32_t robot_tx_fail_cnt;    /* 发帧失败(BSP 忙 / 编码失败) 
 volatile uint32_t robot_rx_bad_arm_cnt; /* arm_id >= ARM_NUM 的帧数(正常恒 0) */
 
 /* 本模块其余状态**全在 Arm 里**(App/inc/arm.h)：总模式、握手、控制帧、收包环、观测量…
- * 原来它们是这里的一堆文件级 static，整个模块单例 —— 两台臂之后必须按台分开(每臂各自
- * 握手、各自 500 ms 看门狗、各自状态迁移)。所以本文件里每一处状态访问都长成
- * `arm->xxx`，**每个函数都得有那个 arm**。 */
+ * 必须按台分开(每臂各自握手、各自 500 ms 看门狗、各自状态迁移)。所以本文件里每一处
+ * 状态访问都长成 `arm->xxx`，**每个函数都得有那个 arm**。 */
 
 /* ==================== 协议常量要和 App 对上 ====================
  *
@@ -129,14 +133,12 @@ _Static_assert(ROBOT_RX_DATA_LEN >= sizeof(FramePktMotorSetZeroAck), "环槽放�
 
 /* ==================== 发送 ==================== */
 
-static void SendFrame(Arm* arm, uint8_t type_id, const uint8_t* data, uint8_t len) {
-    /* 握手之前、版本码不符之后**一个字节都不发**（含反馈帧）。这是入队前的那道闸门。 */
-    if (!arm->handshake_ok || arm->locked) return;
-
+/* 入队一帧，**不查任何闸门**。只给下面两个 Send* 用：上层别直接调它。 */
+static void TxEnqueue(Arm* arm, uint8_t type_id, const uint8_t* data, uint8_t len) {
     const uint8_t next = (uint8_t)((s_tx_head + 1U) % ROBOT_TX_Q_NUM);
     if (next == s_tx_tail) {
         /* 队列满：多半是上位机那边根本没在收（USB 还没枚举出来、或者口没打开），BSP 一直
-         * 报忙。**丢这一帧 + 计数**，不排队等 —— 下一帧 4 ms 后就到，积压起来只会越来越晚。 */
+         * 报忙。**丢这一帧 + 计数**，不排队等 —— 下一帧很快就到，积压起来只会越来越晚。 */
         robot_tx_fail_cnt++;
         return;
     }
@@ -150,6 +152,14 @@ static void SendFrame(Arm* arm, uint8_t type_id, const uint8_t* data, uint8_t le
     }
     s_tx_q[s_tx_head].len = (uint16_t)n;
     s_tx_head = next;
+}
+
+static void SendFrame(Arm* arm, uint8_t type_id, const uint8_t* data, uint8_t len) {
+    /* 握手之前**不发**（含反馈帧）。这是入队前的那道闸门 —— 唯一的例外是握手帧 0x01
+     * 自己（走 TxEnqueue，见 SendVersionRaw），闸门挡住它谁也握不了手。 */
+    if (!arm->handshake_ok) return;
+
+    TxEnqueue(arm, type_id, data, len);
 }
 
 /* 排空发送队列：**能发几帧发几帧**，碰到 BSP 报忙就当场打住，剩下的留到下一拍(2 ms 后)
@@ -168,10 +178,18 @@ static void Link_DrainTx(void) {
     }
 }
 
-static void SendVersion(Arm* arm) {
+/* 版本包。**唯一走 TxEnqueue() 的包**：它要在 handshake_ok==0 的时候发（Handshake_Step
+ * 那 10 Hz），被 SendFrame() 的闸门挡住就没意义了。 */
+static void SendVersionRaw(Arm* arm) {
     FramePktVersion pkt;
     pkt.code = FrameVersionCode();
-    SendFrame(arm, FRAME_TYPE_ID_VERSION, (const uint8_t*)&pkt, (uint8_t)sizeof(pkt));
+    TxEnqueue(arm, FRAME_TYPE_ID_VERSION, (const uint8_t*)&pkt, (uint8_t)sizeof(pkt));
+}
+
+/* 回过手机的那一帧：握手过了才发。 */
+static void SendVersion(Arm* arm) {
+    if (!arm->handshake_ok) return;
+    SendVersionRaw(arm);
 }
 
 /* ==================== 接收 ==================== */
@@ -331,18 +349,13 @@ static void HandleVersion(Arm* arm, const Robot_rx_payload* pl, uint8_t len) {
     if (len != (uint8_t)sizeof(FramePktVersion)) return; /* 长度不对：当噪声丢掉 */
 
     if (pl->version.code != FrameVersionCode()) {
-        /* 版本码不符 → **锁死**：此后不解析、不回复任何帧（需求原文）。
+        /* 版本码不符 → **丢掉这一帧**，别的什么都不动。
          *
-         * 注意后果：上位机侧**没有任何重试机会**，改对版本码也不行，要复位(或重新烧写)
-         * 本板才恢复。这一点已经写进 protocol_doc.md 提醒对端先自检版本码再发。
-         * 之所以做得这么绝，是因为"半信半疑地继续通信"更危险 —— 两端对包的理解不一致，
-         * 解出来的东西没人能保证。 */
-        arm->locked = 1U;
-        arm->handshake_ok = 0U;
-        arm->locked_obs = 1U; 
-        arm->handshake_ok_obs = 0U;
+         * 仍然不回包：两端对包的理解本来就不一致，回什么都等于承认这种对话能继续。
+         * 但也**不改任何状态** —— 不置 handshake_ok、不打回等待握手。于是握手闸门照旧
+         * 不通过（继续等正确的版本包），而上位机把版本串改对后再发一帧就能握手，
+         * **不用复位板子**。计数只增不减，给调试器和上位机一个"被拒了"的证据。 */
         arm->handshake_reject_cnt++;
-        Robot_State_Enter(arm, robot_state_wait_handshake);
         return;
     }
 
@@ -366,9 +379,8 @@ static void HandleVersion(Arm* arm, const Robot_rx_payload* pl, uint8_t len) {
 static void HandleArmInit(Arm* arm) {
     /* 两个入口：
      *   ① 「待初始化」—— 上电流程的常态入口；
-     *   ② 「正常运行」+ 松劲侧档位（stop / damping）—— 2026-10-08 加的，用途是**不
-     *      复位板子也能重走一遍上电流程**。之前只有一个入口，而 Init_Step() 跑完回的是
-     *      正常运行，于是"一旦初始化过就再也回不去"。
+     *   ② 「正常运行」+ 松劲侧档位（stop / damping）—— 用途是**不复位板子也能重走一遍
+     *      上电流程**（Init_Step() 跑完回的是正常运行，所以只有这条口能回去）。
      *
      * 为什么只放 stop/damping、不放 run/gravity：初始化期间状态机会把 Arm_mode 掰到
      * **run**（见 Robot_State_Enter，一键动作靠 auto_mode 驱动，stop 档下
@@ -507,12 +519,9 @@ static void HandleCtrl(Arm* arm, const Robot_rx_payload* pl, uint8_t len, uint8_
     arm->ctrl_frame_cnt++;
 }
 
-/* 一帧的分派口。**三道闸门**都在这儿，别的函数不管。 */
+/* 一帧的分派口。**两道闸门**都在这儿，别的函数不管。 */
 static void HandleFrame(Arm* arm, uint8_t type_id, const Robot_rx_payload* pl, uint8_t len) {
-    /* 闸门 ①：版本码不符之后，什么都不解析、什么都不回 */
-    if (arm->locked) return;
-
-    /* 闸门 ②：握手通过之前只认版本包 —— 其他一律丢弃，也不回复 */
+    /* 闸门 ①：握手通过之前只认版本包 —— 其他一律丢弃，也不回复 */
     if (!arm->handshake_ok && type_id != FRAME_TYPE_ID_VERSION) return;
 
     /* 能走到这里的都算"上位机还在说话"（CRC 过了；码认不认识不论 —— 认识新包的旧版本
@@ -520,7 +529,7 @@ static void HandleFrame(Arm* arm, uint8_t type_id, const Robot_rx_payload* pl, u
     arm->last_rx_ms = HAL_GetTick();
 
     /* 通信离线模式：**收到任意有效帧就回离线等待**（需求原文），**不要求重新握手**
-     * —— 握手是一次性的闸门，通过之后一直有效（版本码不符那种"永久锁"是另一回事）。
+     * —— 握手是一次性的闸门，通过之后一直有效。
      * 回离线等待而不是直接回原状态，是因为掉线期间机械臂已经是 damping 了，得重新走
      * 一遍"电机全在线 → 待初始化"，上位机才知道现在能不能发初始化命令。
      *
@@ -811,15 +820,15 @@ static void Fsm_Step(Arm* arm) {
 
 static void Feedback_Step(Arm* arm) {
     /* 握手通过之后**无论什么状态**都发（需求原文）。 */
-    if (!arm->handshake_ok || arm->locked) return;
+    if (!arm->handshake_ok) return;
 
     /* 4 ms 门控 = 250 Hz。
      *
      * ⚠ 这里**用相位累加(`+= 4`)而不是 `= now`**，别改回去。本函数跑在 CmdTask 的
      * 2 ms 栅格上：4 ms 正好是 2 的整数倍，两种写法现在都对；但**这个门控值不是永远
-     * 是 4** —— 一改成和 2 ms 不对齐的数（比如原来的 5 ms = 200 Hz），`= now` 就废了：
+     * 是 4** —— 一改成和 2 ms 不对齐的数（比如 5 ms = 200 Hz），`= now` 就废了：
      * 相位会被每一次实际采样拖着走（0→6→12→18…，间隔恒为 6 ms），实测 1 秒只有 168 帧
-     * (≈167 Hz)，而不是 200。(2026-10-06 在真机上用 JLink 注入帧 + 数 g_arm[0].fb_cnt 量的。)
+     * (≈167 Hz)，而不是 200。
      * 累加的写法对任何周期都对：落点变成 6,4,6,4…，平均正好是设定值。
      *
      * 累加的代价是"落后会越积越多"：如果任务被长时间饿住，arm->fb_last_ms 会远远落在
@@ -876,6 +885,26 @@ static void Feedback_Step(Arm* arm) {
     arm->fb_cnt++;
 }
 
+/* ==================== 未握手时的 10 Hz 版本帧 ====================
+ *
+ * 没握手之前，板子每 100 ms 主动发一帧版本包 0x01：上位机不用先问就知道板子在不在、
+ * 是哪个版本码 —— 版本码不符时当场就能看出是自己那边对不上。握手一过就停（那时
+ * 250 Hz 反馈帧已经在发）。
+ *
+ * 这是**唯一**绕过 SendFrame() 那道握手闸门的出帧路径（SendVersionRaw → TxEnqueue）：
+ * 0x01 恰恰要在 handshake_ok==0 的时候发，闸门挡它等于谁也握不了手。 */
+static void Handshake_Step(Arm* arm) {
+    if (arm->handshake_ok) return;
+
+    const uint32_t now = HAL_GetTick();
+    /* `= now` 而不是像 Feedback_Step 那样 `+= 周期`：这里没有别的节拍要对齐，而累加的
+     * 写法在任务被饿住之后会连发一串补帧 —— 补出去的握手帧没有意义。 */
+    if ((now - arm->hs_last_ms) < ROBOT_HANDSHAKE_PERIOD_MS) return;
+    arm->hs_last_ms = now;
+
+    SendVersionRaw(arm);
+}
+
 /* ==================== 入口 ==================== */
 
 void Robot_State_Init(void) {
@@ -894,7 +923,6 @@ void Robot_State_Init(void) {
         arm->rx_tail = 0U;
 
         arm->handshake_ok = 0U;
-        arm->locked = 0U;
         arm->state = robot_state_wait_handshake;
         arm->arm_mode = arm_stop;
         arm->init_step = 0U;
@@ -908,11 +936,12 @@ void Robot_State_Init(void) {
 
         arm->last_rx_ms = HAL_GetTick();
         arm->fb_last_ms = HAL_GetTick();
+        /* 退一个周期 = 上电第一拍就发第一帧（上位机开完口不用先发什么就能看见板子）。 */
+        arm->hs_last_ms = HAL_GetTick() - ROBOT_HANDSHAKE_PERIOD_MS;
 
         arm->state_last = arm->state;
         arm->arm_mode_last = arm->arm_mode;
         arm->handshake_ok_obs = 0U;
-        arm->locked_obs = 0U;
     }
 
     /* ---- 共享链路这一份 ---- */
@@ -937,6 +966,7 @@ void Robot_State_Loop(void) {
 
         DrainRx(arm);       /* 收：中断按 arm_id 送进这台臂的环 */
         Fsm_Step(arm);      /* 状态迁移 */
+        Handshake_Step(arm);/* 发：没握手时那 10 Hz 版本包（只入队；握手后空转） */
         Feedback_Step(arm); /* 发：250 Hz 反馈帧（只入队） */
     }
 

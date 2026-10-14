@@ -11,7 +11,7 @@
  *
  * 总模式是 Arm_mode 的**上游决策者**，不替换它。两者的关系：
  *
- *     上位机串口 ──→ Robot_state ──→(Robot_State_Arm_Mode())──→ gimbal_cmd->mode
+ *     上位机串口 ──→ Robot_state ──→(arm->arm_mode)──→ gimbal_cmd->mode
  *                       │                                            │
  *                       │                                            ↓
  *                       └── 也直接写 gimbal_cmd->auto_mode     Gimbal.arm_control_data.mode
@@ -26,8 +26,8 @@
  * **遥控器在线时覆盖所有串口指令**（用户指定的行为）：本模块照常收包、照常跑状态机、
  * 照常发 250 Hz 反馈，但它的两个输出都被闸住 ——
  *
- *   - 模式：App/gimbal_cmd.c 的模式判定里，遥控器在线时**根本不调**
- *     Robot_State_Arm_Mode()，改用 rc.sw_a；
+ *   - 模式：App/gimbal_cmd.c 的模式判定里，遥控器在线时**根本不读**
+ *     arm->arm_mode，改用 rc.sw_a；
  *   - 动作：初始化 / 校准零点在这里就**拒绝进入**（停在待初始化模式），
  *     控制帧也不写入。
  *
@@ -97,9 +97,6 @@
  *
  * 上位机这侧是 **USB 转 RS485 适配器**，接这一路的 A/B 差分对。
  *
- * 之前是 USART1 = PA9/PA10（普通异步口，端对端接 USB 转 TTL：适配器 TX → PA10、
- * 适配器 RX → PA9、GND 互连）。2026-10-08 对端换成 RS485 适配器，所以挪到 U3。
- *
  * ---- USB 那条 (ROBOT_LINK_USB，默认) ----
  *
  * 板子自己的 USB CDC 口，主机侧认出来是 VID:PID = **0483:5740**
@@ -113,9 +110,15 @@
 #define ROBOT_COMM_TIMEOUT_MS 500U
 
 /* 反馈帧周期，ms（4 ms = 250 Hz）。Robot_State_Loop() 是 500 Hz，用 HAL_GetTick 门控。
- * 4 ms 正好是那条 500 Hz 栅格(2 ms)的整数倍，所以每一帧都落在栅格上、间距精确。
- * (原来是 5 ms = 200 Hz，和 2 ms 栅格不对齐，实测只有 167 Hz，见 Feedback_Step 的注释。) */
+ * 4 ms 正好是那条 500 Hz 栅格(2 ms)的整数倍，所以每一帧都落在栅格上、间距精确。 */
 #define ROBOT_FEEDBACK_PERIOD_MS 4U
+
+/* 没握手之前那帧 0x01 的周期，ms（100 ms = 10 Hz）。
+ *
+ * 未握手期间板子**主动**报版本码：上位机不用先问就知道板子在不在、是哪个版本 —— 版本码
+ * 不符时当场就能看出是自己那边对不上，而不是对着静默猜。握手一过就停（那时 250 Hz 反馈
+ * 帧已经在发了）。10 Hz 取的是"够快"和"占不了多少带宽"（12 B × 10 Hz）之间的值。 */
+#define ROBOT_HANDSHAKE_PERIOD_MS 100U
 
 /* 「预设初始化位置」容差，deg。
  *
@@ -137,7 +140,7 @@
  *
  *   上电 ──→ 等待握手 ──0x01 版本码相等──→ 离线等待 ──7 台电机全在线──→ 待初始化
  *              │                                                          │
- *              └─0x01 版本码不等─→ 原地锁死(不解析、不回复，直到复位)      ⇒0x02 且姿态合格
+ *              └─0x01 版本码不等─→ 丢掉这帧(不回包、状态不动，仍等待握手)  ⇒0x02 且姿态合格
  *                                                                         ↓
  *                                                                      初始化 ──两步一键动作跑完──→ 正常运行
  *                                                                         ⇒0x10 设零        (默认 damping)
@@ -150,11 +153,12 @@
  *
  *   握手通过之后**任意状态**：500 ms 无有效帧 → 通信离线(damping)
  *   通信离线：收到任意有效帧 → 离线等待（回到上面那条链）
+ *   没握手期间：每 100 ms 主动发一帧 0x01（Handshake_Step）—— "握手前一个字节都不发"
+ *   的**唯一例外**，0x01 本来就是建立握手的那个包。
  *
- *   ★ 0x02 有**两个入口**（见 HandleArmInit），2026-10-08 放开第二个：
+ *   ★ 0x02 有**两个入口**（见 HandleArmInit）：
  *     ① 待初始化；② 正常运行 + Arm_mode 在 stop/damping。
- *     之前只有一个入口、而 Init_Step() 跑完回的是正常运行，于是"初始化过一次就再也
- *     回不去"。run/gravity 档故意不接：初始化期间状态机会把 Arm_mode 掰到 run（一键
+ *     run/gravity 档故意不接：初始化期间状态机会把 Arm_mode 掰到 run（一键
  *     动作靠 auto_mode 驱动，stop 档下 Stop_Mode_Update 每拍清 auto_mode、复位撑不过
  *     一拍），能接手的必须是"没有位置环在跑"的档。
  *     **中止时退回发起时那个总模式**（s_init_entry），不是一律回待初始化 —— 否则从
@@ -246,8 +250,8 @@ const Robot_ctrl_cmd* Robot_State_Ctrl(const Arm* arm);
 /* ---- 观测量（JLink 读，不用串口打印）----
  *
  * **链路级的**只有下面这几个：它们描述的是那一条 USB/串口本身(解析、收发)，和哪台臂
- * 无关。**按台的**观测量(状态迁移、握手、反馈帧率…)都搬进了 `Arm`(App/inc/arm.h)，
- * JLink 读法从 `robot_fb_cnt` 变成 `g_arm[0].fb_cnt`。 */
+ * 无关。**按台的**观测量(状态迁移、握手、反馈帧率…)在 `Arm`(App/inc/arm.h)，
+ * JLink 读 `g_arm[0].fb_cnt`。 */
 
 extern volatile uint32_t robot_rx_frame_cnt; /* 解析出的整帧数(含被闸门丢掉的) */
 extern volatile uint32_t robot_rx_drop_cnt;  /* 环满丢帧数 */
