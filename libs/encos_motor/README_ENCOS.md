@@ -91,7 +91,7 @@ if (motor == NULL) { /* 配置错误或内存不足，禁止进入控制 */ }
 - `fdb_torque`：Kt 已知时的估算 Nm，可能受非线性 Kt 补偿影响；不是直接测量值。
 - `t_rotor/t_mos`：℃。类型 2/3 没有 MOS 温度，旧值不会被伪造刷新。
 - `feedback.valid`：当前这帧包含哪些物理量；`feedback_valid`：历史接收过哪些量。
-- `last_position_ms/last_speed_ms`：各自更新时间。配置/查询应答不能冒充新鲜运动反馈。
+- `last_position_ms/last_speed_ms`：各自更新时间。配置/查询应答不作为新鲜运动反馈。
 - `update`：接受新报文置 1，调用者处理后清零。
 - `MT4motor_Is_Online()`：最近是否收到已支持且合法的反馈；不等于电机无错误或允许运动。
 
