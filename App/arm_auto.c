@@ -154,7 +154,7 @@ void Arm_Reset(Gimbal_cmd* obj) {
 /* 退多少 = **半个行程**，退到行程中点。写成"两个软限位之差的一半"而不是 142，是为了让
  * "零点在行程中点"这件事自己说话 —— 两个软限位就是绕中点对称的。 */
 #define GRIPPER_ZERO_BACK_DEG ((GRIPPER_ANGLE_MAX - GRIPPER_ANGLE_MIN) / 2.0f)
-#define GRIPPER_ZERO_ARRIVE_DEG 2.0f  /* 退到中点的判据，deg */
+#define GRIPPER_ZERO_ARRIVE_DEG 4  /* 退到中点的判据，deg */
 #define GRIPPER_ZERO_PUSH_TIMEOUT_MS 10000u    /* 满行程 284 deg 按 100 deg/s 约 3 s，留足余量 */
 #define GRIPPER_ZERO_BACK_TIMEOUT_MS 6000u     /* 退半个行程约 1.4 s */
 #define GRIPPER_ZERO_SETZERO_TIMEOUT_MS 12000u /* 等设零那一轮；arm_zero 自己 8 s 封顶 */

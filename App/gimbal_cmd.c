@@ -101,9 +101,9 @@ Gimbal_cmd* Gimbal_Cmd_Create(Arm* arm) {
         /* 400 */ 1000,
         700,
         700,
-        4000,
-        1000,
-        4000,
+        2000,
+        2000,
+        2000,
     };
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         TD_Config td_config = {

@@ -745,7 +745,7 @@ static void pid_init(Gimbal* obj) {
     PID_SetConfig_Pos(&obj->pid_cfgs[GRIPPER][0], 6, 0.08, 50, 200, 1000);
     obj->pid_cfgs[GRIPPER][0].Irange = 0;
     PID_SetConfig_Pos(&obj->pid_cfgs[GRIPPER][1], 0.0f, 0.0f, 0.0f, 0.0f, 10);
-    obj->pid_mit_kpkd[GRIPPER][0] = 2;
+    obj->pid_mit_kpkd[GRIPPER][0] = 8;
     obj->pid_mit_kpkd[GRIPPER][1] = 0.1;
 }
 
