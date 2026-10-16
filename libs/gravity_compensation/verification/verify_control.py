@@ -27,6 +27,9 @@ subprocess.run(["cc", "-std=gnu11", "-O2", "-g", "-ffunction-sections", "-fdata-
                 str(ROOT / "libs/gravity_compensation/c/x5_dynamics.c"),
                 str(ROOT / "libs/gravity_compensation/c/x5_gravity.c"),
                 str(ROOT / "libs/controller/adrc.c"),
-                str(ROOT / "libs/common/common.c"), "-Wl,--gc-sections", "-lm", "-o", str(exe)],
+                str(ROOT / "libs/controller/pid.c"),
+                str(ROOT / "libs/move_plan/curves/quintic_spline.c"),
+                str(ROOT / "libs/common/common.c"), "-Wl,--gc-sections",
+                "-Wl,--wrap=x5_dynamics_compute", "-lm", "-o", str(exe)],
                check=True, cwd=ROOT)
 subprocess.run([str(exe)], check=True)

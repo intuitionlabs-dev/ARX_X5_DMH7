@@ -40,6 +40,7 @@
 #include "adrc.h"        /* TD_t —— 关节角跟踪微分器 */
 #include "gimbal_arm.h"  /* Gimbal —— 机械臂驱动本体 */
 #include "plan_group.h"  /* Plan_group_temp / Plan_group —— 一键模式的临时规划组 */
+#include "quintic_spline.h"
 
 /* 机械臂控制源类型(源工程 robot_def.h 的 Arm_ctrl_type)。
  * 笛卡尔空间控制和自定义控制器腕点控制都要 arm_kinematics_calc(逆运动学)，本工程
@@ -87,6 +88,17 @@ typedef struct {
     uint8_t zero_result;
 } Gripper_zero_state;
 
+typedef struct {
+    Quintic_spline curve;
+    float target;    // 终点角度，deg
+    float elapsed;   // 样条运行时间，s
+    float position;  // 输出角度，deg
+    float velocity;  // 输出速度，deg/s
+    float acc;       // 输出加速度，deg/s²
+    uint8_t initialized;
+    uint8_t active;
+} Joint_quintic_ref;
+
 typedef struct Gimbal_cmd_t {
     Gimbal* gimbal;  // 机械臂驱动本体；NULL 则整层不干活
 
@@ -97,8 +109,7 @@ typedef struct Gimbal_cmd_t {
     /* 模式(源工程是 Robot_mode，那边还带底盘/裁判系统状态；本工程只需要 arm_stop/arm_run) */
     Arm_mode mode;
 
-    /* 关节角跟踪微分器：Ctrl_Post_Process() 把解算出来的目标角过一遍 TD，
-     * Arm_Ref_Set() 取它的 v1/v2 当位置/速度，免得阶跃目标直接砸到位置环上。 */
+    /* 关节角跟踪微分器：Ctrl_Post_Process() 每拍更新 v1/v2/v3。 */
     TD_t joint_angle_td[ARM_JOINT_NUM];
 
     /* ================= 一键模式(源工程 gimbal_cmd.h 的"一键相关"那一段) =================
@@ -125,6 +136,7 @@ typedef struct Gimbal_cmd_t {
      * (`obj->gimbal == obj->arm->gimbal`，两者一回事；gimbal 那个指针是给正文里几十处
      *  `obj->gimbal->arm_control_data` 用的。) */
     Arm* arm;
+    Joint_quintic_ref joint_quintic_ref[ARM_JOINT_NUM];
 } Gimbal_cmd;
 
 /* 建对象 + 初始化 TD。**必须在 Gimbal_Create() 之后调**(它要读 arm->gimbal 当驱动本体)，

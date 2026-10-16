@@ -583,29 +583,38 @@ static void Get_Motor_Fdb(Gimbal* obj) {
  * 反馈角度和反馈速度使用关节系，目标加速度由命令层提供。
  */
 static void Joint_Dynamics_Comp_Calc(Gimbal* obj) {
-    memset(obj->tau_comp, 0, sizeof(obj->tau_comp));
-    obj->dynamics_status = X5_DYNAMICS_OK;
 #if JOINT_DYNAMICS_COMP_ENABLE
     _Static_assert(ARM_JOINT_NUM == X5_GRAVITY_DOF, "动力学模型关节数必须一致");
-    if (obj->arm_mode != arm_run && obj->arm_mode != arm_only_gravity_comp) return;
+    if (obj->arm_mode != arm_run && obj->arm_mode != arm_only_gravity_comp) {
+        memset(obj->tau_comp, 0, sizeof(obj->tau_comp));
+        obj->dynamics_status = X5_DYNAMICS_OK;
+        return;
+    }
 
     x5_real q[ARM_JOINT_NUM], qd[ARM_JOINT_NUM], qdd[ARM_JOINT_NUM];
+    x5_real torque[ARM_JOINT_NUM];
+    int status;
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
         q[i] = obj->arm_feedback_data.joint_angle[i] * DEG2RAD;
         qd[i] = obj->arm_feedback_data.joint_vel[i] * DEG2RAD;
         qdd[i] = obj->arm_control_data.joint_acc[i] * DEG2RAD;
     }
     if (obj->arm_mode == arm_only_gravity_comp) {
-        obj->dynamics_status = x5_gravity_compute(JOINT_DYNAMICS_COMP_MODEL, q,
-            JOINT_DYNAMICS_GRAVITY_BASE, JOINT_DYNAMICS_GRAVITY_MODE, obj->tau_comp);
+        status = x5_gravity_compute(JOINT_DYNAMICS_COMP_MODEL, q,
+            JOINT_DYNAMICS_GRAVITY_BASE, JOINT_DYNAMICS_GRAVITY_MODE, torque);
     } else {
-        obj->dynamics_status = x5_dynamics_compute(JOINT_DYNAMICS_COMP_MODEL, q, qd, qdd,
-            JOINT_DYNAMICS_GRAVITY_BASE, JOINT_DYNAMICS_GRAVITY_MODE, obj->tau_comp);
+        status = x5_dynamics_compute(JOINT_DYNAMICS_COMP_MODEL, q, qd, qdd,
+            JOINT_DYNAMICS_GRAVITY_BASE, JOINT_DYNAMICS_GRAVITY_MODE, torque);
     }
-    if (obj->dynamics_status != X5_DYNAMICS_OK) {
-        memset(obj->tau_comp, 0, sizeof(obj->tau_comp));
+    if (status != X5_DYNAMICS_OK) {
+        memset(torque, 0, sizeof(torque));
         obj->arm_mode = arm_stop;
     }
+    memcpy(obj->tau_comp, torque, sizeof(obj->tau_comp));
+    obj->dynamics_status = status;
+#else
+    memset(obj->tau_comp, 0, sizeof(obj->tau_comp));
+    obj->dynamics_status = X5_DYNAMICS_OK;
 #endif
 }
 

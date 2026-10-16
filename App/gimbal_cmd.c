@@ -421,6 +421,48 @@ static void Ctrl_Post_Process(Gimbal_cmd* obj) {
     }
 }
 
+static void Joint_Quintic_Ref_Update(Gimbal_cmd* obj, int joint) {
+    Joint_quintic_ref* ref = &obj->joint_quintic_ref[joint];
+    const float target = obj->ctrl_src.joint_angle_solved[joint];
+    if (!ref->initialized) {
+        ref->position = obj->gimbal->arm_feedback_data.joint_angle[joint];
+        ref->velocity = 0.0f;
+        ref->acc = 0.0f;
+        ref->initialized = 1;
+    }
+
+    if (!ref->active || target != ref->target) {
+        Quintic_spline_config config = {
+            .x0 = 0.0f,
+            .y0 = ref->position,
+            .dy0 = ref->velocity,
+            .ddy0 = ref->acc,
+            .x1 = JOINT_QUINTIC_DURATION_S,
+            .y1 = target,
+            .dy1 = 0.0f,
+            .ddy1 = 0.0f,
+            .xmin = 0.0f,
+            .xmax = JOINT_QUINTIC_DURATION_S,
+        };
+        Quintic_Spline_Reinit(&ref->curve, &config);
+        ref->target = target;
+        ref->elapsed = 0.0f;
+        ref->active = 1;
+    }
+
+    ref->elapsed += GIMBAL_CMD_PERIOD_S;
+    if (ref->elapsed >= JOINT_QUINTIC_DURATION_S) {
+        ref->elapsed = JOINT_QUINTIC_DURATION_S;
+        ref->position = ref->target;
+        ref->velocity = 0.0f;
+        ref->acc = 0.0f;
+    } else {
+        ref->position = Quintic_Spline_Calc_y(&ref->curve, ref->elapsed);
+        ref->velocity = Quintic_Spline_Calc_dy(&ref->curve, ref->elapsed);
+        ref->acc = Quintic_Spline_Calc_ddy(&ref->curve, ref->elapsed);
+    }
+}
+
 static void Arm_Ref_Set(Gimbal_cmd* obj) {
     Arm_control_data* control = &obj->gimbal->arm_control_data;
     const Robot_ctrl_cmd* cmd = Robot_State_Ctrl(obj->arm);
@@ -440,6 +482,11 @@ static void Arm_Ref_Set(Gimbal_cmd* obj) {
             angle = obj->joint_angle_td[i].v1;
             velocity = cmd->joint_vel[i];
             acc = 0.0f;
+        } else if (obj->mode == arm_run) {
+            Joint_Quintic_Ref_Update(obj, i);
+            angle = obj->joint_quintic_ref[i].position;
+            velocity = obj->joint_quintic_ref[i].velocity;
+            acc = obj->joint_quintic_ref[i].acc;
         } else {
             angle = obj->joint_angle_td[i].v1;
             velocity = obj->joint_angle_td[i].v2;
@@ -454,6 +501,8 @@ static void Arm_Ref_Set(Gimbal_cmd* obj) {
                 control->joint_angle[j] = obj->gimbal->arm_feedback_data.joint_angle[j];
                 control->joint_vel[j] = 0.0f;
                 control->joint_acc[j] = 0.0f;
+                obj->joint_quintic_ref[j].initialized = 0;
+                obj->joint_quintic_ref[j].active = 0;
             }
             return;
         }
@@ -461,6 +510,20 @@ static void Arm_Ref_Set(Gimbal_cmd* obj) {
         control->joint_angle[i] = angle;
         control->joint_vel[i] = velocity;
         control->joint_acc[i] = acc;
+        if (obj->mode != arm_run || obj->plan_running || use_external_velocity) {
+            Joint_quintic_ref* ref = &obj->joint_quintic_ref[i];
+            if (obj->mode != arm_run) {
+                ref->position = obj->gimbal->arm_feedback_data.joint_angle[i];
+                ref->velocity = 0.0f;
+                ref->acc = 0.0f;
+            } else {
+                ref->position = angle;
+                ref->velocity = velocity;
+                ref->acc = acc;
+            }
+            ref->initialized = 1;
+            ref->active = 0;
+        }
     }
 }
 
