@@ -4,9 +4,9 @@
 
 Python 版本支持双臂，每臂 6 关节及 1 夹爪，包含总模式状态机、初始化、复位轨迹、夹爪找零、电机零点校准、PID、TD、静态重力补偿、速度/粘滞前馈、软限位及掉线处理。
 
-**不含遥控器逻辑。通信仅定义接口**：上层输入 `Command`，电机输入 `MotorFeedback`，输出 `MotorRequest`、`ArmFeedback` 和 `Event`。不实现 CAN、UART、USB、字节帧、CRC、socket 或进程间通信。后续同设备 Python 程序可以直接对接这些接口。
+**不含遥控器逻辑。通信仅定义接口**：上层输入 `Command`，电机输入 `MotorFeedback`，输出 `MotorRequest`、`ArmFeedback` 和 `Event`。新增 `LocalLink` 可将现有 `sdk.Arm` API 直接接入控制核心；电机通信仍由后续同设备 Python 程序通过 `MotorIO` 对接，本地后端不实现 CAN、UART、USB、完整字节帧、CRC、socket 或进程间通信。
 
-完整的源文件对应关系、原参数和行为修正见 [迁移审计](docs/PC_PORT.md)，字段及调用契约见 [Python 接口](docs/PC_API.md)。
+完整的源文件对应关系、原参数和行为修正见 [迁移审计](docs/PC_PORT.md)，字段及调用契约见 [Python 接口](docs/PC_API.md)，现有 SDK 程序的接入方法见 [SDK 本地后端](docs/SDK_LOCAL.md)。
 
 ## 运行
 
@@ -23,6 +23,8 @@ python3 -m arx_x5_control --demo
 python3 -m arx_x5_control --demo --realtime --seconds 12
 
 # 可选：安装为 Python 包
+# 安装包包含 SDK，先初始化仓库中固定版本的子模块。
+git submodule update --init --recursive sdk
 python3 -m venv .venv
 .venv/bin/python -m pip install .
 .venv/bin/arx-x5-control --demo
@@ -32,6 +34,25 @@ python3 -m unittest discover -s tests -v
 ```
 
 示例只使用内存中的测试电机模型，不访问硬件。模拟器用于验证状态与接口，未模拟真实惯性、摩擦、负载或稳定性。
+
+## SDK 接入
+
+```bash
+# 初始化 sdk 子模块后，运行 SDK 驱动的双臂示例。
+python3 -m arx_x5_control.sdk_demo
+```
+
+```python
+import sdk
+from arx_x5_control.sdk_link import LocalLink
+
+with LocalLink.simulated() as link:  # 实际电机程序改为 LocalLink(motor_io)
+    arm = sdk.Arm(0, link)
+    arm.connect()
+    print(arm.snapshot())
+```
+
+现有的 `init_arm()`、`send_ctrl_pos_vel()`、模式切换、复位、设零和反馈接口继续使用 `sdk.Arm`；SDK 关节单位为 rad/rad/s，夹爪标定后使用 m。完整初始化及保活示例、`MotorIO` 两个接口、退出和异常处理见 [SDK 接入文档](docs/SDK_LOCAL.md)。
 
 ## 集成入口
 
@@ -67,7 +88,7 @@ final_requests = controller.shutdown().motor_requests
 
 ## 验证范围
 
-35 项测试覆盖双臂初始化及复位、校准反馈/ACK、超时、掉线、模式切换、限位、发送频率、输入验证与退出停机。原 C 算法对比会直接编译仓库的 PID、TD、样条与重力源码；需要主机 C 编译器 `cc`，没有编译器时仅这 4 项测试跳过。
+45 项测试覆盖双臂初始化及复位、校准反馈/ACK、超时、掉线、模式切换、限位、发送频率、输入验证与退出停机，以及现有 SDK 的命令、单位、标定、线程和故障接入。原 C 算法对比会直接编译仓库的 PID、TD、样条与重力源码；需要主机 C 编译器 `cc`，没有编译器时仅这 4 项测试跳过。测试 SDK 接入前需初始化 `sdk` 子模块。
 
 程序已通过本地模拟和独立安装包验证。尚未接入实机。普通 PC Python 不保证硬实时；漏拍计数可读，调度延迟不会通过突发重放旧控制周期来补偿。保留的控制增益来自 H7，实机验证需要使用实际 PC 调度和通信延迟。
 
@@ -84,8 +105,9 @@ final_requests = controller.shutdown().motor_requests
 | `arx_x5_control/config.py` | 标定量及 H7 默认参数 |
 | `arx_x5_control/types.py`、`interfaces.py` | 与后续通信程序对接的类型及协议接口 |
 | `arx_x5_control/runtime.py` | PC 单调时钟循环 |
+| `arx_x5_control/sdk_link.py`、`sdk_demo.py` | SDK 本地后端及完整双臂示例 |
 | `arx_x5_control/simulation.py`、`__main__.py` | 无硬件模拟及命令行入口 |
 | `libs/gravity_compensation/` | 复用仓库已有纯 Python 重力模型与 URDF |
 | `tests/` | 行为、故障、C/Python 数值对比测试 |
 
-重力模块及模型沿用各自原许可证和来源文件，安装包包含对应许可证。没有修改 H7 固件源码，也不依赖 `sdk` 子模块。
+重力模块及模型沿用各自原许可证和来源文件，安装包包含对应许可证。没有修改 H7 固件源码和 SDK 子模块；SDK 接入层复用固定版本的 SDK，控制核心及原始 `--demo` 入口仍可独立运行。

@@ -1,5 +1,7 @@
 # PC Python 控制接口
 
+现有 `sdk.Arm` 调用可通过 `arx_x5_control.sdk_link.LocalLink` 接入，详见 [SDK 本地后端](SDK_LOCAL.md)。下文是底层控制接口，关节角使用 deg；SDK 对外的 rad/rad/s/m 单位由 SDK 接入层保留。
+
 接口版本：1。类型定义在 [`types.py`](../arx_x5_control/types.py)，运行适配器在 [`interfaces.py`](../arx_x5_control/interfaces.py)。本接口不是原 H7 二进制协议的编码实现。
 
 ## 控制循环

@@ -1,7 +1,7 @@
-"""Run the real Python control core behind the existing sdk.Arm API.
+"""通过现有 sdk.Arm 接口运行 Python 机械臂控制核心。
 
-Only SDK payloads are translated; no serial device, wire frames or IPC is used.
-Import LocalLink explicitly so the independent control core needs no SDK import.
+仅转换 SDK 命令参数，不使用串口、完整字节帧或进程间通信。
+需要 SDK 接入时显式导入 LocalLink，控制核心自身无需导入 SDK。
 """
 
 from collections import deque
@@ -52,22 +52,19 @@ def _command(tid, payload, arm_id):
 
 
 class LocalLink(Link):
-    """A shared SDK link owning one Python controller and a MotorIO adapter.
+    """共享 SDK 链路，持有一个 Python 控制器和一个 MotorIO 适配器。
 
-    Use ``LocalLink(motor_io)`` for an injected motor boundary, or explicitly use
-    ``LocalLink.simulated()`` without hardware. ``sdk.Arm(0, link)`` and
-    ``link.arm(0)`` retain SDK units, prechecks, calibration and wait methods.
+    LocalLink(motor_io) 接入提供的电机接口；无硬件时显式使用 simulated()。
+    sdk.Arm(0, link) 和 link.arm(0) 保留 SDK 的单位、预检、标定及等待方法。
 
-    open() starts a best-effort 1 ms thread. With background=False, the caller
-    instead drives step(now_ms); blocking SDK waits require another caller to
-    keep stepping. No automatic heartbeats: each arm still needs valid commands
-    within 3 s. close() delivers controller shutdown requests and joins the
-    worker. Reopening creates a fresh controller, requiring connect/init again.
+    open() 启动目标周期为 1 ms 的后台线程，不保证硬实时。
+    background=False 时由调用者执行 step(now_ms)；SDK 的阻塞等待期间，
+    必须另有调用者继续推进 step。不自动保活，每台臂仍需在 3 s 内收到有效命令。
+    close() 交付停机请求并等待线程退出；重新打开会新建控制器，需重新握手和初始化。
 
-    MotorIO timestamps are milliseconds since this link's construction in
-    background mode, or the explicit step clock in manual mode. Keep that clock
-    increasing across reopen. MotorIO is retained across reopen and is owned by
-    the caller (its devices are neither opened nor closed by this link).
+    后台模式的 MotorIO 时间戳为从本链路构造起经过的毫秒数；手动模式使用 step
+    的显式时钟。重新打开后仍应保持时间递增。MotorIO 对象会被保留，其设备的
+    打开和关闭由调用者负责，本链路只交付控制及停机请求。
     """
 
     def __init__(self, motor_io: MotorIO, *, configurations=None, background=True):
@@ -93,7 +90,7 @@ class LocalLink(Link):
 
     @classmethod
     def simulated(cls, *, configurations=None, background=True):
-        """Explicit test plant; still executes ControlSystem, not sdk.SimLink."""
+        """显式启用测试电机模型，运行的仍是 ControlSystem 控制逻辑。"""
         from .simulation import SimulatedMotors
         configs = tuple(configurations) if configurations is not None else (ArmConfig(), ArmConfig())
         return cls(SimulatedMotors(len(configs)), configurations=configs, background=background)
@@ -117,7 +114,7 @@ class LocalLink(Link):
                     ch.feedback = ch.ack = None
                     ch.feedback_t = ch.ack_t = 0.0
                     ch.ack_event.clear()
-                    # Keep sequence numbers monotonic for existing SDK Arm objects.
+                    # 保留递增序号，让已有 SDK Arm 对象可以继续等待新反馈。
 
     def open(self, port=None):
         if port not in (None, "local"):
@@ -170,7 +167,7 @@ class LocalLink(Link):
         return self.open(port)
 
     def check_health(self):
-        """Raise SDK LinkError for worker/adapter failure; no implicit restart."""
+        """将控制线程或适配器故障抛为 SDK LinkError，不在此处自动重启。"""
         if self._failure is not None:
             raise LinkError(f"local controller failed: {self.link_err}") from self._failure
         if not self.is_open:
@@ -186,7 +183,7 @@ class LocalLink(Link):
                 raise LinkError(f"arm {arm_id} command queue full; wait for the next control tick")
             queue.append(command)
             self.n_tx += 1
-        # Match Link.send's return convention, without constructing a wire frame.
+        # 保留 Link.send 的返回值约定，此处不构造完整字节帧。
         return protocol.OVERHEAD + len(payload)
 
     def inject_bytes(self, data):
@@ -194,8 +191,8 @@ class LocalLink(Link):
 
     def _step_once(self, now_ms):
         commands = []
-        # Drain only on a command tick, so a second batch cannot overflow the
-        # core's seven-slot per-arm queue between its 2 ms command updates.
+        # 只在 2 ms 命令周期到达时取走输入，避免两批命令在核心处理前累积，
+        # 超出核心每台臂最多容纳 7 条命令的队列容量。
         if self.controller.command_last_ms is None or now_ms - self.controller.command_last_ms >= 2:
             with self._write_lock:
                 for queue in self._commands:
@@ -210,7 +207,7 @@ class LocalLink(Link):
         return result
 
     def step(self, now_ms):
-        """One explicit manual tick; never call in background mode."""
+        """手动推进一个时刻；后台模式禁止调用。"""
         if self.background:
             raise RuntimeError("step requires background=False")
         timestamp(now_ms)
@@ -289,7 +286,7 @@ class LocalLink(Link):
             self._events.extend(result.events)
 
     def drain_events(self):
-        """Drain diagnostic core events; history keeps the latest 512 entries."""
+        """取走诊断事件；缓冲区最多保留最近 512 条，覆盖数量可从 stats 读取。"""
         with self._event_lock:
             events = tuple(self._events)
             self._events.clear()

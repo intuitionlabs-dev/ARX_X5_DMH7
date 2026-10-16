@@ -1,4 +1,4 @@
-"""Interfaces for a future same-device Python communication adapter."""
+"""供后续同设备 Python 通信程序实现的接口。"""
 
 from typing import Iterable, Protocol
 
@@ -6,12 +6,11 @@ from .types import ArmFeedback, Command, Event, MotorFeedback, MotorRequest
 
 
 class MotorIO(Protocol):
-    """Decoded motor boundary, called serially by the controller owner.
+    """已解码的电机接口，由控制循环的所属线程依次调用。
 
-    Both methods must be nonblocking. Feedback timestamps use the same clock as
-    now_ms and retain acquisition time; old samples must not be restamped. Motor
-    requests must be delivered in order, including shutdown and zeroing guards.
-    Raise on output failure instead of silently dropping requests.
+    两个方法都必须非阻塞。反馈时间戳与 now_ms 使用同一时钟，保留采样时刻，
+    不得给旧反馈刷新时间戳。电机请求必须按顺序交付，遵守停机及设零保护间隔；
+    输出失败必须抛出异常，不能静默丢弃请求。
     """
 
     def poll_feedback(self, now_ms: int) -> Iterable[MotorFeedback]: ...
@@ -19,13 +18,12 @@ class MotorIO(Protocol):
 
 
 class ControlIO(MotorIO, Protocol):
-    """Nonblocking methods, called by one control thread, in order.
+    """由一个控制线程依次调用的非阻塞接口。
 
-    poll_* must return drained snapshots, not repeat old feedback as new data.
-    Motor requests preserve ordering (including SAVE_ZERO/ENABLE/DISABLE).
-    A transport that cannot accept output must raise, never silently discard it.
-    Motor feedback/zero acknowledgements arrive on subsequent poll_feedback calls.
-    No CAN, UART, USB, sockets, shared memory or process queues are provided here.
+    poll_* 返回本次取出的全部新输入，不得把旧反馈当作新数据重复上报。
+    电机请求保持顺序，包括 SAVE_ZERO/ENABLE/DISABLE；无法接收输出时必须报错。
+    电机反馈和设零确认由后续 poll_feedback 调用返回。
+    此处不提供 CAN、UART、USB、socket、共享内存或进程队列实现。
     """
 
     def poll_commands(self, now_ms: int) -> Iterable[Command]: ...

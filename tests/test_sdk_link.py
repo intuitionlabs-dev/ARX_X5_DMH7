@@ -1,4 +1,4 @@
-"""Exercise unmodified SDK APIs against the actual Python control core."""
+"""通过现有 SDK API 验证 Python 控制核心的行为。"""
 
 from math import degrees, radians
 from pathlib import Path
@@ -73,7 +73,7 @@ class SDKLinkTests(unittest.TestCase):
             self.assertEqual(b.robot_state, S.WAIT_INIT)
             self.assertEqual(link.board_version, sdk.VERSION_CODE)
             self.assertIs(link.arm(0), a)
-            a.close()  # SDK Arm does not own the shared link.
+            a.close()  # SDK Arm 不负责关闭外部传入的共享链路。
             self.assertTrue(link.is_open)
             link.close()
             self.assertTrue(link.controller.closed)
