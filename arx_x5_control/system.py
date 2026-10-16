@@ -96,7 +96,7 @@ class ControlSystem:
         """Return final stop requests; the caller must deliver them to its adapter."""
         if self.closed:
             return TickResult()
-        now = self.last_ms or 0 if now_ms is None else timestamp(now_ms)
+        now = (self.last_ms or 0) if now_ms is None else timestamp(now_ms)
         if self.last_ms is not None and now < self.last_ms:
             raise ValueError("shutdown timestamp precedes last step")
         output = []

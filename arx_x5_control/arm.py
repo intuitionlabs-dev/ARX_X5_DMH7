@@ -8,8 +8,7 @@ from .calibration import ZeroCalibration
 from .command import CommandLayer
 from .config import ArmConfig, RESET_ANGLE
 from .motor import MotorBank
-from .types import (ArmFeedback, ArmMode, CommandKind, Event, MotorAction,
-                    RobotState, ZeroState)
+from .types import ArmFeedback, ArmMode, CommandKind, Event, RobotState
 
 
 STATE_MODE = {

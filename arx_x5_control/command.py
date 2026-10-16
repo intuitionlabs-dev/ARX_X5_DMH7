@@ -99,12 +99,15 @@ class CommandLayer:
     def _gripper_zero(self, now):
         arm, z, fdb = self.arm, self.arm.zero, self.arm.gripper_angle
         g = self.gz
+        elapsed = now - g.get("last_ms", now) if g else 0
+        g["last_ms"] = now
         if self.auto_step == 0:
             arm.initialized[6] = False
             self.gripper_angle = fdb
             self.gripper_torque = .5
             self.gz = dict(win_pos=fdb, win_ms=0, total_ms=0, back_ms=0, zero_ms=0,
-                           settle_ms=0, stall_win=0, zero_sent=False, result=ZeroResult.NONE)
+                           settle_ms=0, stall_win=0, zero_sent=False, result=ZeroResult.NONE,
+                           last_ms=now)
             self.auto_step = 1
         elif self.auto_step in (1, 2):
             if not arm.bank.motors[6].online(now) or arm.mode != ArmMode.RUN:
@@ -113,8 +116,8 @@ class CommandLayer:
             if self.auto_step == 1:
                 self._gripper_step(1)
                 self.gripper_torque = .5
-                g["total_ms"] += 2
-                g["win_ms"] += 2
+                g["total_ms"] += elapsed
+                g["win_ms"] += elapsed
                 if g["win_ms"] >= 200:
                     g["stall_win"] = g["stall_win"] + 1 if abs(fdb - g["win_pos"]) < .5 else 0
                     g["win_pos"], g["win_ms"] = fdb, 0
@@ -126,7 +129,7 @@ class CommandLayer:
             else:
                 self._gripper_step(-1)
                 self.gripper_angle = max(self.gripper_angle, g["back_target"])
-                g["back_ms"] += 2
+                g["back_ms"] += elapsed
                 if abs(fdb - g["back_target"]) <= 4:
                     self.auto_step = 3
                 elif g["back_ms"] >= 6000:
@@ -136,7 +139,7 @@ class CommandLayer:
             if not g["zero_sent"]:
                 g["zero_sent"] = z.request(1 << 6)
             arm.bank.motors[6].keep_alive(now)
-            g["zero_ms"] += 2
+            g["zero_ms"] += elapsed
             if (g["zero_sent"] and not z.pending and z.state in (ZeroState.DONE, ZeroState.TIMEOUT)
                     or g["zero_ms"] >= 12000):
                 g["result"] = z.results[6]
@@ -147,7 +150,7 @@ class CommandLayer:
             if z.busy:
                 g["settle_ms"] = 0
             else:
-                g["settle_ms"] += 2
+                g["settle_ms"] += elapsed
                 if g["settle_ms"] >= 400:
                     ok = g["result"] in (ZeroResult.OK, ZeroResult.UNCONFIRMED)
                     arm.initialized[6] = ok

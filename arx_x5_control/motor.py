@@ -137,6 +137,7 @@ class MotorBank:
         self.encos_guard_until = 0
         self.enable_last_ms = 0
         self.enable_next = 3
+        self.next_due_ms = [next(k for k in range(8) if mask & (1 << k)) for mask in TX_GROUPS]
 
     def operation(self, index, action, now):
         motor = self.motors[index]
@@ -165,8 +166,10 @@ class MotorBank:
             self.enable_next = 3 + (self.enable_next - 2) % 4
         # H7's MotorTask visits DM before ENCOS. PID only executes on its group.
         for i in (3, 4, 5, 6, 0, 1, 2):
-            if TX_GROUPS[i] & (1 << (now % 8)):
+            if now >= self.next_due_ms[i]:
                 if i < 3 and now < self.encos_guard_until:
                     continue
                 output.append(self.motors[i].control(now))
+                period = 2 if i == 0 else 4
+                self.next_due_ms[i] += ((now - self.next_due_ms[i]) // period + 1) * period
         return output
