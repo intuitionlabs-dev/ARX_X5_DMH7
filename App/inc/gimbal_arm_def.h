@@ -13,7 +13,7 @@
  */
 
 #include "robot_def.h"
-#include "x5_gravity.h" /* x5_model / x5_gravity_mode，给下面的重力补偿配置用 */
+#include "x5_dynamics.h"
 
 // 电机正方向在运动学坐标系中的方向
 CONSTEXPR int8_t MOTOR_DIR[ARM_JOINT_NUM] = {1, 1, 1, 1, 1, 1};
@@ -100,24 +100,11 @@ CONSTEXPR float JOINT_DAMPING_MODE_KD[ARM_MOTOR_NUM] = {
     35, 50, 50, 0.8f, 0.8f, 1.0f, 0.1f,
 };
 
-/* ==================== 重力补偿 ====================
- * libs/gravity_compensation 是纯 C99 / 零依赖的 **静态重力力矩** 模块(不算法速度/
- * 加速度惯性，也不算科里奥利)，正好顶替被注释掉的 Joint_Feedforward_Calc() ——
- * 那个函数原来调 arm_serial_link 的整机 Newton-Euler，本工程没移植。填的是
- * Gimbal.tau_comp[]，Set_Motor_ref() 再乘 JOINT_TORQUE_TRANS/_COEF 变成 output_comp。
- *
- * 三个型号**只有末端连杆质量不同**(x5/2023 = 0.580、master = 0.680、2025 = 0.570 kg)，
- * 前六段完全一样，所以选错的代价集中在 j4~j6。本臂按 2023 填。
- *
- * 模式选 SDK 是因为它和厂商 SDK 的重力模式**逐位一致**：G(q) 再乘
- * [0.8, 0.8, 0.8, 1.32, 1.32, 1.32] —— 那个系数就在
- * libs/gravity_compensation/c/x5_sdk_parameters.c 的 gravity_scale 字段里，
- * 和 PROVENANCE.md 里反汇编出来的 .rodata 常数 0.8 / 1.32 对得上。
- * 换成 X5_GRAVITY_PHYSICAL 会得到未缩放的 KDL G(q)，前三个关节小 20%、后三个小 24%。 */
-#define JOINT_GRAVITY_COMP_ENABLE 1
-#define JOINT_GRAVITY_COMP_MODEL X5_MODEL_2023
-#define JOINT_GRAVITY_COMP_MODE X5_GRAVITY_SDK
-
-/* 基座系重力方向。NULL 就是按 (0, 0, -9.81) —— 机械臂水平安装时用这个。
- * 底座要是歪着装(垫了角度、装在斜面上)，把实际的重力向量按基座系填进来。 */
-#define JOINT_GRAVITY_BASE NULL
+/* 六轴动力学补偿使用 KDL RNE 与 X5 URDF 的质量、质心和惯量。
+ * SDK 模式的重力项系数为 [0.8, 0.8, 0.8, 1.32, 1.32, 1.32]。
+ * 基座系重力向量的单位为 m/s²，NULL 表示 (0, 0, -9.81)。
+ */
+#define JOINT_DYNAMICS_COMP_ENABLE 1
+#define JOINT_DYNAMICS_COMP_MODEL X5_MODEL_2023
+#define JOINT_DYNAMICS_GRAVITY_MODE X5_GRAVITY_SDK
+#define JOINT_DYNAMICS_GRAVITY_BASE NULL

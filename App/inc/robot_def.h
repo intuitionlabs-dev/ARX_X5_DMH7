@@ -97,7 +97,7 @@ typedef struct {
     Arm_mode mode;
     float joint_angle[ARM_JOINT_NUM];  // 关节角度，deg
     float joint_vel[ARM_JOINT_NUM];    // 关节速度，deg/s
-    float joint_acc[ARM_JOINT_NUM];    // 关节加速度
+    float joint_acc[ARM_JOINT_NUM];    // 关节加速度，deg/s²
     float gripper_angle;    // 夹爪开合角，deg，范围 GRIPPER_ANGLE_MIN..MAX(-142..+142)，
                             //   零点在行程中点 —— 这是找零之后的口径，见 gimbal_cmd_def.h
     float gripper_torque;    // 夹爪力矩，N·m
