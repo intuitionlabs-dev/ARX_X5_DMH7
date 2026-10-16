@@ -23,6 +23,9 @@ Python 3.10 及以上。在仓库根目录执行：
 ```bash
 git submodule update --init --recursive sdk
 python3 -m arx_x5_control.sdk_demo
+
+# 本包所有运行日志切换为英文。
+python3 -m arx_x5_control.sdk_demo --lang en
 ```
 
 若 GitHub SSH 访问不可用，可用 HTTPS 初始化相同子模块：
@@ -49,11 +52,12 @@ python3 -m venv .venv
 
 ```python
 import sdk
-from arx_x5_control import ArmConfig
+from arx_x5_control import ArmConfig, log
 from arx_x5_control.sdk_link import LocalLink
 from arx_x5_control.sdk_demo import wait_arms
 
 # 单臂示例；不传 configurations 时默认双臂。
+log.configure(language="zh")
 with LocalLink.simulated(configurations=[ArmConfig()]) as link:
     arm = sdk.Arm(0, link)             # 也可使用 link.arm(0)
     arm.connect()                    # 打开本地链路、握手、等待反馈
@@ -68,7 +72,7 @@ with LocalLink.simulated(configurations=[ArmConfig()]) as link:
         gripper_raw_deg=-20.0,        # 未标定夹爪时可显式使用原始 deg
     )
     arm.wait_feedback(timeout=1)
-    print(arm.snapshot())
+    log.write_data(arm.snapshot())
 # 离开 with 时，控制核心生成并交付停机请求。
 ```
 
@@ -134,21 +138,25 @@ class MyMotorIO:
 
 ```python
 from arx_x5_control.sdk_link import LocalLink
+from arx_x5_control import log
 
+log.configure(language="zh")
 with LocalLink.simulated(background=False) as link:
     arm = link.arm(0)
     arm.send_version()
     link.step(0)
-    print(arm.snapshot())
+    log.write_data(arm.snapshot())
     arm.init_arm()
     for now_ms in range(1, 8001):
         if now_ms % 500 == 0:
             arm.keepalive()
         link.step(now_ms)
-    print(arm.snapshot())
+    log.write_data(arm.snapshot())
 ```
 
 手动模式下，SDK 的阻塞等待不会自动推进控制时钟。可先提交命令再调用 `step()`，或让另一个所属线程持续推进。时间必须在 `reopen()` 前后保持递增。
+
+后端运行日志使用 `arx_x5_control.log`，通过 `log.configure(language="zh"/"en")` 切换全包语言；不改变 SDK 自己的语言设置。配置、输出目标和事件数据的区别见 [日志文档](LOGGING.md)。
 
 ## 验证
 
