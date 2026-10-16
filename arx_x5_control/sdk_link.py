@@ -13,9 +13,11 @@ from sdk import Link, LinkError, NotConnected, ProtocolError, protocol
 
 from .config import ArmConfig
 from .interfaces import MotorIO
+from . import log
 from .system import ControlSystem
 from .types import Command, CommandKind as K, TickResult, timestamp
 
+_LOG = log.get_logger(__name__)
 
 _EMPTY_COMMANDS = {
     protocol.TID_ARM_INIT: K.INITIALIZE,
@@ -139,6 +141,7 @@ class LocalLink(Link):
             if self.background:
                 self._thr = threading.Thread(target=self._worker, name="arx-x5-control", daemon=True)
                 self._thr.start()
+            _LOG.info("sdk_link.opened", arm_count=len(self.configurations), background=self.background)
             return self
 
     def close(self):
@@ -244,6 +247,7 @@ class LocalLink(Link):
             self.link_err = str(self._failure)
             self._alive = self.link_up = False
             self._stop_ev.set()
+        _LOG.error("sdk_link.failed", error=exc)
 
     def _shutdown(self):
         if self.controller.closed:
@@ -258,6 +262,7 @@ class LocalLink(Link):
         except Exception as exc:
             self._shutdown_failure = exc
             self._fail(exc)
+            _LOG.error("sdk_link.shutdown_failed", error=exc)
 
     def _publish(self, result):
         received_at = time.monotonic()
@@ -284,6 +289,7 @@ class LocalLink(Link):
         with self._event_lock:
             self.event_overruns += max(0, len(self._events) + len(result.events) - self._events.maxlen)
             self._events.extend(result.events)
+        _LOG.events(result.events)
 
     def drain_events(self):
         """取走诊断事件；缓冲区最多保留最近 512 条，覆盖数量可从 stats 读取。"""

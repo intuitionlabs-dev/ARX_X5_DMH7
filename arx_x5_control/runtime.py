@@ -1,16 +1,19 @@
-"""Optional PC monotonic-clock runner. Python scheduling is best effort."""
+"""可选的 PC 单调时钟循环，日志使用本包 log 库，不保证硬实时调度。"""
 
 import time
 
 from .interfaces import ControlIO
 from .system import ControlSystem
+from . import log
+
+_LOG = log.get_logger(__name__)
 
 
 def run(system: ControlSystem, io: ControlIO, *, stop=None, duration_s=None):
-    """Run until stop.is_set(), duration or KeyboardInterrupt; always emit stops.
+    """运行至停止信号、指定时长或键盘中断，退出时始终交付停机请求。
 
-    A fresh system is required. The adapter receives timestamps relative to this
-    invocation; translate device clock timestamps into this same domain.
+    需要尚未运行的控制器。适配器收到相对此次调用的时间戳，设备采样时间
+    也必须转换到同一时钟；日志配置只作用于 arx_x5_control 包。
     """
     if system.last_ms is not None or system.closed:
         raise ValueError("run requires a fresh controller")
@@ -18,6 +21,7 @@ def run(system: ControlSystem, io: ControlIO, *, stop=None, duration_s=None):
         raise ValueError("duration_s must be finite and positive")
     origin = time.monotonic_ns()
     deadline = origin
+    _LOG.info("runtime.started")
     try:
         while stop is None or not stop.is_set():
             now_ns = time.monotonic_ns()
@@ -33,10 +37,19 @@ def run(system: ControlSystem, io: ControlIO, *, stop=None, duration_s=None):
                 io.write_motor_requests(result.motor_requests)
                 io.publish_feedback(result.feedback)
                 io.publish_events(result.events)
+                _LOG.events(result.events)
             deadline = origin + (now_ms + 1) * 1_000_000
     except KeyboardInterrupt:
-        pass
+        _LOG.info("runtime.interrupted")
+    except Exception as exc:
+        _LOG.error("runtime.failed", error=exc)
+        raise
     finally:
         result = system.shutdown((time.monotonic_ns() - origin) // 1_000_000)
-        io.write_motor_requests(result.motor_requests)
-        io.publish_events(result.events)
+        try:
+            io.write_motor_requests(result.motor_requests)
+            io.publish_events(result.events)
+            _LOG.events(result.events)
+        except Exception as exc:
+            _LOG.error("runtime.shutdown_failed", error=exc)
+            raise

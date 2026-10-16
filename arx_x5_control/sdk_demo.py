@@ -1,11 +1,13 @@
 """通过 sdk.Arm 完成双臂模拟流程，不连接硬件。"""
 
-import json
 import time
 
 import sdk
 
 from .sdk_link import LocalLink
+from . import log
+
+_LOG = log.get_logger("arx_x5_control.sdk_demo")
 
 
 def wait_arms(link, arms, predicate, timeout=15.0):
@@ -19,24 +21,25 @@ def wait_arms(link, arms, predicate, timeout=15.0):
             return
         time.sleep(0.05)
     states = [(arm.arm_id, arm.robot_state, arm.mode) for arm in arms]
-    raise TimeoutError(f"等待机械臂状态超时：{states}")
+    raise TimeoutError(log.text("sdk_demo.timeout", states=states))
 
 
-def main():
+def demo():
+    """运行 SDK 双臂模拟，日志配置由所属包统一提供。"""
     defs = sdk.board_defs
     with LocalLink.simulated() as link:
         arms = [sdk.Arm(i, link) for i in (0, 1)]
         for arm in arms:
             arm.connect()
         wait_arms(link, arms, lambda arm: arm.robot_state == defs.STATE_WAIT_INIT)
-        print("双臂握手完成，开始初始化与夹爪找零。", flush=True)
+        _LOG.info("sdk_demo.initializing")
         for arm in arms:
             arm.init_arm()
         wait_arms(link, arms, lambda arm: arm.robot_state == defs.STATE_NORMAL)
         for arm in arms:
             arm.start()
         wait_arms(link, arms, lambda arm: arm.mode == defs.MODE_RUN)
-        print("初始化完成，通过 SDK 下发 rad 位置与 rad/s 速度。", flush=True)
+        _LOG.info("sdk_demo.controlling")
         targets = [tuple(q + (0.08 if i < 3 else 0) for i, q in enumerate(arm.joint_angles))
                    for arm in arms]
         deadline = time.monotonic() + 1.0
@@ -55,16 +58,30 @@ def main():
             arm.reset()
         wait_arms(link, arms, lambda arm: arm.robot_state == defs.STATE_RESETTING)
         wait_arms(link, arms, lambda arm: arm.robot_state == defs.STATE_NORMAL)
-        print(json.dumps({
+        log.write_data({
             "simulated": True,
             "sequence_complete": True,
             "arms": [{"arm_id": arm.arm_id, "state": arm.robot_state,
                       "mode": arm.mode, "joint_angles_rad": arm.joint_angles}
                      for arm in arms],
             "missed_motor_ticks": link.stats["missed_motor_ticks"],
-        }, ensure_ascii=False))
-    print("双臂流程结束，已向测试电机交付停机请求。")
+        })
+    _LOG.info("sdk_demo.complete")
+
+
+def main(argv=None):
+    parser = log.argument_parser("cli.sdk_description", argv)
+    parser.parse_args(argv)
+    try:
+        demo()
+    except KeyboardInterrupt:
+        _LOG.info("runtime.interrupted")
+        return 130
+    except Exception as exc:
+        _LOG.error("cli.failed", error=exc)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

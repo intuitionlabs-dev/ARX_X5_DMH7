@@ -1,21 +1,17 @@
-"""Run a complete two-arm sequence against the in-memory test plant."""
+"""通过内存中的测试电机运行完整双臂流程，日志统一使用本包 log 库。"""
 
-import argparse
-from dataclasses import asdict
-from enum import Enum
-import json
 from math import isfinite
 import time
 
 from . import Command, CommandKind as K, ControlSystem, RobotState as S
+from . import log
 from .simulation import SimulatedMotors
 
-
-def _json(value):
-    return json.dumps(value, default=lambda item: item.name if isinstance(item, Enum) else asdict(item))
+_LOG = log.get_logger("arx_x5_control.__main__")
 
 
-def demo(seconds=12.0, realtime=False, emit=print):
+def demo(seconds=12.0, realtime=False, emit=None):
+    """运行模拟；emit 若提供则接收原始事件和结果 JSON，供现有调用者保存数据。"""
     system, plant = ControlSystem(), SimulatedMotors()
     stage = [0, 0]
     stage_ms = [0, 0]
@@ -53,30 +49,39 @@ def demo(seconds=12.0, realtime=False, emit=print):
             result = system.step(now, commands=commands, motor_feedback=plant.feedback(now))
             plant.apply(result.motor_requests)
             for event in result.events:
-                emit(_json(asdict(event)))
+                _LOG.event(event)
+                if emit is not None:
+                    log.write_data(event, sink=emit)
         summary = {"simulated": True, "duration_s": seconds,
                    "sequence_complete": all(s == 5 and a.state == S.NORMAL for s, a in zip(stage, system.arms)),
                    "arms": [{"arm_id": a.id, "state": a.state.name, "mode": a.actual_mode.name,
                              "gripper_initialized": a.initialized[6]} for a in system.arms]}
-        emit(_json(summary))
+        log.write_data(summary, sink=emit)
         return summary
     finally:
-        plant.apply(system.shutdown().motor_requests)
+        final = system.shutdown()
+        plant.apply(final.motor_requests)
+        _LOG.events(final.events)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--demo", action="store_true", help="run the local simulated sequence (default)")
-    parser.add_argument("--seconds", type=float, default=12.0, help="simulated duration, default 12")
-    parser.add_argument("--realtime", action="store_true", help="pace the simulation to wall clock time")
-    args = parser.parse_args()
+def main(argv=None):
+    parser = log.argument_parser("cli.description", argv)
+    parser.add_argument("--demo", action="store_true", help=log.text("cli.demo_help"))
+    parser.add_argument("--seconds", type=float, default=12.0, help=log.text("cli.seconds_help"))
+    parser.add_argument("--realtime", action="store_true", help=log.text("cli.realtime_help"))
+    args = parser.parse_args(argv)
     if not isfinite(args.seconds) or args.seconds <= 0:
-        parser.error("--seconds must be finite and positive")
+        parser.error(log.text("cli.invalid_seconds"))
     try:
         demo(args.seconds, args.realtime)
     except KeyboardInterrupt:
-        pass
+        _LOG.info("runtime.interrupted")
+        return 130
+    except Exception as exc:
+        _LOG.error("cli.failed", error=exc)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
