@@ -22,3 +22,7 @@ deps_dot
 *.srctrl*
 dot_test
 scripts/temp
+__pycache__/
+*.egg-info/
+/dist/
+/.venv/
