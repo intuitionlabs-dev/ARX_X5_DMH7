@@ -68,3 +68,9 @@ class SimulatedMotors:
                               velocity=self.velocities[a][i], temperature=25.0,
                               error_code=0 if i < 3 or not self.enabled[a][i] else 1))
         return tuple(output)
+
+    def poll_feedback(self, now_ms):
+        return self.feedback(now_ms)
+
+    def write_motor_requests(self, requests):
+        self.apply(requests)

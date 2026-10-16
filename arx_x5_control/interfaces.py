@@ -5,7 +5,20 @@ from typing import Iterable, Protocol
 from .types import ArmFeedback, Command, Event, MotorFeedback, MotorRequest
 
 
-class ControlIO(Protocol):
+class MotorIO(Protocol):
+    """Decoded motor boundary, called serially by the controller owner.
+
+    Both methods must be nonblocking. Feedback timestamps use the same clock as
+    now_ms and retain acquisition time; old samples must not be restamped. Motor
+    requests must be delivered in order, including shutdown and zeroing guards.
+    Raise on output failure instead of silently dropping requests.
+    """
+
+    def poll_feedback(self, now_ms: int) -> Iterable[MotorFeedback]: ...
+    def write_motor_requests(self, requests: tuple[MotorRequest, ...]) -> None: ...
+
+
+class ControlIO(MotorIO, Protocol):
     """Nonblocking methods, called by one control thread, in order.
 
     poll_* must return drained snapshots, not repeat old feedback as new data.
@@ -16,7 +29,5 @@ class ControlIO(Protocol):
     """
 
     def poll_commands(self, now_ms: int) -> Iterable[Command]: ...
-    def poll_feedback(self, now_ms: int) -> Iterable[MotorFeedback]: ...
-    def write_motor_requests(self, requests: tuple[MotorRequest, ...]) -> None: ...
     def publish_feedback(self, feedback: tuple[ArmFeedback, ...]) -> None: ...
     def publish_events(self, events: tuple[Event, ...]) -> None: ...
