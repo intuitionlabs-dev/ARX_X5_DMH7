@@ -10,53 +10,7 @@
 #include "rc.h"
 #include "robot_state.h" /* 串口总模式状态机：离线时的模式来源 + 控制帧来源 */
 
-/* ===================== 相对于源工程砍掉了什么 =====================
- *
- * 源工程的 gimbal_cmd.c(1703 行) 是那台轮腿车的**底盘 + 机械臂协调层**，绑在一整套
- * 本工程没有的基础设施上。下面按源工程 Gimbal_Cmd_Update() 的骨架逐条对照，★ 是删掉的：
- *
- *   取得通信数据          ★ 板间 socket(和底盘 F7 换包)、图传(键鼠 + 自定义控制器)、
- *                           机械臂反馈订阅(pub_sub) —— 本工程是三块板合一
- *   电机掉线处理          ★ 上游在这里汇总 any_motor_lost 再报警 + 拉停。本工程
- *                           gimbal_arm.c 的 Motor_Lost_Handle() 每拍都把 arm_mode 打回
- *                           arm_stop 了，这里是重复；音乐蜂鸣器也没有
- *   机械臂目标同步处理    ★ 靠 arm_ref_synced_flag 把目标拽到折叠姿态。本工程的等价物
- *                           是 Stop_Mode_Update() 里"控制量跟随反馈"(见那里注释)
- *   Set_Ctrl_Default      保留(只剩关节速度/加速度置零)
- *   Arm_Fdb_Calc          ★ 要正运动学 Serial_Link_FKine()，arm_serial_link 没移植
- *   reset_time_calc       ★ 同上(要腕点位置)，而且只服务一键复位
- *   reset_j3_min_calc     ★ 同上(要末端/腕点位置)，只服务一键复位
- *   模式分派              ★ 图传键鼠模式 / DT7 遥控器模式。本工程换成**遥控器优先、
- *                           串口兜底**：遥控器在线时 sw_a 启停 + 摇杆点动，离线时模式
- *                           由串口总模式状态机(App/robot_state.c)决定。
- *                           分支按 Arm_mode 分三支：stop / run / 被动(阻尼+仅重力)
- *   Custom_Update         ★ 自定义控制器(图传链路)
- *   一键模式(arm_auto)    保留(**动作本体在 App/arm_auto.c**，本工程只做复位)，
- *                           这里只留分派 Auto_Mode_Update()
- *   Plan_Running_Check    保留(源工程两个来源，本工程只剩临时规划组 temp_group 那一个；
- *                           另一半在遍历 obj->pkg.plan_group_list，本工程没有 Plan_pkg)
- *   Ctrl_Src_Calc         保留(只剩关节控制源那一支)
- *   Motor_Angle_Limit     保留(单关节软限位)
- *   Ctrl_Post_Process     保留(TD，外加"规划在跑就跟着对齐")
- *   Arm_Ref_Set           保留(两支：规划在跑用规划量，否则用 TD)
- *   Rfid_Handle           ★ RFID
- *   杂项(go_on/skip/温度报警) ★ 都靠上游那些输入；只留 last_auto_mode 的更新
- *   Send_Data             ★ 板间 socket + 拓展板 uart + pub_sub publish；本工程没有发送
- *                           这一步，直接写 gimbal->arm_control_data 就完了
- *
- * 另外这些字段/函数也是整块删的：
- *   - cartesian_src / custom_selfsaving_src(笛卡尔空间控制、自定义控制器腕点控制)
- *     —— 要 arm_kinematics_calc，按用户要求不做，枚举成员在 gimbal_cmd.h 里注释着
- *   - joint_td_accel[] + td_accel_estimate/td_accel_follow —— 本工程的 TD_t 只有 v1/v2，
- *     没有源工程那个 v3 和加速度估计器
- *   - 夹爪遥控控制、支架干涉航点(BRACKET_*)、J2_LOCK_MIN —— 都靠上游那些输入
- *   - Arm_Syn_Ref_Handle()/Arm_Joint_Send_Reinit_And_Sync() —— service 框架
- *   - 蜂鸣器 —— Bsp/inc/bsp_buzzer.h 只有 Init/On/Off/Toggle，没有能放音乐的
- */
-
-/* 本层跑在 CmdTask 里，周期见 Core/Src/freertos.c 的 StartCmdTask(tick += 2U)。
- * 源工程是 APP_PERIOD_S，也是 0.002 —— TD 的 h/h0 是"每拍"的步长，任务周期改了这里
- * 必须跟着改，否则跟踪微分器的可行域整个变样。 */
+/* CmdTask 控制周期，单位为 s。 */
 #define GIMBAL_CMD_PERIOD_S 0.002f
 
 /* 命令层对象挂在 App/inc/arm.h 的 `Arm` 上(g_arm[N].gimbal_cmd)，一台臂一个 ——
@@ -99,8 +53,8 @@ Gimbal_cmd* Gimbal_Cmd_Create(Arm* arm) {
     /* 关节角跟踪微分器初始化。*/
     const float td_r[ARM_JOINT_NUM] = {
         /* 400 */ 1000,
-        700,
-        700,
+        4000,
+        4000,
         2000,
         2000,
         2000,
@@ -138,8 +92,7 @@ void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
      * 这里被盖掉。这样不需要在状态机里维护"冻结/解冻"的第二套状态。 */
     /* 离线那一支取自**本台臂**的模式字段：总模式状态机是按臂各跑一份的(每臂各自握手、
      * 各自看门狗)，A 台掉线进了 damping 不该把 B 台也带成 damping。 */
-    obj->mode =
-        Rc_Online() ? ((rc.sw_a == 1) ? arm_run : arm_stop) : obj->arm->arm_mode;
+    obj->mode = Rc_Online() ? ((rc.sw_a == 1) ? arm_run : arm_stop) : obj->arm->arm_mode;
     /* 控制类型：源工程有 关节 / 笛卡尔 / 自定义腕点 三种(靠遥控器或图传切)，本工程
      * 只剩下关节空间这一种(见 gimbal_cmd.h 的 Arm_ctrl_type)。 */
     obj->ctrl_type = arm_ctrl_joint;
@@ -305,15 +258,19 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
         // // 右摇杆左右控制 j1，
         // if (Etc_Get(rc.trig.rx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT1] += 30;
         // if (Etc_Get(rc.trig.rx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT1] -= 30;
-        // // 右摇杆上下控制 j2
+        // 右摇杆上下控制 j2
         // if (Etc_Get(rc.trig.ry_up)) obj->ctrl_src.joint_src.joint_angle[JOINT2] += 30;
         // if (Etc_Get(rc.trig.ry_down)) obj->ctrl_src.joint_src.joint_angle[JOINT2] -= 30;
+        if (fabsf(rc.ry) > 0.1)
+            obj->ctrl_src.joint_src.joint_angle[JOINT2] += fsgn(rc.ry) * 90 / 500.0;
         // // 左摇杆左右控制 j3
         // if (Etc_Get(rc.trig.lx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT3] += 30;
         // if (Etc_Get(rc.trig.lx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT3] -= 30;
-        // 左摇杆左右控制gripper
         if (fabsf(rc.lx) > 0.1)
-            obj->gimbal->arm_control_data.gripper_angle += rc.lx * 90 / 500.0;
+            obj->ctrl_src.joint_src.joint_angle[JOINT3] += fsgn(rc.lx) * 90 / 500.0;
+        // 左摇杆左右控制gripper
+        // if (fabsf(rc.lx) > 0.1)
+        //     obj->gimbal->arm_control_data.gripper_angle += rc.lx * 90 / 500.0;
         return;
     }
 
@@ -451,63 +408,121 @@ static void Motor_Angle_Limit(Gimbal_cmd* obj) {
 }
 
 static void Ctrl_Post_Process(Gimbal_cmd* obj) {
-    /* 关节角跟踪微分器：用解算出来的目标角当输入，输出的 v1/v2 就是限了速度和加速度
-     * 之后的位置/速度，Arm_Ref_Set() 直接拿去用(规划没在跑的时候)。
-     *
-     * 源工程这里还有 td_accel_estimate()：由 TD 微分 + 低通滤波估计加速度，写进
-     * joint_td_accel[i].v3。本工程的 TD_t 里根本没有 v3 这个字段，那套估计器没搬。 */
+    /* TD 提供目标位置、速度和跟踪加速度。 */
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         // 使用控制源的关节角目标值作为微分器的输入
         obj->joint_angle_td[i].ref = obj->ctrl_src.joint_angle_solved[i];
         TDFunction_independent(&obj->joint_angle_td[i]);
     }
 
-    /* 规划在跑的时候让 TD 直接对齐规划值（v1 = ref、v2 清零）。
-     * Arm_Ref_Set() 这时不用 TD 的输出，所以这里喂的是**给规划结束那一拍准备的**：
-     * 规划一停、plan_running 回 0，下一拍就切回用 TD 的 v1/v2 —— 如果 TD 还停在起规划
-     * 之前的旧位置，切换瞬间目标值会跳回去。先对齐就没有这个跳变。
-     * （源工程这里还跟着对齐加速度估计器 td_accel_follow()，本工程没有那个估计器。） */
+    /* 规划运行时，TD 位置跟随规划目标。 */
     if (obj->plan_running) {
         joint_angle_td_follow(obj, obj->ctrl_src.joint_angle_solved);
     }
 }
 
-static void Arm_Ref_Set(Gimbal_cmd* obj) {
-    /* 使用后处理的目标值：关节位置、速度和加速度(源工程还有关节力矩前馈，本工程
-     * 在 gimbal_arm.c 的 Set_Motor_ref() 里算)。
-     *
-     * 分两支，和源工程一致：
-     *   - **规划没在跑**：用 TD 的 v1/v2。加速度源工程用 joint_td_accel[i].v3
-     *     (TD 微分 + LPF 估计)，本工程没有那个估计器，恒置 0 —— 反正 gimbal_arm.c
-     *     现在也没读 joint_acc。
-     *   - **规划在跑**(一键模式)：位置用 ctrl_src.joint_angle_solved(规划器给的**原始**
-     *     值，故意不过 TD —— 轨迹本身就是五次样条，再叠一层 TD 反而把加减速削掉)，
-     *     速度用规划器的速度乘 PLAN_SPEED_COMP_COEF(j1 那一路要压到 0.7，理由见
-     *     gimbal_cmd_def.h)，加速度直接用规划器的。 */
-    if (!obj->plan_running) {
-        /* 串口控制帧的速度前馈：只在 arm_run + 遥控器离线 + 收到的是 0x17 时覆盖。
-         * 位置不动 —— 上面已经经过软限位和 TD 了，不能在这里绕过它们。
-         *
-         * 为什么要覆盖：TD 的 v2 是"位置目标的微分"，它只知道位置在往哪走，不知道
-         * 上位机打算走多快。0x17 带的速度是上位机自己的规划速度，直接当前馈用可以让
-         * 速度环提前出力，跟得上；用 TD 的 v2 会有明显滞后（尤其起停那一下）。 */
-        const Robot_ctrl_cmd* cmd = Robot_State_Ctrl(obj->arm);
-        const uint8_t use_ff = (obj->mode == arm_run && !Rc_Online() && cmd != NULL
-            && cmd->valid && cmd->has_vel);
+static void Joint_Quintic_Ref_Update(Gimbal_cmd* obj, int joint) {
+    Joint_quintic_ref* ref = &obj->joint_quintic_ref[joint];
+    const float target = obj->ctrl_src.joint_angle_solved[joint];
+    if (!ref->initialized) {
+        ref->position = obj->gimbal->arm_feedback_data.joint_angle[joint];
+        ref->velocity = 0.0f;
+        ref->acc = 0.0f;
+        ref->initialized = 1;
+    }
 
-        for (int i = 0; i < ARM_JOINT_NUM; i++) {
-            obj->gimbal->arm_control_data.joint_angle[i] = obj->joint_angle_td[i].v1;
-            obj->gimbal->arm_control_data.joint_vel[i] =
-                use_ff ? cmd->joint_vel[i] : obj->joint_angle_td[i].v2;
-            obj->gimbal->arm_control_data.joint_acc[i] = 0;
-        }
+    if (!ref->active || target != ref->target) {
+        Quintic_spline_config config = {
+            .x0 = 0.0f,
+            .y0 = ref->position,
+            .dy0 = ref->velocity,
+            .ddy0 = ref->acc,
+            .x1 = JOINT_QUINTIC_DURATION_S,
+            .y1 = target,
+            .dy1 = 0.0f,
+            .ddy1 = 0.0f,
+            .xmin = 0.0f,
+            .xmax = JOINT_QUINTIC_DURATION_S,
+        };
+        Quintic_Spline_Reinit(&ref->curve, &config);
+        ref->target = target;
+        ref->elapsed = 0.0f;
+        ref->active = 1;
+    }
+
+    ref->elapsed += GIMBAL_CMD_PERIOD_S;
+    if (ref->elapsed >= JOINT_QUINTIC_DURATION_S) {
+        ref->elapsed = JOINT_QUINTIC_DURATION_S;
+        ref->position = ref->target;
+        ref->velocity = 0.0f;
+        ref->acc = 0.0f;
     } else {
-        for (int i = 0; i < ARM_JOINT_NUM; i++) {
-            obj->gimbal->arm_control_data.joint_angle[i] =
-                obj->ctrl_src.joint_angle_solved[i];
-            obj->gimbal->arm_control_data.joint_vel[i] =
-                obj->plan_joint_vel[i] * PLAN_SPEED_COMP_COEF[i];
-            obj->gimbal->arm_control_data.joint_acc[i] = obj->plan_joint_acc[i];
+        ref->position = Quintic_Spline_Calc_y(&ref->curve, ref->elapsed);
+        ref->velocity = Quintic_Spline_Calc_dy(&ref->curve, ref->elapsed);
+        ref->acc = Quintic_Spline_Calc_ddy(&ref->curve, ref->elapsed);
+    }
+}
+
+static void Arm_Ref_Set(Gimbal_cmd* obj) {
+    Arm_control_data* control = &obj->gimbal->arm_control_data;
+    const Robot_ctrl_cmd* cmd = Robot_State_Ctrl(obj->arm);
+    const uint8_t use_external_velocity =
+        (obj->mode == arm_run && !Rc_Online() && cmd != NULL && cmd->valid && cmd->has_vel);
+
+    for (int i = 0; i < ARM_JOINT_NUM; ++i) {
+        float angle;
+        float velocity;
+        float acc;
+
+        if (obj->plan_running) {
+            angle = obj->ctrl_src.joint_angle_solved[i];
+            velocity = obj->plan_joint_vel[i] * PLAN_SPEED_COMP_COEF[i];
+            acc = obj->plan_joint_acc[i];
+        } else if (use_external_velocity) {
+            angle = obj->joint_angle_td[i].v1;
+            velocity = cmd->joint_vel[i];
+            acc = 0.0f;
+        } else if (obj->mode == arm_run) {
+            Joint_Quintic_Ref_Update(obj, i);
+            angle = obj->joint_quintic_ref[i].position;
+            velocity = obj->joint_quintic_ref[i].velocity;
+            acc = obj->joint_quintic_ref[i].acc;
+        } else {
+            angle = obj->joint_angle_td[i].v1;
+            velocity = obj->joint_angle_td[i].v2;
+            acc = obj->joint_angle_td[i].v3;
+        }
+
+        if (obj->mode != arm_run) acc = 0.0f;
+        if (!isfinite(angle) || !isfinite(velocity) || !isfinite(acc)) {
+            obj->mode = arm_damping;  // 失效时切到被动模式，防止电机出力异常
+            control->mode = obj->mode;
+            for (int j = 0; j < ARM_JOINT_NUM; j++) {
+                control->joint_angle[j] = obj->gimbal->arm_feedback_data.joint_angle[j];
+                control->joint_vel[j] = 0.0f;
+                control->joint_acc[j] = 0.0f;
+                obj->joint_quintic_ref[j].initialized = 0;
+                obj->joint_quintic_ref[j].active = 0;
+            }
+            return;
+        }
+
+        control->joint_angle[i] = angle;
+        control->joint_vel[i] = velocity;
+        control->joint_acc[i] = acc;
+        if (obj->mode != arm_run || obj->plan_running || use_external_velocity) {
+            Joint_quintic_ref* ref = &obj->joint_quintic_ref[i];
+            if (obj->mode != arm_run) {
+                ref->position = obj->gimbal->arm_feedback_data.joint_angle[i];
+                ref->velocity = 0.0f;
+                ref->acc = 0.0f;
+            } else {
+                ref->position = angle;
+                ref->velocity = velocity;
+                ref->acc = acc;
+            }
+            ref->initialized = 1;
+            ref->active = 0;
         }
     }
 }
@@ -523,5 +538,6 @@ static void joint_angle_td_follow(Gimbal_cmd* obj, float ref[ARM_JOINT_NUM]) {
         obj->joint_angle_td[i].ref = ref[i];
         obj->joint_angle_td[i].v1 = obj->joint_angle_td[i].ref;
         obj->joint_angle_td[i].v2 = 0;
+        obj->joint_angle_td[i].v3 = 0;
     }
 }

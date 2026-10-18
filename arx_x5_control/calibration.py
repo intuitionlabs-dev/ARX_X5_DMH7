@@ -121,8 +121,8 @@ class ZeroCalibration:
             self._disable(now, output)
             self.state = ZeroState.WAIT_DISABLE
             return output
-        for motor in self.bank.motors:
-            motor.keep_alive(now)
+        for index in self._participants():
+            self.bank.motors[index].keep_alive(now)
         self.elapsed_ms = now - self.started_ms
         if self.elapsed_ms >= 15000:
             self._finish(now, output, forced=True)

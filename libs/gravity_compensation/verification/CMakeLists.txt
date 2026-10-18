@@ -26,3 +26,6 @@ set_target_properties(gravity_parser_placeholder PROPERTIES OUTPUT_NAME kdl_pars
 
 add_executable(kdl_reference kdl_reference.cpp)
 target_link_libraries(kdl_reference PRIVATE gravity_kdl ${CMAKE_DL_LIBS})
+
+add_executable(kdl_dynamics_reference kdl_dynamics_reference.cpp)
+target_link_libraries(kdl_dynamics_reference PRIVATE gravity_kdl)

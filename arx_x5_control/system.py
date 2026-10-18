@@ -59,12 +59,12 @@ class ControlSystem:
                 queue.append(command)
             else:
                 self.arms[command.arm_id].reject(now_ms, command, "command queue full")
-        # Maintenance runs at 1 kHz; it owns this arm's motor output while busy.
+        # 标定流程独占参与电机的输出，其余电机维持控制周期。
         maintenance_active = []
         for arm in self.arms:
             was_active = arm.zero.busy or arm.zero.pending
             output.extend(arm.zero.tick(now_ms))
-            maintenance_active.append(was_active or arm.zero.busy)
+            maintenance_active.append(arm.zero.mask if was_active or arm.zero.busy else 0)
         if self.command_last_ms is None or now_ms - self.command_last_ms >= 2:
             if self.command_last_ms is not None:
                 self.missed_command_ticks += max(0, (now_ms-self.command_last_ms)//2 - 1)
@@ -86,8 +86,11 @@ class ControlSystem:
         for arm, maintenance in zip(self.arms, maintenance_active):
             output.extend(arm._maintenance)
             arm._maintenance.clear()
-            if not maintenance and not arm.zero.busy and not arm.zero.pending:
-                output.extend(arm.bank.tick(now_ms))
+            if arm.zero.pending:
+                maintenance |= arm.zero.request_mask or (0x3f if arm.zero.include_encos else 0x38)
+            if arm.zero.busy:
+                maintenance |= arm.zero.mask
+            output.extend(arm.bank.tick(now_ms, excluded_mask=maintenance))
             events.extend(arm._events)
             arm._events.clear()
         return TickResult(tuple(output), tuple(feedback), tuple(events))

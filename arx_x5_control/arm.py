@@ -1,8 +1,8 @@
 """One independent arm: robot state machine, command layer and motor control."""
 
-from math import radians
+from math import isfinite, radians
 
-from libs.gravity_compensation import GravityCompensator
+from libs.gravity_compensation import DynamicsCompensator, DynamicsError, DynamicsStatus
 
 from .calibration import ZeroCalibration
 from .command import CommandLayer
@@ -26,8 +26,9 @@ class Arm:
         self.id, self.config = arm_id, config or ArmConfig()
         self.bank = MotorBank(arm_id)
         self.zero = ZeroCalibration(self.bank, self.config.calibrate_encos)
-        self.gravity = GravityCompensator.from_model(self.config.gravity_model,
-                                                    gravity=self.config.gravity_base)
+        self.dynamics = DynamicsCompensator.from_model(self.config.gravity_model,
+                                                       gravity=self.config.gravity_base)
+        self.gravity = self.dynamics
         self.state = RobotState.WAIT_HANDSHAKE
         self.mode = self.actual_mode = ArmMode.STOP
         self.connected = False
@@ -40,6 +41,8 @@ class Arm:
         self.joint_velocity = [0.0] * 6
         self.gripper_angle = 0.0
         self.gravity_torque = (0.0,) * 6
+        self.dynamics_torque = (0.0,) * 6
+        self.dynamics_status = DynamicsStatus.OK
         self.control = None
         self.command = CommandLayer(self)
         self.init_entry = RobotState.WAIT_INIT
@@ -189,33 +192,45 @@ class Arm:
     def drive(self, now):
         c, cmd = self.config, self.command
         online = self.all_online(now)
-        # The H7 sets all six joint init bits every cycle; gripper is separate.
+        # 六个关节的初始化位每拍置位，夹爪独立维护。
         self.initialized[:6] = [True] * 6
         if not self.first_init and online:
             self.first_init = True
-        self.actual_mode = self.mode if online and self.first_init else ArmMode.STOP
-        if c.gravity_enabled:
-            q = tuple(radians(v) for v in self.joint_angle)
-            if all(abs(v) <= 128 for v in q):
-                self.gravity_torque = (self.gravity.sdk_torques(q) if c.gravity_sdk_scale
-                                       else self.gravity.raw_torques(q))
-            else:
-                self.gravity_torque = (0.0,) * 6
-                self.event(now, "gravity_error", "joint angle exceeds firmware gravity range")
-        else:
-            self.gravity_torque = (0.0,) * 6
+        self.actual_mode = cmd.mode if online and self.first_init else ArmMode.STOP
+        self.gravity_torque = self.dynamics_torque = (0.0,) * 6
+        self.dynamics_status = DynamicsStatus.OK
+        if c.gravity_enabled and self.actual_mode in (ArmMode.RUN, ArmMode.GRAVITY):
+            try:
+                q = tuple(radians(v) for v in self.joint_angle)
+                if not all(isfinite(v) for v in q):
+                    raise DynamicsError(DynamicsStatus.INVALID_ARGUMENT)
+                if any(abs(v) > 128 for v in q):
+                    raise DynamicsError(DynamicsStatus.ANGLE_RANGE)
+                gravity = (self.gravity.sdk_torques(q) if c.gravity_sdk_scale
+                           else self.gravity.raw_torques(q))
+                torque = (self.dynamics.torques(q, tuple(radians(v) for v in self.joint_velocity),
+                                               tuple(radians(v) for v in cmd.acceleration),
+                                               sdk_scale=c.gravity_sdk_scale)
+                          if self.actual_mode == ArmMode.RUN else gravity)
+                if not all(isfinite(v) for v in torque):
+                    raise DynamicsError(DynamicsStatus.NONFINITE_RESULT)
+                self.gravity_torque, self.dynamics_torque = gravity, torque
+            except DynamicsError as error:
+                self.dynamics_status = error.status
+                self.actual_mode = ArmMode.STOP
+                self.event(now, "dynamics_error", error.status.name)
         for i, motor in enumerate(self.bank.motors):
             motor.mode = self.actual_mode
             if self.actual_mode != ArmMode.RUN:
                 motor.reference_deg = motor.position_deg
                 motor.speed_comp = motor.output_comp = 0.0
                 if self.actual_mode == ArmMode.GRAVITY and i < 6:
-                    motor.output_comp = c.direction[i] * self.gravity_torque[i] * c.torque_scale[i]
+                    motor.output_comp = c.direction[i] * self.dynamics_torque[i] * c.torque_scale[i]
             elif i < 6:
                 motor.reference_deg = cmd.angle[i] * c.reduction[i] * c.direction[i] + c.position_zero_deg[i]
                 motor.speed_comp = cmd.velocity[i] * c.reduction[i] * c.direction[i] * c.velocity_scale[i]
-                damping = radians(motor.reference_velocity_deg) * c.viscous_damping[i] * c.direction[i]
-                motor.output_comp = c.direction[i] * (self.gravity_torque[i] + damping) * c.torque_scale[i]
+                damping = radians(cmd.velocity[i]) * c.viscous_damping[i]
+                motor.output_comp = c.direction[i] * (self.dynamics_torque[i] + damping) * c.torque_scale[i]
             else:
                 motor.reference_deg = cmd.gripper_angle
                 motor.output_comp = cmd.gripper_torque
@@ -225,4 +240,4 @@ class Arm:
                            tuple(self.joint_angle), tuple(self.joint_velocity), self.gripper_angle,
                            tuple(not m.online(now) for m in self.bank.motors),
                            tuple(self.initialized), tuple(m.temperature for m in self.bank.motors),
-                           tuple(self.gravity_torque))
+                           tuple(self.gravity_torque), tuple(self.dynamics_torque), self.dynamics_status)

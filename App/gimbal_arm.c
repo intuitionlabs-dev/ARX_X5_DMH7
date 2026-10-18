@@ -1,19 +1,12 @@
 #include "gimbal_arm.h"
 #include <stdlib.h> /* malloc()，源文件漏了这个 */
 #include <string.h>
+#include "arm.h"
 #include "common.h"
 #include "dm_mit_control.h"      /* DM_Mit_Control() */
 #include "encos_mixed_control.h" /* ENCOS_Mixed_Control() */
 #include "gimbal_arm_def.h"
 #include "temperature_protect.h"
-
-/* 本工程没有的框架，先注释掉：
-#include "arm_serial_link/arm_serial_link.h"  运动学/整机动力学(Newton-Euler)，没移植；
-                                             重力项改由 libs/gravity_compensation 顶替，
-                                             见 Joint_Gravity_Comp_Calc()
-#include "print_help.h"                       printf_log()/Print_Float()，本工程 printf 是坏的
-#include "pub_sub.h"                          指令来源，现由命令层直接写 arm_control_data
-*/
 
 /* 位置环关不关由**运行期的 arm_only_gravity_comp 模式**定（见 Gimbal_Update() 里的
  * set_pid_* 分派），调试时直接切模式就行，不用重编。
@@ -48,7 +41,7 @@ float DM_Speed_Fdb_Calc(void* arg);
 static void Motor_Lost_Handle(Gimbal* obj);        // 电机掉线处理
 static uint8_t Arm_Auto_Init(Gimbal* obj);         // 初次上电自动初始化
 static void Get_Motor_Fdb(Gimbal* obj);            // 电机反馈
-static void Joint_Gravity_Comp_Calc(Gimbal* obj);  // 静态重力力矩前馈(见下文)
+static void Joint_Dynamics_Comp_Calc(Gimbal* obj);  // 关节逆动力学前馈
 static void Set_Motor_ref(Gimbal* obj);            // 电机控制
 // NOLINTEND
 /* 辅助函数 */
@@ -350,14 +343,8 @@ void Gimbal_Update(Gimbal* obj) {
     /* 获取电机反馈 */
     Get_Motor_Fdb(obj);
 
-    /* 重力前馈：填 obj->tau_comp[]。必须在 Get_Motor_Fdb() 之后(用反馈角)。
-     *
-     * 无条件算，但**只有两个模式会让它真的出力**（Set_Motor_ref() 里）：
-     *   arm_run                → 和粘性项一起进 output_comp
-     *   arm_only_gravity_comp  → 单独进 output_comp
-     * arm_stop / arm_damping 的 output_comp 被清 0，算了也不用。
-     * 反正 6 个关节一次矩阵乘法，比按模式条件调用省心，也不差这点时间。 */
-    Joint_Gravity_Comp_Calc(obj);
+    /* 使用本周期反馈计算关节力矩。 */
+    Joint_Dynamics_Comp_Calc(obj);
 
     /* 按模式挑 PID 配置 / kp / kd。**每拍都重设**，所以模式一换下一拍就生效，
      * 不需要在切换处做任何额外动作。
@@ -414,13 +401,15 @@ void Gimbal_Update(Gimbal* obj) {
     Set_Motor_ref(obj);
 
     // DEBUG:拷贝控制器数据
-    g_fdb_pos = obj->gripper->motor_controller->fdb_position;
-    g_fdb_speed = obj->gripper->motor_controller->fdb_speed;
-    g_ref_pos = obj->gripper->motor_controller->ref_position;
-    g_ref_speed = obj->gripper->motor_controller->ref_speed;
-    g_speed_comp = obj->gripper->motor_controller->speed_comp;
-    g_output = obj->gripper->motor_controller->output;
-    g_ouput_comp = obj->gripper->motor_controller->output_comp;
+    if (obj == g_arm[0].gimbal) {
+        g_fdb_pos = obj->joint3->motor_controller->fdb_position;
+        g_fdb_speed = obj->joint3->motor_controller->fdb_speed;
+        g_ref_pos = obj->joint3->motor_controller->ref_position;
+        g_ref_speed = obj->joint3->motor_controller->ref_speed;
+        g_speed_comp = obj->joint3->motor_controller->speed_comp;
+        g_output = obj->joint3->motor_controller->output;
+        g_ouput_comp = obj->joint3->motor_controller->output_comp;
+    }
 
     /* 杂项 */
     obj->arm_feedback_data.mode = obj->arm_mode;
@@ -481,7 +470,8 @@ static void Set_Motor_ref(Gimbal* obj) {
     if (obj->arm_mode == arm_stop) {  // stop状态
         for (int i = 0; i < ARM_MOTOR_NUM; i++) {
             // 电机位置跟随，防止跳变
-            obj->motor_controller_list[i]->ref_position = obj->motor_controller_list[i]->fdb_position;
+            obj->motor_controller_list[i]->ref_position =
+                obj->motor_controller_list[i]->fdb_position;
             // 电机速度前馈置零
             obj->motor_controller_list[i]->speed_comp = 0;
             // 电机输出补偿置零
@@ -494,39 +484,25 @@ static void Set_Motor_ref(Gimbal* obj) {
         return;
     }
 
-    /* 被动模式（arm_damping / arm_only_gravity_comp）：位置环已经关了，这里只需要
-     * 保证三件事不**额外**出力。
-     *
-     * 和 arm_stop 分支的区别：arm_stop 里电机是失能的，这些量怎么写都无所谓；这两个
-     * 模式电机**使能**，所以写的每个值都会真的变成力矩。
-     *
-     * ⚠ arm_damping 的 output_comp 必须是 0，**不能叠重力**。本工程
-     * libs/gravity_compensation 的零点/符号还没在真机上对过（见 memory
-     * gravity-comp-integrated），而阻尼模式是通信掉线时的兜底状态：这时候如果顶上一个
-     * 方向可能反的重力补偿，臂会自己弹起来或者往下砸，比"带阻尼缓慢下沉"危险得多。
-     * 要试重力补偿请用 arm_only_gravity_comp —— 那个模式的存在意义就在这儿。
-     *
-     * 夹爪在这两个模式里也一并置 0、位置跟随反馈（含在下面的 ARM_MOTOR_NUM 循环里），
-     * 理由同 set_pid_damping()：被动模式要整臂一致。 */
+    /* 被动模式下目标位置跟随反馈；纯重力模式输出静态支撑力矩。 */
     if (obj->arm_mode == arm_damping || obj->arm_mode == arm_only_gravity_comp) {
         const uint8_t gravity_on = (obj->arm_mode == arm_only_gravity_comp);
         for (int i = 0; i < ARM_MOTOR_NUM; i++) {
             // 电机位置跟随，防止跳变
-            obj->motor_controller_list[i]->ref_position = obj->motor_controller_list[i]->fdb_position;
+            obj->motor_controller_list[i]->ref_position =
+                obj->motor_controller_list[i]->fdb_position;
             // 电机速度前馈置零
             obj->motor_controller_list[i]->speed_comp = 0;
             // 电机输出补偿：先全清，要重力的话下面单独给 6 个关节补
             obj->motor_controller_list[i]->output_comp = 0;
         }
         for (int i = 0; i < ARM_JOINT_NUM; i++) {
-            // 关节粘性摩擦前馈置零（被动模式不用它：它是给位控"削峰"用的，
-            // 没有位置环就没有要削的峰，留着只是白白发热）
+            // 被动模式的粘性摩擦前馈为零。
             obj->damp_comp[i] = 0;
             if (gravity_on) {
-                /* 量纲和下面 run 那一支的 output_comp 相同，只是少了 damp_comp 那一项。
-                 * tau_comp[] 只有 6 个关节，夹爪那格保持上面清出来的 0。 */
-                obj->motor_controller_list[i]->output_comp = MOTOR_DIR[i] * obj->tau_comp[i]
-                    * JOINT_TORQUE_TRANS[i] * JOINT_TORQUE_TRANS_COEF[i];
+                /* 关节力矩转换为电机输出。 */
+                obj->motor_controller_list[i]->output_comp = MOTOR_DIR[i]
+                    * obj->tau_comp[i] * JOINT_TORQUE_TRANS[i] * JOINT_TORQUE_TRANS_COEF[i];
             }
         }
         return;
@@ -543,8 +519,8 @@ static void Set_Motor_ref(Gimbal* obj) {
             vel_to_speed(obj->arm_control_data.joint_vel[i], MOTOR_DIR[i], MOTOR_REDUCTION[i])
             * JOINT_SPEEDCOMP_COEF[i];
         // 粘性摩擦前馈
-        obj->damp_comp[i] = obj->motor_controller_list[i]->ref_speed * DEG2RAD
-            * JOINT_DAMPING[i] * MOTOR_DIR[i];
+        obj->damp_comp[i] = obj->arm_control_data.joint_vel[i] * DEG2RAD
+            * JOINT_DAMPING[i];
         // 总力矩前馈,带有修正系数
         obj->motor_controller_list[i]->output_comp = MOTOR_DIR[i]
             * (obj->tau_comp[i] + obj->damp_comp[i]) * JOINT_TORQUE_TRANS[i]
@@ -574,8 +550,8 @@ static void Get_Motor_Fdb(Gimbal* obj) {
      * 真加了减速比不用回来改这里。 */
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         obj->arm_feedback_data.joint_angle[i] =
-            pos_to_angle(obj->motor_controller_list[i]->fdb_position, obj->motor_pos_init[i],
-                MOTOR_DIR[i], MOTOR_REDUCTION[i]);
+            pos_to_angle(obj->motor_controller_list[i]->fdb_position,
+                obj->motor_pos_init[i], MOTOR_DIR[i], MOTOR_REDUCTION[i]);
         obj->arm_feedback_data.joint_vel[i] =
             speed_to_vel(obj->motor_controller_list[i]->fdb_speed, MOTOR_DIR[i],
                 MOTOR_REDUCTION[i]);
@@ -603,54 +579,42 @@ static void Get_Motor_Fdb(Gimbal* obj) {
     obj->arm_feedback_data.motor_temp[GRIPPER] = obj->gripper->t_rotor;
 }
 
-/* 重力前馈：把当前关节角喂给 libs/gravity_compensation，结果写进 obj->tau_comp[]。
- *
- * 只要**静态重力项** —— X5 那个模块的全部内容就是它(不算法速度/加速度惯性、不算
- * 科里奥利)，而且零依赖、无堆、不调 libm。
- *
- * 关节顺序和 tau_comp[] 的下标一致(joint1..joint6 / JOINT1..JOINT6)，单位 N·m；
- * 外层 Set_Motor_ref() 乘 JOINT_TORQUE_TRANS * JOINT_TORQUE_TRANS_COEF 再加阻尼项。
- *
- * **输入用的是反馈角(arm_feedback_data.joint_angle)，不是指令角** —— 重力项是
- * "当前姿态下的力矩"，用指令角会在指令跳变时给出一记假的冲击力矩。
- *
- * **不需要**对 j6 做 normalize(-pi, pi)：重力项只经过 sin/cos(周期 2pi)，而模块自己的
- * 角度范围是 ±128 rad(约 20 圈)，正常关节都在里面。包不包回绕，sin/cos 出来的值一样，
- * 算出来的 G(q) 也一样。
- *
- * 注意调用时机：必须在 Get_Motor_Fdb() 之后(见 Gimbal_Update())，否则用的是上
- * 一拍的关节角。
- *
- * **零点和符号已真机验证正确**：开重力模式、把关节阻尼调到 0，臂能被托住；撤掉补偿
- * 就往下掉约 0.5°。j1≡0、j6≈0 也符合几何预期。
- * **方向反了的表现是重力补偿推着臂往下走，比不补偿还危险** —— 动了这里的零点、符号或
- * 量程之后必须重新验一遍。 */
-static void Joint_Gravity_Comp_Calc(Gimbal* obj) {
-#if JOINT_GRAVITY_COMP_ENABLE
-    /* 下面的循环按 ARM_JOINT_NUM 走，数组按 X5_GRAVITY_DOF 开 —— 两个不等就是越界 */
-    _Static_assert(ARM_JOINT_NUM == X5_GRAVITY_DOF, "重力补偿的关节数和本工程对不上");
+/* arm_run：M(q)*qdd_ref+C(q,qd)*qd+G(q)；纯重力模式：G(q)。
+ * 反馈角度和反馈速度使用关节系，目标加速度由命令层提供。
+ */
+static void Joint_Dynamics_Comp_Calc(Gimbal* obj) {
+#if JOINT_DYNAMICS_COMP_ENABLE
+    _Static_assert(ARM_JOINT_NUM == X5_GRAVITY_DOF, "动力学模型关节数必须一致");
+    if (obj->arm_mode != arm_run && obj->arm_mode != arm_only_gravity_comp) {
+        memset(obj->tau_comp, 0, sizeof(obj->tau_comp));
+        obj->dynamics_status = X5_DYNAMICS_OK;
+        return;
+    }
 
-    x5_real q[X5_GRAVITY_DOF];
-
-    for (int i = 0; i < ARM_JOINT_NUM; i++) {
+    x5_real q[ARM_JOINT_NUM], qd[ARM_JOINT_NUM], qdd[ARM_JOINT_NUM];
+    x5_real torque[ARM_JOINT_NUM];
+    int status;
+    for (int i = 0; i < ARM_JOINT_NUM; ++i) {
         q[i] = obj->arm_feedback_data.joint_angle[i] * DEG2RAD;
+        qd[i] = obj->arm_feedback_data.joint_vel[i] * DEG2RAD;
+        qdd[i] = obj->arm_control_data.joint_acc[i] * DEG2RAD;
     }
-
-    /* 校验失败时模块**不写** output 数组(见 x5_gravity.h 的说明)，所以得自己清零 ——
-     * 不清的话 tau_comp 会留下上一次的值继续出力。会失败的情况只有角度非有限
-     * (ENCOS 第一帧反馈之前是 NAN)或者 |q| > 128 rad，两者都不该拿旧值顶上。 */
-    if (x5_gravity_compute(JOINT_GRAVITY_COMP_MODEL, q, JOINT_GRAVITY_BASE,
-            JOINT_GRAVITY_COMP_MODE, obj->tau_comp)
-        != X5_GRAVITY_OK) {
-        for (int i = 0; i < ARM_JOINT_NUM; i++) {
-            obj->tau_comp[i] = 0.0f;
-        }
+    if (obj->arm_mode == arm_only_gravity_comp) {
+        status = x5_gravity_compute(JOINT_DYNAMICS_COMP_MODEL, q,
+            JOINT_DYNAMICS_GRAVITY_BASE, JOINT_DYNAMICS_GRAVITY_MODE, torque);
+    } else {
+        status = x5_dynamics_compute(JOINT_DYNAMICS_COMP_MODEL, q, qd, qdd,
+            JOINT_DYNAMICS_GRAVITY_BASE, JOINT_DYNAMICS_GRAVITY_MODE, torque);
     }
+    if (status != X5_DYNAMICS_OK) {
+        memset(torque, 0, sizeof(torque));
+        obj->arm_mode = arm_stop;
+    }
+    memcpy(obj->tau_comp, torque, sizeof(obj->tau_comp));
+    obj->dynamics_status = status;
 #else
-    /* 关掉时显式清零，别留上一次的值 —— 中途改这个宏重新烧录时更明显 */
-    for (int i = 0; i < ARM_JOINT_NUM; i++) {
-        obj->tau_comp[i] = 0.0f;
-    }
+    memset(obj->tau_comp, 0, sizeof(obj->tau_comp));
+    obj->dynamics_status = X5_DYNAMICS_OK;
 #endif
 }
 
@@ -706,7 +670,7 @@ static void pid_init(Gimbal* obj) {
     memset(obj->pid_mit_kpkd, 0, sizeof(obj->pid_mit_kpkd));
 
     // joint1
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][0], 6, 0.08, 50, 200, 1000);
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][0], 6, 0.00, 50, 200, 1000);
     obj->pid_cfgs[JOINT1][0].Irange = 1;
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][1], 0.0f, 0.0f, 0.0f, 0.0f, 12);
     obj->encos_kpkd[JOINT1][0] = 0;
@@ -715,13 +679,13 @@ static void pid_init(Gimbal* obj) {
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][0], 4, 0, 50, 200, 1000);
     obj->pid_cfgs[JOINT2][0].Irange = 1;
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][1], 0.0f, 0.0f, 0.0f, 0.0f, 12);
-    obj->encos_kpkd[JOINT2][0] = 0;
+    obj->encos_kpkd[JOINT2][0] = 10;
     obj->encos_kpkd[JOINT2][1] = 50;
 
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][0], 4, 0, 50, 200, 1000);
     obj->pid_cfgs[JOINT3][0].Irange = 1;
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][1], 0.0f, 0.0f, 0.0f, 0.0f, 12);
-    obj->encos_kpkd[JOINT3][0] = 0;
+    obj->encos_kpkd[JOINT3][0] = 10;
     obj->encos_kpkd[JOINT3][1] = 50;
 
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT4][0], 6, 0.08, 50, 200, 1000);

@@ -1,10 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Extract the URDF quantities needed for static gravity compensation.
-
-Equivalent geometry conventions to kdl_parser::toKdl / addChildrenToTree.
-Inertial RPY and rotational inertia are deliberately unnecessary at rest:
-only link mass and link-frame COM enter the gravity wrench.
-"""
+"""读取 URDF 关节几何、质量、质心和连杆系惯量。"""
 
 from dataclasses import dataclass
 from math import isfinite
@@ -12,7 +7,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from .spatial import (Matrix, Vector, ZERO, add, axis_rotation, finite_vector,
-                      multiply, normalize, rotate, rpy_rotation, scale)
+                      multiply, normalize, rotate, rpy_rotation, scale, transpose)
 
 
 @dataclass(frozen=True)
@@ -26,6 +21,7 @@ class Segment:
     axis: Vector
     mass: float
     com: Vector
+    inertia: Matrix = (ZERO, ZERO, ZERO)
 
     @property
     def movable(self):
@@ -90,6 +86,7 @@ def load_chain(path: str | Path, base="base_link", tip="link6"):
         axis = ZERO if kind == "fixed" else normalize(_vector(joint.find("axis"), "xyz", "1 0 0"))
         inertial = links[current].find("inertial")
         mass, com = 0.0, ZERO
+        inertia = (ZERO, ZERO, ZERO)
         if inertial is not None:
             mass_element = inertial.find("mass")
             if mass_element is None:
@@ -98,7 +95,14 @@ def load_chain(path: str | Path, base="base_link", tip="link6"):
             if not isfinite(mass) or mass < 0:
                 raise ValueError("link mass must be finite and nonnegative")
             com = _vector(inertial.find("origin"), "xyz")
+            tensor = inertial.find("inertia")
+            if tensor is not None:
+                xx, yy, zz, xy, xz, yz = finite_vector(
+                    (tensor.attrib[k] for k in ("ixx", "iyy", "izz", "ixy", "ixz", "iyz")), 6)
+                rotation = rpy_rotation(_vector(inertial.find("origin"), "rpy"))
+                inertia = multiply(multiply(rotation, ((xx, xy, xz), (xy, yy, yz),
+                                                       (xz, yz, zz))), transpose(rotation))
         selected.append(Segment(joint.get("name"), current, kind, xyz, rpy,
-                                rpy_rotation(rpy), axis, mass, com))
+                                rpy_rotation(rpy), axis, mass, com, inertia))
         current = parent
     return tuple(reversed(selected))

@@ -1,41 +1,8 @@
 #pragma once
 
-/* 六轴机械臂 + 夹爪(7 个电机)：j1~j3 是 ENCOS，j4~j6 和夹爪是达妙。
- *
- * 从 ec_code/engineer-wheel-leg-v-1/APP/gimbal/ 搬过来的，和当前框架的适配：
- *
- *   - **指令来源**：源工程走 pub_sub(arm_control_sub->getdata())，订阅队列空(len == -1)
- *     就把 arm_mode 打回 arm_stop(电机失能)。本工程没有这个框架，也**不再有独立的
- *     指令源**：命令层 App/gimbal_cmd.c 每拍直接写 obj->arm_control_data，
- *     Gimbal_Update() 直接读 data.mode 决定使能/失能，两边在同一个任务里、顺序执行，
- *     中间没有队列也没有"喂指令"的入口。源工程"掉线就停"的两条判据在本工程换成：
- *     输入链路(遥控器)由命令层自己判(未做)，电机掉线由 Motor_Lost_Handle() 判。
- *   - **服务(service.h)**：电机重初始化服务没接入，Arm_Reinit_Service_Handler 和相关
- *     字段都注释掉了。
- *   - **动力学(arm_serial_link)**：整机 Newton-Euler 没移植，那一块仍然是注释状态。
- *     但**静态重力项接上了**：Joint_Gravity_Comp_Calc() 每拍用反馈关节角调
- *     libs/gravity_compensation 的 x5_gravity_compute()，结果填 tau_comp[]。
- *     型号/输出模式/开关在 gimbal_arm_def.h 的"重力补偿"那一段。
- *     所以 tau_comp[] 不再是恒 0，位置/速度/摩擦前馈照旧。
- *   - **打印**：本工程 printf 是坏的(__io_putchar 没定义)，PRINT_ANGLE 关掉了。
- *   - **j1~j3 的电机驱动**：ENCOS(ENCOS V1.20EAP，就是 ARX X5 的
- *     MotorType4)。配置散在 gimbal_arm.c 的 Gimbal_Create() 里，参数来源见那里。
- *     注意 ENCOS 的 `enable` 只是标志位（驱动**没有** Enable 接口，见
- *     libs/encos_motor/ENCOS_motor.h），真正的启停帧由 ENCOSmotor_Send_Step()
- *     在 MotorTask 里发；别在这里调 ENCOSmotor_Disable()，理由见
- *     Gimbal_Update() 里的注释。
- *
- * 板级标定量(电机方向、减速比、零点、前馈系数)在 App/inc/gimbal_arm_def.h。
- *
- * 挂载方式：
- *   g_arm[ARM_A].gimbal = Gimbal_Create(ARM_A);   // 必须在**任务里**调，别放 main() 的
- *   g_arm[ARM_B].gimbal = Gimbal_Create(ARM_B);   // USER CODE 2！它栈上要 ~4 KB
- *                               // (joint_controller_config[7])，而主栈
- *                               // _Min_Stack_Size 只有 2 KB。两台**顺序**建，峰值还是
- *                               // 4 KB（第一台的栈帧已经还了）。挂在 StartCmdTask
- *                               // 进循环之前。还要在 BSP_CAN_Init()/
- *                               // DMmotor_Driver_Init()/ENCOSmotor_Driver_Init() 之后。
- *   Cmd_Loop() 里逐台 Gimbal_Update(arm->gimbal);   // CmdTask 500 Hz / 2 ms
+/* 六轴机械臂和夹爪；CmdTask 每 2 ms 调用 Gimbal_Update()。
+ * 运行模式使用 KDL 逆动力学计算关节前馈，纯重力模式计算静态支撑力矩。
+ * 板级参数见 gimbal_arm_def.h。
  */
 
 #include <stdint.h>
@@ -97,10 +64,7 @@ typedef struct Gimbal_t {
 
     /* 控制量 */
     float damp_comp[ARM_JOINT_NUM];  // 前馈计算得到的阻尼补偿值
-    /* 前馈计算得到的无阻尼力矩补偿值, N·m, 关节系(joint1..joint6)。
-     * Joint_Gravity_Comp_Calc() 每拍写一次 = X5 静态重力力矩；整机动力学(惯量/
-     * 科里奥利)没接入。arm_stop 下照样算，只是 Set_Motor_ref() 不会用它。 */
-    float tau_comp[ARM_JOINT_NUM];
+    float tau_comp[ARM_JOINT_NUM];  // 关节逆动力学力矩，N·m
 
     Arm_feedback_data arm_feedback_data;  // 回传云台cmd的数据
     Arm_control_data arm_control_data;  // 指令，由命令层(App/gimbal_cmd.c)每拍直接写
@@ -109,6 +73,7 @@ typedef struct Gimbal_t {
      * 放这儿而不是当全局：两台臂各有各的设零进度，共用一份的话 A 台设到一半、B 台一触发
      * 就把它的进度整个覆盖。触发/结果都在这个成员里，读法见 App/inc/arm_zero.h。 */
     Arm_zero zero;
+    int dynamics_status;  // 动力学求解状态，0 表示成功
 } Gimbal;
 
 /* 建一台臂。**一台臂建一次，两台臂各建一次**：

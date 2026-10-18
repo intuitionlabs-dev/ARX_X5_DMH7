@@ -1,8 +1,23 @@
-# ARX X5 独立重力补偿计算
+# ARX X5 重力与逆动力学计算
+
+Python 运行接口包含 `GravityCompensator` 和 `DynamicsCompensator`。运行时使用 Python 标准库。`arx_x5_control` 调用这两个计算接口生成关节前馈。
+
+```python
+from libs.gravity_compensation import DynamicsCompensator
+
+solver = DynamicsCompensator.from_model("2023")
+torque = solver.torques((0, .4, .8, 0, 0, 0), (0,) * 6, (0, 1, 0, 0, 0, 0))
+```
+
+`torques(q, qd, qdd, sdk_scale=True)` 要求三组 6 元有限数。输入依次使用 rad、rad/s、rad/s²。关节顺序为 joint1…joint6，角度范围为 ±128 rad。输出为 6 元力矩，单位为 N·m。
+
+结果为 `M(q)qdd + C(q,qd)qd + G(q)`。SDK 系数只作用于重力项。求解器使用六个旋转关节的 URDF 惯量。输入无效时抛出 `DynamicsError`，其 `status` 为 `DynamicsStatus`：-1=无效参数，-2=角度超限，-3=结果非有限数。
+
+`DynamicsCompensator.from_model(model, gravity=(0,0,-9.81))` 使用基座系重力。型号支持 `2023`、`master`、`2025`。C 逆动力学接口为 `c/x5_dynamics.h`，编译时链接 libm。
 
 **当前推荐交付是 [c/ 下的纯 C99 / float 版本](c/README.md)，面向 STM32，无外部依赖，连 libm 也不需要。**
 复制 `x5_gravity.c`、`x5_gravity.h`、`x5_gravity_data.h` 三个文件即可接入。
-其余 Python 实现及 KDL 源码保留作算法说明、模型常量生成和独立验证参考。
+Python 实现支持 PC 控制、模型常量生成和独立验证。KDL 源码用于独立数值验证。
 
 ```c
 float torque[6];

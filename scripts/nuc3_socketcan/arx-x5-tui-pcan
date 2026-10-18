@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+mkdir -p /home/intuition-nuc3/.cache/arx-x5-control
+exec 9>/home/intuition-nuc3/.cache/arx-x5-control/tui.lock
+if ! flock -n 9; then
+    echo '机械臂控制台正在运行。' >&2
+    exit 1
+fi
+exec /home/intuition-nuc3/arx-connectivity-check/.venv/bin/arx-x5-tui \
+    --interface socketcan --channel can0 "$@"

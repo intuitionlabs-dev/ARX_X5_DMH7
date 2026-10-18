@@ -1,8 +1,8 @@
 # PC Python 控制接口
 
-现有 `sdk.Arm` 调用可通过 `arx_x5_control.sdk_link.LocalLink` 接入，详见 [SDK 本地后端](SDK_LOCAL.md)。下文是底层控制接口，关节角使用 deg；SDK 对外的 rad/rad/s/m 单位由 SDK 接入层保留。
+现有 `sdk.Arm` 调用可通过 `arx_x5_control.sdk_adapter.link.LocalLink` 接入，详见 [SDK 本地后端](SDK_LOCAL.md)。下文是底层控制接口，关节角使用 deg；SDK 对外的 rad/rad/s/m 单位由 SDK 接入层保留。
 
-接口版本：1。类型定义在 [`types.py`](../arx_x5_control/types.py)，运行适配器在 [`interfaces.py`](../arx_x5_control/interfaces.py)。本接口不是原 H7 二进制协议的编码实现。
+接口版本：1。类型定义在 [`types.py`](types.py)，运行适配器在 [`interfaces.py`](interfaces.py)。本接口不是原 H7 二进制协议的编码实现。
 
 ## 控制循环
 
@@ -46,7 +46,20 @@ result = controller.step(now_ms, commands=commands, motor_feedback=feedback)
 | `POSITION_VELOCITY` | `NORMAL/RUN`；6 个角度、6 个速度及夹爪角度 | 0x17 |
 | `RESET` | `NORMAL` 且全电机在线；只复位、不找零 | 0x18 |
 
-非位置命令的角度/速度数组应为空。位置命令不接受额外速度数组；位置速度命令必须同时提供两组 6 元数组。位置目标会软限幅，然后经过 TD。外部速度直接覆盖 TD 速度，最终仍受电机速度量程限制。
+非位置命令使用空角度数组和空速度数组。`POSITION` 使用 6 个关节角。`POSITION_VELOCITY` 同时使用 6 个角度和 6 个速度。
+
+控制器先限制目标角度，再选择参考值来源：
+
+| 条件 | 位置 | 速度 | 加速度 |
+| --- | --- | --- | --- |
+| 自动规划运行 | 规划位置 | 规划速度 × `PLAN_SPEED_COMP_COEF` | 规划解析加速度 |
+| `POSITION_VELOCITY` | TD 位置 | 外部速度 | 0 |
+| RUN 普通位置目标 | 0.16 s 五次样条位置 | 样条解析速度 | 样条解析加速度 |
+| STOP、DAMPING、GRAVITY | TD 位置 | TD 速度 | 0 |
+
+样条每次命令更新推进 2 ms。目标改变时，控制器从当前参考状态重规划。重规划保留位置、速度和加速度。自动规划及外部速度通道同步该状态。被动模式同步反馈位置，并将参考速度和加速度置零。最终电机请求受驱动量程限制。
+
+关节参考值出现非有限数时，本周期输出 DAMPING。控制器清零参考速度和加速度，并产生 `reference_error` 事件。
 
 连接前只有 `CONNECT` 生效。连接后合法但因状态不允许而被拒绝的命令，仍会刷新本臂的 3 s 看门狗，保持 H7 行为。重复 `CONNECT` 不会重新初始化机械臂。连接版本不匹配产生拒绝事件。
 
@@ -116,7 +129,23 @@ stateDiagram-v2
 
 `ArmFeedback.mode` 是电机掉线判断后的实际模式，`requested_mode` 是总模式请求的模式。`motor_initialized` 的前六位按 H7 逻辑置位，不能用来判断在线；在线状态必须查看 `motor_lost`。夹爪初始化位只在其找零成功后置位。温度保留浮点数，未知为 None。
 
-主要事件为 `connection_required`、`connected`、`state`、`rejected`、`initialized`、`initialization_failed`、`auto_aborted`、`reset_complete`、`watchdog`、`calibrated`、`gravity_error`、`shutdown`。
+动力学和参考值检查也决定 `ArmFeedback.mode`。动力学反馈按 joint1…joint6 排列：
+
+| 字段 | 长度与单位 | 含义 |
+| --- | --- | --- |
+| `gravity_torque` | 6，N·m | 当前补偿使用的静态重力项 |
+| `dynamics_torque` | 6，N·m | 当前模式的关节动力学补偿 |
+| `dynamics_status` | 1，整数 | 0=成功，-1=无效参数，-2=角度超限，-3=结果非有限数 |
+
+RUN 使用 `M(q)qdd_ref + C(q,qd)qd + G(q)`。`q` 和 `qd` 来自本周期关节反馈。`qdd_ref` 来自命令层，单位为 deg/s²。求解器把三组输入转换为 rad、rad/s 和 rad/s²。GRAVITY 使用 `G(q)`。STOP 和 DAMPING 的补偿值均为零。
+
+`DynamicsStatus` 提供状态枚举。求解失败时，本周期输出 STOP。控制器清零补偿，并产生 `dynamics_error` 事件。`detail` 为状态枚举名称。总模式请求保留在 `requested_mode`。
+
+`ArmConfig.gravity_enabled` 控制整个动力学补偿。`gravity_model` 选择 `2023`、`master` 或 `2025`。`gravity_base` 使用基座系 m/s²。`gravity_sdk_scale=True` 时，重力项乘 `[0.8,0.8,0.8,1.32,1.32,1.32]`。惯性项和科里奥利项使用物理模型值。
+
+运行模式的粘性摩擦前馈为 `radians(参考关节速度) × viscous_damping`。系数单位为 N·m·s/rad。电机输出使用 `direction × (dynamics_torque + 粘性摩擦前馈) × torque_scale`。求解器要求各关节角绝对值不超过 128 rad。
+
+主要事件为 `connection_required`、`connected`、`state`、`rejected`、`initialized`、`initialization_failed`、`auto_aborted`、`reset_complete`、`watchdog`、`calibrated`、`reference_error`、`dynamics_error`、`shutdown`。
 
 `calibrated` 携带 `zero_state`、7 个 `zero_results` 和 `elapsed_ms`。名称只表示流程已返回，必须检查结果：
 
@@ -131,16 +160,21 @@ stateDiagram-v2
 
 ## 运行适配器
 
+双臂持续控制使用 `ProcessCANMotorIO`。
+工作进程内的 `CANMotorIO` 负责电机收发。
+传输支持 CANable2 SLCAN 和 Linux SocketCAN。
+配置、方法和时间约定见 [CAN 接口](CAN_IO.md)。
+
 实现 `ControlIO` 的五个非阻塞方法即可调用：
 
 ```python
 from arx_x5_control import ControlSystem
 from arx_x5_control.runtime import run
 
-# io 是稍后实现的 ControlIO 对象。
+# io 是已打开的 CANControlIO 对象。
 # run(ControlSystem(), io, stop=threading.Event())
 ```
 
 方法为 `poll_commands(now_ms)`、`poll_feedback(now_ms)`、`write_motor_requests(requests)`、`publish_feedback(feedback)`、`publish_events(events)`。输入必须排空本批新消息，不能反复把旧反馈作为新反馈提交。输出无法接收时抛异常，不能静默丢弃。
 
-`run()` 使用从本次启动开始计时的单调时间，并在正常退出、Ctrl-C 或异常时调用 `shutdown()` 交付停机请求。若通信程序本身已经无法交付，Python 无法保证电机已收到停机；该限制应由后续设备端看门狗处理。
+`run()` 使用本次启动以来的单调时间。正常退出、Ctrl-C 或异常时，运行循环调用 `shutdown()` 交付停机请求。随后关闭 CAN 适配器，完成后台停机和资源释放。设备端看门狗处理通信中断。

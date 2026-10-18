@@ -21,15 +21,15 @@ def finite_vector(values, size=3):
 
 
 def add(a, b):
-    return tuple(x + y for x, y in zip(a, b))
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
 
 
 def scale(a, factor):
-    return tuple(factor * x for x in a)
+    return (factor * a[0], factor * a[1], factor * a[2])
 
 
 def dot(a, b):
-    return sum(x * y for x, y in zip(a, b))
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
 def cross(a, b):
@@ -38,15 +38,17 @@ def cross(a, b):
 
 
 def transpose(rotation):
-    return tuple(zip(*rotation))
+    a, b, c = rotation
+    return ((a[0], b[0], c[0]), (a[1], b[1], c[1]), (a[2], b[2], c[2]))
 
 
 def rotate(rotation, vector):
-    return tuple(dot(row, vector) for row in rotation)
+    return (dot(rotation[0], vector), dot(rotation[1], vector), dot(rotation[2], vector))
 
 
 def multiply(a, b):
-    return tuple(tuple(dot(row, column) for column in transpose(b)) for row in a)
+    columns = transpose(b)
+    return (rotate(columns, a[0]), rotate(columns, a[1]), rotate(columns, a[2]))
 
 
 def normalize(axis):

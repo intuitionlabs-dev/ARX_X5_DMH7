@@ -13,7 +13,7 @@ import sdk
 from sdk import protocol as P
 
 from arx_x5_control import ArmConfig, ArmMode as M, MotorAction, RobotState as S, ZeroResult, ZeroState
-from arx_x5_control.sdk_link import LocalLink
+from arx_x5_control.sdk_adapter.link import LocalLink
 from arx_x5_control.simulation import SimulatedMotors
 
 

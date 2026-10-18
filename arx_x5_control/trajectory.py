@@ -63,6 +63,34 @@ class Spline:
                         sum(i*(i-1)*c[i]*t**(i-2) for i in range(2, len(c))))
 
 
+class JointQuinticReference:
+    """每拍推进的关节五次样条，重规划保留当前速度和加速度。"""
+
+    def __init__(self, duration):
+        self.duration = duration
+        self.current = Waypoint(0.0)
+        self.initialized = False
+        self.curve = None
+        self.target = 0.0
+        self.elapsed = 0.0
+
+    def follow(self, point):
+        self.current = point
+        self.initialized = True
+        self.curve = None
+
+    def update(self, target, feedback, period=0.002):
+        if not self.initialized:
+            self.follow(Waypoint(feedback))
+        if self.curve is None or target != self.target:
+            self.curve = Spline(self.current, Waypoint(target), self.duration)
+            self.target, self.elapsed = target, 0.0
+        self.elapsed = min(self.duration, self.elapsed + period)
+        self.current = (Waypoint(self.target) if self.elapsed >= self.duration
+                        else self.curve.sample(self.elapsed))
+        return self.current
+
+
 class Trajectory:
     def __init__(self, points, durations, kind=SplineKind.QUINTIC):
         self.points = tuple(points)

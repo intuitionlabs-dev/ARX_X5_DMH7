@@ -157,15 +157,21 @@ class MotorBank:
             action = MotorAction.SOFT_STOP
         return motor.request(action, now)
 
-    def tick(self, now):
+    def tick(self, now, excluded_mask=0):
         output = []
         # DM keepalive is sent in STOP as well; STOP is a zero-gain control frame.
         if now - self.enable_last_ms >= 75:
-            output.append(self.motors[self.enable_next].request(MotorAction.ENABLE, now))
-            self.enable_last_ms = now
-            self.enable_next = 3 + (self.enable_next - 2) % 4
+            for offset in range(4):
+                index = 3 + (self.enable_next - 3 + offset) % 4
+                if not excluded_mask & (1 << index):
+                    output.append(self.motors[index].request(MotorAction.ENABLE, now))
+                    self.enable_last_ms = now
+                    self.enable_next = 3 + (index - 2) % 4
+                    break
         # H7's MotorTask visits DM before ENCOS. PID only executes on its group.
         for i in (3, 4, 5, 6, 0, 1, 2):
+            if excluded_mask & (1 << i):
+                continue
             if now >= self.next_due_ms[i]:
                 if i < 3 and now < self.encos_guard_until:
                     continue

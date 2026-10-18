@@ -1,4 +1,4 @@
-"""供后续同设备 Python 通信程序实现的接口。"""
+"""控制核心、CAN 适配器与应用程序之间的接口。"""
 
 from typing import Iterable, Protocol
 
@@ -23,7 +23,7 @@ class ControlIO(MotorIO, Protocol):
     poll_* 返回本次取出的全部新输入，不得把旧反馈当作新数据重复上报。
     电机请求保持顺序，包括 SAVE_ZERO/ENABLE/DISABLE；无法接收输出时必须报错。
     电机反馈和设零确认由后续 poll_feedback 调用返回。
-    此处不提供 CAN、UART、USB、socket、共享内存或进程队列实现。
+    CANControlIO 通过回调提供命令输入和反馈、事件输出。
     """
 
     def poll_commands(self, now_ms: int) -> Iterable[Command]: ...

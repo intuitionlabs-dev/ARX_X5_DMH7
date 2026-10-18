@@ -12,6 +12,9 @@
 
 #include "robot_def.h"
 
+/* 普通关节目标的五次样条过渡时长，s。 */
+CONSTEXPR float JOINT_QUINTIC_DURATION_S = 0.16f;
+
 /* 角度限位，deg */
 CONSTEXPR float JOINT_ANGLE_MIN[ARM_JOINT_NUM] = {
     -115,

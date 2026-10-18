@@ -118,6 +118,10 @@ class PackageLogTests(unittest.TestCase):
             "connected", "connection_required", "watchdog", "initialized",
             "initialization_failed", "reset_complete", "gravity_error", "shutdown")]
         events += [Event(1, 40, "auto_aborted", "motor feedback lost"),
+                   Event(1, 40, "reference_error"),
+                   Event(1, 40, "dynamics_error", "ANGLE_RANGE"),
+                   Event(1, 40, "dynamics_error", "INVALID_ARGUMENT"),
+                   Event(1, 40, "dynamics_error", "NONFINITE_RESULT"),
                    Event(1, 50, "calibrated", zero_state=ZeroState.DONE,
                          zero_results=tuple(ZeroResult), elapsed_ms=1234)]
         before = tuple(events)
@@ -214,14 +218,14 @@ class LogCLITests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("Invalid command-line arguments", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
-        result = self.run_cli("arx_x5_control.sdk_demo", ("--lang", "en", "--help"))
+        result = self.run_cli("arx_x5_control.sdk_adapter.demo", ("--lang", "en", "--help"))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("local control core", result.stdout)
         self.assertNotRegex(result.stdout, r"[\u4e00-\u9fff]")
 
     def test_import_has_no_runtime_output(self):
         result = subprocess.run([sys.executable, "-c",
-                                 "import arx_x5_control.log; import arx_x5_control.sdk_link"],
+                                 "import arx_x5_control.log; import arx_x5_control.sdk_adapter.link"],
                                 cwd=ROOT, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((result.stdout, result.stderr), ("", ""))

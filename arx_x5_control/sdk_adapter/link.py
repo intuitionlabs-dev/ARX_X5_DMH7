@@ -11,13 +11,15 @@ import time
 
 from sdk import Link, LinkError, NotConnected, ProtocolError, protocol
 
-from .config import ArmConfig
-from .interfaces import MotorIO
-from . import log
-from .system import ControlSystem
-from .types import Command, CommandKind as K, TickResult, timestamp
+from ..config import ArmConfig
+from ..diagnostics import ControlTrace
+from ..interfaces import MotorIO
+from ..performance import PerformanceProbe
+from .. import log
+from ..system import ControlSystem
+from ..types import Command, CommandKind as K, TickResult, timestamp
 
-_LOG = log.get_logger(__name__)
+_LOG = log.get_logger("arx_x5_control.sdk_adapter.link")
 
 _EMPTY_COMMANDS = {
     protocol.TID_ARM_INIT: K.INITIALIZE,
@@ -69,7 +71,8 @@ class LocalLink(Link):
     打开和关闭由调用者负责，本链路只交付控制及停机请求。
     """
 
-    def __init__(self, motor_io: MotorIO, *, configurations=None, background=True):
+    def __init__(self, motor_io: MotorIO, *, configurations=None, background=True, collect_performance=False,
+                 collect_trace=False):
         super().__init__(port="local", verify_on_open=False, auto_reconnect=False)
         if not all(callable(getattr(motor_io, name, None)) for name in
                    ("poll_feedback", "write_motor_requests")):
@@ -89,13 +92,16 @@ class LocalLink(Link):
         self._event_lock = threading.Lock()
         self.event_overruns = 0
         self._failure = self._shutdown_failure = None
+        self._performance = PerformanceProbe() if collect_performance else None
+        self._trace = ControlTrace() if collect_trace else None
 
     @classmethod
-    def simulated(cls, *, configurations=None, background=True):
+    def simulated(cls, *, configurations=None, background=True, collect_performance=False, collect_trace=False):
         """显式启用测试电机模型，运行的仍是 ControlSystem 控制逻辑。"""
-        from .simulation import SimulatedMotors
+        from ..simulation import SimulatedMotors
         configs = tuple(configurations) if configurations is not None else (ArmConfig(), ArmConfig())
-        return cls(SimulatedMotors(len(configs)), configurations=configs, background=background)
+        return cls(SimulatedMotors(len(configs)), configurations=configs, background=background,
+                   collect_performance=collect_performance, collect_trace=collect_trace)
 
     def _validate_arm(self, arm_id):
         if type(arm_id) is not int or not 0 <= arm_id < len(self.configurations):
@@ -127,6 +133,8 @@ class LocalLink(Link):
             if self._thr is not None and self._thr.is_alive():
                 raise LinkError("previous control worker has not stopped")
             self.controller = ControlSystem(self.configurations)
+            if self._performance is not None:
+                self._performance.reset_clock()
             self.last_result = TickResult()
             self._failure = self._shutdown_failure = self.link_err = None
             self.board_version = None
@@ -193,6 +201,26 @@ class LocalLink(Link):
         raise ProtocolError("LocalLink accepts SDK commands, not wire frames")
 
     def _step_once(self, now_ms):
+        probe = self._performance
+        if probe is None:
+            return self._step_once_impl(now_ms)
+        start = time.monotonic_ns()
+        before = self.controller.command_last_ms
+        probe.tick("control.period", start)
+        try:
+            return self._step_once_impl(now_ms)
+        finally:
+            if self.controller.command_last_ms != before:
+                probe.tick("command.period", start)
+            probe.observe("control.duration", time.monotonic_ns()-start)
+
+    def performance_snapshot(self):
+        return self._performance.snapshot() if self._performance is not None else None
+
+    def pop_control_trace(self):
+        return self._trace.take() if self._trace is not None else b""
+
+    def _step_once_impl(self, now_ms):
         commands = []
         # 只在 2 ms 命令周期到达时取走输入，避免两批命令在核心处理前累积，
         # 超出核心每台臂最多容纳 7 条命令的队列容量。
@@ -206,6 +234,8 @@ class LocalLink(Link):
         self._last_ms = now_ms
         self.last_result = result
         self.motor_io.write_motor_requests(result.motor_requests)
+        if self._trace is not None:
+            self._trace.capture(self.controller, result, now_ms)
         self._publish(result)
         return result
 
@@ -321,6 +351,10 @@ class LocalLink(Link):
                      stale_feedback_count=self.controller.stale_feedback_count,
                      rejected_commands=tuple(a.rejected_count for a in self.controller.arms),
                      event_overruns=self.event_overruns)
+        stats.update(open_gen=self.open_gen, control_thread_id=self._thr.native_id if self._thr else None,
+                     controller_origin_ns=self._origin_ns)
+        if self._trace is not None:
+            stats["control_trace"] = self._trace.stats()
         return stats
 
     def describe(self):

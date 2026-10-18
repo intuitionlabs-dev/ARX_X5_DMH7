@@ -160,6 +160,8 @@ class ArmFeedback:
     motor_initialized: tuple[bool, ...]
     motor_temperature: tuple[float | None, ...]
     gravity_torque: tuple[float, ...]
+    dynamics_torque: tuple[float, ...] = (0.0,) * 6
+    dynamics_status: int = 0
 
 
 @dataclass(frozen=True)

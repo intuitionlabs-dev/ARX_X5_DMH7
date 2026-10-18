@@ -36,18 +36,20 @@ class TrackingDifferentiator:
     h0: float = 0.004
     position: float = 0.0
     velocity: float = 0.0
+    acceleration: float = 0.0
 
     def __post_init__(self):
         if not all(isfinite(x) and x > 0 for x in (self.r, self.h, self.h0)):
             raise ValueError("TD r, h and h0 must be finite and positive")
 
     def follow(self, position):
-        self.position, self.velocity = position, 0.0
+        self.position, self.velocity, self.acceleration = position, 0.0, 0.0
 
     def step(self, reference):
         p, v = self.position, self.velocity
+        self.acceleration = fst(p - reference, v, self.r, self.h0)
         self.position = p + self.h * v
-        self.velocity = v + self.h * fst(p - reference, v, self.r, self.h0)
+        self.velocity = v + self.h * self.acceleration
         return self.position, self.velocity
 
 

@@ -4,10 +4,10 @@ import time
 
 import sdk
 
-from .sdk_link import LocalLink
-from . import log
+from .link import LocalLink
+from .. import log
 
-_LOG = log.get_logger("arx_x5_control.sdk_demo")
+_LOG = log.get_logger("arx_x5_control.sdk_adapter.demo")
 
 
 def wait_arms(link, arms, predicate, timeout=15.0):

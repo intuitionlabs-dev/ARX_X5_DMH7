@@ -95,6 +95,7 @@ typedef struct TD_t {
     float ref;
     float v1;
     float v2;
+    float v3;  // 跟踪加速度，单位为输入单位/s²
 } TD_t;
 
 //非线性反馈的参数

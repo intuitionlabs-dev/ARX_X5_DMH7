@@ -6,6 +6,7 @@ JSON 结果通过 write_data 输出，保留机器接口，不随显示语言改
 """
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
 import json
@@ -77,6 +78,28 @@ def configure(*, language=None, level=None, stream=_UNSET):
         return _config
 
 
+def configure_console(*, language=None, level=None):
+    """启用当前标准错误流上的包级日志输出。"""
+    return configure(language=language, level=level, stream=sys.stderr)
+
+
+@contextmanager
+def subscribe(callback):
+    """订阅本包日志；回调必须非阻塞。"""
+    class CallbackHandler(logging.Handler):
+        def emit(self, record):
+            callback(dict(logger=record.name, level=record.levelname, message=record.getMessage(),
+                          message_key=getattr(record, "message_key", None),
+                          thread=record.threadName, native_thread_id=threading.get_native_id()))
+    handler = CallbackHandler()
+    _owner.addHandler(handler)
+    try:
+        yield
+    finally:
+        _owner.removeHandler(handler)
+        handler.close()
+
+
 def text(key, *, language=None, **values):
     """渲染本包词条；可指定语言，通常由当前包级配置决定。"""
     chosen = get_config().language if language is None else language
@@ -143,6 +166,8 @@ _EVENT_LEVELS = {
     "watchdog": logging.WARNING,
     "initialization_failed": logging.ERROR,
     "gravity_error": logging.ERROR,
+    "dynamics_error": logging.ERROR,
+    "reference_error": logging.ERROR,
 }
 
 
@@ -166,7 +191,16 @@ def _event_message(event, language):
         values["results"] = ", ".join(catalog.get("zero_result." + r.name, r.name)
                                       for r in event.zero_results)
         values["elapsed_ms"] = event.elapsed_ms
+    elif event.kind == "dynamics_error":
+        values["status"] = catalog.get("dynamics_status." + event.detail, event.detail)
     return key, values
+
+
+def event_text(event, *, language=None):
+    """将控制事件转换为显示文本。"""
+    chosen = get_config().language if language is None else language
+    key, values = _event_message(event, chosen)
+    return text(key, language=chosen, **values)
 
 
 def _json_default(value):

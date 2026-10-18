@@ -1,8 +1,11 @@
 """Command shaping and automatic actions from gimbal_cmd.c / arm_auto.c."""
 
-from .config import GRIPPER_MAX, GRIPPER_MIN, JOINT_MAX, JOINT_MIN, RESET_ANGLE, TD_R
+from math import isfinite
+
+from .config import (GRIPPER_MAX, GRIPPER_MIN, JOINT_MAX, JOINT_MIN,
+                     JOINT_QUINTIC_DURATION_S, PLAN_SPEED_COMP_COEF, RESET_ANGLE, TD_R)
 from .numerics import TrackingDifferentiator, clip
-from .trajectory import PlanGroup
+from .trajectory import JointQuinticReference, PlanGroup, Waypoint
 from .types import ArmMode, ZeroResult, ZeroState
 
 
@@ -10,6 +13,8 @@ class CommandLayer:
     def __init__(self, arm):
         self.arm = arm
         self.td = [TrackingDifferentiator(r) for r in TD_R]
+        self.quintic = [JointQuinticReference(JOINT_QUINTIC_DURATION_S) for _ in range(6)]
+        self.mode = ArmMode.STOP
         self.source = [0.0] * 6
         self.angle = [0.0] * 6
         self.velocity = [0.0] * 6
@@ -33,6 +38,7 @@ class CommandLayer:
 
     def update(self, now):
         arm = self.arm
+        self.mode = arm.mode
         self.gripper_torque = 0.0
         self.acceleration = [0.0] * 6
         if arm.mode != ArmMode.RUN:
@@ -57,17 +63,34 @@ class CommandLayer:
         if arm.initialized[6]:
             self.gripper_angle = clip(self.gripper_angle, GRIPPER_MIN, GRIPPER_MAX)
         planning = self.auto is not None and self.plan is not None and self.plan.running
-        for i, td in enumerate(self.td):
-            td.step(solved[i])
-            if planning:
-                td.follow(solved[i])
-                self.angle[i] = solved[i]
-                self.velocity[i] = self.plan.current[i].velocity
-                self.acceleration[i] = self.plan.current[i].acceleration
-            else:
-                self.angle[i] = td.position
-                external_velocity = arm.mode == ArmMode.RUN and arm.control is not None and arm.control.joint_velocity
-                self.velocity[i] = arm.control.joint_velocity[i] if external_velocity else td.velocity
+        external_velocity = (arm.mode == ArmMode.RUN and arm.control is not None
+                             and bool(arm.control.joint_velocity))
+        try:
+            for i, td in enumerate(self.td):
+                td.step(solved[i])
+                if planning:
+                    td.follow(solved[i])
+                    point = Waypoint(solved[i], self.plan.current[i].velocity * PLAN_SPEED_COMP_COEF[i],
+                                     self.plan.current[i].acceleration)
+                elif external_velocity:
+                    point = Waypoint(td.position, arm.control.joint_velocity[i])
+                elif arm.mode == ArmMode.RUN:
+                    point = self.quintic[i].update(solved[i], arm.joint_angle[i])
+                else:
+                    point = Waypoint(td.position, td.velocity)
+                if not all(isfinite(v) for v in (point.position, point.velocity, point.acceleration)):
+                    raise ValueError("nonfinite joint reference")
+                self.angle[i], self.velocity[i] = point.position, point.velocity
+                self.acceleration[i] = point.acceleration if arm.mode == ArmMode.RUN else 0.0
+                if arm.mode != ArmMode.RUN or planning or external_velocity:
+                    self.quintic[i].follow(Waypoint(arm.joint_angle[i])
+                                           if arm.mode != ArmMode.RUN else point)
+        except (ValueError, OverflowError):
+            self.mode = ArmMode.DAMPING
+            self.angle = list(arm.joint_angle)
+            self.velocity, self.acceleration = [0.0] * 6, [0.0] * 6
+            self.quintic = [JointQuinticReference(JOINT_QUINTIC_DURATION_S) for _ in range(6)]
+            arm.event(now, "reference_error", "nonfinite joint reference")
 
     def _reset(self, now):
         if self.auto_step == 0:
@@ -79,7 +102,7 @@ class CommandLayer:
             self.plan.update(now)
             self.source = [p.position for p in self.plan.current]
             if not self.plan.running:
-                # Endpoint is emitted exactly once, with zero end velocity.
+                # 终点速度为零，TD 同步到规划终点。
                 for td, position in zip(self.td, self.source):
                     td.follow(position)
                 self.auto_step = 2

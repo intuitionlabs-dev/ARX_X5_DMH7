@@ -1,4 +1,4 @@
-/* Host-only test wrappers. Algorithms are compiled from the original C files. */
+/* 主机测试封装，算法由固件 C 源码编译。 */
 #include <string.h>
 #include "pid.h"
 #include "adrc.h"
@@ -33,6 +33,7 @@ void reference_td_step(float ref, float *out) {
     TDFunction_independent(&td);
     out[0] = td.v1;
     out[1] = td.v2;
+    out[2] = td.v3;
 }
 
 void reference_spline(int kind, const float *start, const float *end,

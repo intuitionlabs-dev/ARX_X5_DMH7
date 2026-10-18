@@ -166,8 +166,9 @@ void TDFunction_independent(TD_t* td) {
     float last_v1, last_v2;
     last_v1 = td->v1;
     last_v2 = td->v2;
+    td->v3 = fst(last_v1 - td->ref, last_v2, td->config.r, td->config.h0);
     td->v1 = last_v1 + td->config.h * last_v2;
-    td->v2 = last_v2 + td->config.h * fst(last_v1 - td->ref, last_v2, td->config.r, td->config.h0);
+    td->v2 = last_v2 + td->config.h * td->v3;
 }
 
 /**

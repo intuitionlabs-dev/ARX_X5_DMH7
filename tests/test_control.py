@@ -179,6 +179,24 @@ class ControlTests(unittest.TestCase):
 
 
 class CalibrationTests(unittest.TestCase):
+    def test_gripper_calibration_preserves_joint_control_streams(self):
+        c = ControlSystem([ArmConfig(gravity_enabled=False)])
+        arm = c.arms[0]
+        arm.connected = arm.first_init = True
+        arm.enter(S.NORMAL, 0)
+        arm.mode = ArmMode.RUN
+        arm.zero.request(1 << 6)
+        sent = [[] for _ in range(6)]
+        for now in range(300):
+            result = c.step(now, motor_feedback=samples(now)[:6])
+            for request in result.motor_requests:
+                if request.motor_index < 6 and request.action == A.CONTROL:
+                    sent[request.motor_index].append(now)
+        self.assertTrue(arm.zero.busy)
+        for index, times in enumerate(sent):
+            self.assertGreater(len(times), 60)
+            self.assertLessEqual(max(b-a for a, b in zip(times, times[1:])), 2 if index == 0 else 4)
+
     def test_all_joint_calibration_through_motor_interface(self):
         c = ControlSystem([ArmConfig(gravity_enabled=False)])
         plant = SimulatedMotors(1)
