@@ -8,7 +8,7 @@ from arx_x5_control import (ArmConfig, ArmMode, Command, CommandKind as K, Contr
                             DynamicsStatus, MotorAction, RobotState)
 from arx_x5_control.config import JOINT_QUINTIC_DURATION_S, MOTOR_KP, POSITION_PID, TD_R
 from arx_x5_control.trajectory import JointQuinticReference, Spline, Waypoint
-from libs.gravity_compensation import DynamicsCompensator, DynamicsError
+from arx_x5_control.gravity_compensation import DynamicsCompensator, DynamicsError
 from test_control import samples
 
 

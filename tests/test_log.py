@@ -101,7 +101,7 @@ class PackageLogTests(unittest.TestCase):
                 self.assertEqual(zh_fields, en_fields)
                 self.assertFalse(re.search(r"[\u4e00-\u9fff]", english))
         # 核心保留原事件数据，保证每个固定拒绝/中止原因都有对应的翻译。
-        for path in (ROOT / "arx_x5_control/arm.py", ROOT / "arx_x5_control/system.py"):
+        for path in (ROOT / "sdk/arx_x5_control/arm.py", ROOT / "sdk/arx_x5_control/system.py"):
             for node in ast.walk(ast.parse(path.read_text())):
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                     continue
@@ -173,7 +173,7 @@ class PackageLogTests(unittest.TestCase):
 
     def test_all_runtime_output_uses_package_log(self):
         # 防止后续代码绕过专属日志库使用 print、标准 logging 或直接写终端。
-        for path in (ROOT / "arx_x5_control").glob("*.py"):
+        for path in (ROOT / "sdk/arx_x5_control").glob("*.py"):
             if path.name == "log.py":
                 continue
             tree = ast.parse(path.read_text())
