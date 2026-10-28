@@ -23,7 +23,7 @@ static PID_Config zero_config;
 
 /* 调试器观测臂 A 的 J3。 */
 float g_fdb_pos, g_fdb_speed, g_ref_pos, g_ref_speed;
-float g_speed_comp, g_output, g_ouput_comp;
+float g_speed_comp, g_output,g_speed_output, g_ouput_comp;
 
 Gimbal* Gimbal_Create(uint8_t can_index) {
     if (can_index >= ARM_NUM) return NULL;
@@ -127,13 +127,14 @@ void Gimbal_Update(Gimbal* obj) {
 
     // DEBUG:拷贝控制器数据
     if (obj == g_arm[0].gimbal) {
-        g_fdb_pos = obj->joint1->motor_controller->fdb_position;
-        g_fdb_speed = obj->joint1->motor_controller->fdb_speed;
-        g_ref_pos = obj->joint1->motor_controller->ref_position;
-        g_ref_speed = obj->joint1->motor_controller->ref_speed;
-        g_speed_comp = obj->joint1->motor_controller->speed_comp;
-        g_output = obj->joint1->motor_controller->output;
-        g_ouput_comp = obj->joint1->motor_controller->output_comp;
+        g_fdb_pos = obj->joint2->motor_controller->fdb_position;
+        g_fdb_speed = obj->joint2->motor_controller->fdb_speed;
+        g_ref_pos = obj->joint2->motor_controller->ref_position;
+        g_ref_speed = obj->joint2->motor_controller->ref_speed;
+        g_speed_comp = obj->joint2->motor_controller->speed_comp;
+        g_output = obj->joint2->motor_controller->output;
+        g_ouput_comp = obj->joint2->motor_controller->output_comp;
+        g_speed_output = obj->joint2->motor_controller->pid_speed_data.output;
     }
 
     /* 杂项 */
@@ -315,54 +316,50 @@ static void Joint_Dynamics_Comp_Calc(Gimbal* obj) {
 #endif
 }
 
-
 static void pid_init(Gimbal* obj) {
     memset(obj->pid_cfgs, 0, sizeof(obj->pid_cfgs));
 
     /* 下标 0：位置环；下标 1：速度环。
      * 参数顺序：Kp、Ki、Kd、积分累加限幅、输出限幅。
      */
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][0], 0, 0, 0, 0, 0);
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][1], 0, 0, 0, 0, 0);
-    obj->pid_cfgs[JOINT1][0].Irange = 0;
-    obj->pid_cfgs[JOINT1][1].Irange = 0;
-    obj->pid_mit_kpkd[JOINT1][0] = 200;
-    obj->pid_mit_kpkd[JOINT1][1] = 3;
+    // joint1
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][0], 6, 0.00, 50, 200, 1000);
+    obj->pid_cfgs[JOINT1][0].Irange = 1;
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][1], 0.000199999995, 0.00150000001, 9.99999975e-05, 500, 12);
+    obj->pid_cfgs[JOINT1][1].Irange = 20;
+    obj->pid_mit_kpkd[JOINT1][0] = 30;
+    obj->pid_mit_kpkd[JOINT1][1] = 5;
 
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][0], 0, 0, 0, 0, 0);
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][1], 0, 0, 0, 0, 0);
-    obj->pid_cfgs[JOINT2][0].Irange = 0;
-    obj->pid_cfgs[JOINT2][1].Irange = 0;
-    obj->pid_mit_kpkd[JOINT2][0] = 500;
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][0], 4, 0, 50, 200, 1000);
+    obj->pid_cfgs[JOINT2][0].Irange = 1;
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][1], 0.2, 0.0f, 0.0f, 0.0f, 12);
+    obj->pid_mit_kpkd[JOINT2][0] = 30;
     obj->pid_mit_kpkd[JOINT2][1] = 5;
 
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][0], 0, 0, 0, 0, 0);
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][1], 0, 0, 0, 0, 0);
-    obj->pid_cfgs[JOINT3][0].Irange = 0;
-    obj->pid_cfgs[JOINT3][1].Irange = 0;
-    obj->pid_mit_kpkd[JOINT3][0] = 400;
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][0], 4, 0, 50, 200, 1000);
+    obj->pid_cfgs[JOINT3][0].Irange = 1;
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][1], 0.1, 0.0f, 0.0f, 0.0f, 12);
+    obj->pid_mit_kpkd[JOINT3][0] = 50;
     obj->pid_mit_kpkd[JOINT3][1] = 5;
 
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT4][0], 0, 0, 0, 0, 0);
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT4][0], 10, 0.08, 50, 200, 1000);
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT4][1], 0, 0, 0, 0, 0);
     obj->pid_cfgs[JOINT4][0].Irange = 0;
     obj->pid_cfgs[JOINT4][1].Irange = 0;
-    obj->pid_mit_kpkd[JOINT4][0] = 200;
-    obj->pid_mit_kpkd[JOINT4][1] = 2;
+    obj->pid_mit_kpkd[JOINT4][0] = 50;
+    obj->pid_mit_kpkd[JOINT4][1] = 4;
 
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT5][0], 0, 0, 0, 0, 0);
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT5][1], 0, 0, 0, 0, 0);
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT5][0], 6, 0.08, 50, 200, 1000);
     obj->pid_cfgs[JOINT5][0].Irange = 0;
-    obj->pid_cfgs[JOINT5][1].Irange = 0;
-    obj->pid_mit_kpkd[JOINT5][0] = 20;
-    obj->pid_mit_kpkd[JOINT5][1] = 0.1f;
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT5][1], 0.0f, 0.0f, 0.0f, 0.0f, 10);
+    obj->pid_mit_kpkd[JOINT5][0] = 10;
+    obj->pid_mit_kpkd[JOINT5][1] = 0.8;
 
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT6][0], 0, 0, 0, 0, 0);
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT6][1], 0, 0, 0, 0, 0);
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT6][0], 6, 0.08, 50, 200, 1000);
     obj->pid_cfgs[JOINT6][0].Irange = 0;
-    obj->pid_cfgs[JOINT6][1].Irange = 0;
-    obj->pid_mit_kpkd[JOINT6][0] = 20;
-    obj->pid_mit_kpkd[JOINT6][1] = 0.1f;
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT6][1], 0.0f, 0.0f, 0.0f, 0.0f, 10);
+    obj->pid_mit_kpkd[JOINT6][0] = 10;
+    obj->pid_mit_kpkd[JOINT6][1] = 1;
 
     PID_SetConfig_Pos(&obj->pid_cfgs[GRIPPER][0], 0, 0, 0, 0, 0);
     PID_SetConfig_Pos(&obj->pid_cfgs[GRIPPER][1], 0, 0, 0, 0, 0);
