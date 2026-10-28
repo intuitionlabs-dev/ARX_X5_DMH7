@@ -228,6 +228,7 @@ uint8_t DMmotor_Send_Step(uint8_t can_id) {
         if (!BSP_CAN_TxGroupMatch(obj->config.tx_group)) {
             continue;
         }
+        FrameRateStatistics(&obj->motor_tx_fps);
         // if (obj->errcode) {
         //     DMmotor_Clear_Err(obj);
         //     continue;

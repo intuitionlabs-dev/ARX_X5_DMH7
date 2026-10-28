@@ -90,6 +90,7 @@ typedef struct dm_motor_t {
 
     monitor_item* monitor;
     FPS_t motor_fps;
+    FPS_t motor_tx_fps;   /* 本机被排进发送的拍数，和 motor_fps(收到的反馈) 对拍 */
     controller* motor_controller;   //控制器
     control_dm_func control_calc;
 

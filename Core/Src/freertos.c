@@ -122,7 +122,7 @@ const osThreadAttr_t MotorTask_attributes = {
   .cb_size = sizeof(MotorTaskControlBlock),
   .stack_mem = &MotorTaskBuffer[0],
   .stack_size = sizeof(MotorTaskBuffer),
-  .priority = (osPriority_t) osPriorityHigh,
+  .priority = (osPriority_t) osPriorityRealtime7,
 };
 /* Definitions for CmdTask */
 osThreadId_t CmdTaskHandle;
