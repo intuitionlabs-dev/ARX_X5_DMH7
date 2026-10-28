@@ -6,7 +6,7 @@ import unittest
 
 from arx_x5_control import (ArmConfig, ArmMode, Command, CommandKind as K, ControlSystem,
                             DynamicsStatus, MotorAction, RobotState)
-from arx_x5_control.config import JOINT_QUINTIC_DURATION_S, MOTOR_KP, POSITION_PID, TD_R
+from arx_x5_control.config import JOINT_QUINTIC_DURATION_S, TD_R
 from arx_x5_control.trajectory import JointQuinticReference, Spline, Waypoint
 from arx_x5_control.gravity_compensation import DynamicsCompensator, DynamicsError
 from test_control import samples
@@ -154,21 +154,13 @@ class DynamicsControlTests(unittest.TestCase):
                 solver.torques(q, qd, qdd)
             self.assertEqual(error.exception.status, status)
 
-    def test_configuration_matches_firmware(self):
+    def test_shared_tracking_parameters_match_firmware(self):
         root = Path(__file__).resolve().parents[1]
         cmd = (root / "App/gimbal_cmd.c").read_text()
-        driver = (root / "App/gimbal_arm.c").read_text()
         numbers = lambda values: tuple(float(v.strip().rstrip("f")) for v in values.split(",") if v.strip())
         td = re.search(r"const float td_r\[ARM_JOINT_NUM\] = \{(.*?)\}", cmd, re.S)[1]
         self.assertEqual(TD_R, numbers(re.sub(r"/\*.*?\*/", "", td, flags=re.S)))
-        for i, config in enumerate(POSITION_PID):
-            joint = f"JOINT{i+1}" if i < 6 else "GRIPPER"
-            match = re.search(rf"PID_SetConfig_Pos\(&obj->pid_cfgs\[{joint}\]\[0\],\s*(.*?)\);", driver)
-            self.assertEqual((config.kp, config.ki, config.kd, config.integral_limit, config.output_limit),
-                             numbers(match[1]))
-            field = "encos_kpkd" if i < 3 else "pid_mit_kpkd"
-            kp = re.search(rf"obj->{field}\[{joint}\]\[0\] = ([^;]+);", driver)[1]
-            self.assertEqual(MOTOR_KP[i], float(kp.strip().rstrip("f")))
+        # Motor gains are model-specific; test_metal_motors exercises the H7 DM output.
 
     def test_angle_range_stops_and_recovers_each_active_mode(self):
         for kind in (K.START, K.GRAVITY):

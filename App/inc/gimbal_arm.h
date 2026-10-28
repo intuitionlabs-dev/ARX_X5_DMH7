@@ -14,27 +14,24 @@
 /* BSP 层 */
 /* HAL 层 */
 #include "DM_motor.h"
-#include "ENCOS_motor.h"
 #include "arm_zero.h" /* Arm_zero —— 设零状态机的全部跨拍状态(per 台) */
 
-/* 前三个关节是 ENCOS，后面 j4~j6 和夹爪是达妙。
- * 两个驱动的电机类型不一样，数组下标也就分开算。 */
-#define ARM_ENCOS_JOINT_NUM 3
+/* 每台臂使用七个达妙 MIT 电机，CAN 总线分别为 CAN1 / CAN2。 */
 
 typedef struct Gimbal_t {
     /* 外设 */
-    ENCOS_motor* joint1;  // ENCOS(力位混合控制)
-    ENCOS_motor* joint2;  // ENCOS
-    ENCOS_motor* joint3;  // ENCOS
-    DM_motor* joint4;   // 4310
-    DM_motor* joint5;   // 4310
-    DM_motor* joint6;   // DM2325
-    DM_motor* gripper;  // 4310
+    DM_motor* joint1;
+    DM_motor* joint2;
+    DM_motor* joint3;
+    DM_motor* joint4;
+    DM_motor* joint5;
+    DM_motor* joint6;
+    DM_motor* gripper;
 
     /* 这台臂走哪路 CAN。**就是臂号**（见 robot_def.h 的 Arm_Index / 帧里的 arm_id）：
      * Gimbal_Create(can_index) 灌进来，7 台电机的 config.bsp_can_index 全用它。
      * 两台臂完全同构，唯一的区别就是这个数 —— 也是达妙反馈路由必须按它过滤的原因
-     * （两台臂的达妙 CAN_ID 都是 5/6/7/8、MST_ID 都是 0，不看总线就串台）。 */
+     * （两台臂的 TX ID 均为 1～7、RX ID 均为 0x11～0x17）。 */
     uint8_t can_index;
 
     /* 电机控制器 / 监视器数组，便于缩减代码冗余。
@@ -48,11 +45,7 @@ typedef struct Gimbal_t {
     uint8_t first_init_flag;
 
     PID_Config pid_cfgs[ARM_MOTOR_NUM][2];  // pid参数 //位置环0和速度环1参数
-    float pid_mit_kpkd[ARM_MOTOR_NUM][2];   // 达妙 MIT 的 kp/kd —— 只用 j4/j5/j6/gripper 那几行
-    /* ENCOS 内置的是"力位混合控制"(kp/kd 和 位置/速度/力矩 同帧下发)，和达妙的 MIT
-     * 不是一回事，所以单独一组，别和上面的 pid_mit_kpkd 混用。值见 gimbal_arm.c 的
-     * pid_init()，来源是 ARX X5 SDK 的 joint_parameters.position_kp/kd。 */
-    float encos_kpkd[ARM_ENCOS_JOINT_NUM][2];  // [kp, kd]
+    float pid_mit_kpkd[ARM_MOTOR_NUM][2];  // 七个电机的 MIT [kp, kd]
 
     /* 初始化量 */
     float motor_pos_init[ARM_JOINT_NUM];  // 电机初始角度，与motor_controller->fdb_position是同等地位，deg,公式:motor_angle = MOTOR_DIR*(motor_controller->fdb_position - motor_pos_init) + motor_angle_init
@@ -76,17 +69,9 @@ typedef struct Gimbal_t {
     int dynamics_status;  // 动力学求解状态，0 表示成功
 } Gimbal;
 
-/* 建一台臂。**一台臂建一次，两台臂各建一次**：
- *
- *     g_arm[ARM_A].gimbal = Gimbal_Create(ARM_A);   // CAN1
- *     g_arm[ARM_B].gimbal = Gimbal_Create(ARM_B);   // CAN2
- *
- * can_index 就是臂号、也是 CAN 总线索引（见 robot_def.h 的 Arm_Index）。它决定这台臂
- * 的 7 台电机挂在哪条总线上；两条总线上的电机 ID 完全一样（ENCOS 1/2/4、达妙 5/6/7/8），
- * 靠总线号区分。
- *
- * **必须在任务里调，而且要在 BSP_CAN_Init()/DMmotor_Driver_Init()/
- * ENCOSmotor_Driver_Init() 之后**。返回 NULL 表示电机没建起来（配置不合法的典型是
- * ENCOS 的 tx_id != rx_id、或同一总线上同一个 rx_id 建了两次）。 */
+/* 在 BSP_CAN_Init()/DMmotor_Driver_Init() 后按 CAN 索引创建一台臂。
+ * 两台臂的 ID 和参数相同，反馈按 CAN 总线、仲裁 ID 和载荷电机 ID 路由。 */
 Gimbal* Gimbal_Create(uint8_t can_index);
 void Gimbal_Update(Gimbal* obj);
+/* 原始输出轴位置，rad；应用反馈与设零复核共用。 */
+float Gimbal_Motor_Position_Rad(const DM_motor* motor);
