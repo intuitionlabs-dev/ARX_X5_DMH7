@@ -167,7 +167,10 @@ static void quintic_reference_test(void) {
     Arm_Ref_Set(&cmd);
     assert(arm.arm_control_data.joint_angle[1] > 40.0f);
     assert(arm.arm_control_data.joint_acc[1] > 0.0f);
-    assert(arm.arm_control_data.joint_acc[1] < 400.0f);
+    const float u = GIMBAL_CMD_PERIOD_S / JOINT_QUINTIC_DURATION_S;
+    const float expected_acc = 30.0f / (JOINT_QUINTIC_DURATION_S * JOINT_QUINTIC_DURATION_S)
+        * (60.0f*u - 180.0f*u*u + 120.0f*u*u*u);
+    assert(fabsf(arm.arm_control_data.joint_acc[1] - expected_acc) < 1e-3f);
     close_to(Quintic_Spline_Calc_y(&cmd.joint_quintic_ref[1].curve, 0.0f), 40.0f);
 
     for (int i = 0; i < 40; ++i) Arm_Ref_Set(&cmd);
@@ -295,13 +298,17 @@ static void pid_hold_test(void) {
     pid.error[0] = -0.1f;
     PID_Calc(&pid);
     assert(pid.d_error > 0.0f);
+    const float held_derivative = pid.d_error;
+    PID_Calc(&pid);
+    close_to(pid.d_error, held_derivative);
+    for (int k = 0; k < 100; ++k) {
+        PID_Calc(&pid);
+        close_to(pid.output, pid.config.KP*(pid.ref - pid.fdb) + pid.config.KD*held_derivative);
+    }
+    pid.d_error = 0.0001f;
     PID_Calc(&pid);
     close_to(pid.d_error, 0.0f);
     assert(pid.output < 0.0f);
-    for (int k = 0; k < 100; ++k) {
-        PID_Calc(&pid);
-        close_to(pid.output, pid.config.KP*(pid.ref - pid.fdb));
-    }
     pid.config.D_ahead = D_AHEAD_USED;
     pid.d_error = -0.03f;
     PID_Calc(&pid);

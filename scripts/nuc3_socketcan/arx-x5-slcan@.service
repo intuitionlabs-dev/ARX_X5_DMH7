@@ -1,0 +1,14 @@
+[Unit]
+Description=ARX X5 SocketCAN channel %i
+After=systemd-udevd.service
+
+[Service]
+Type=exec
+EnvironmentFile=/etc/arx-x5/slcan-%i.conf
+ExecStartPre=/usr/sbin/modprobe slcan
+ExecStartPre=/usr/bin/python3 /usr/local/libexec/arx-x5-interface-setup prepare ${ARX_DEVICE}
+ExecStart=/usr/bin/slcand -F -o -c -s8 -S 115200 ${ARX_DEVICE} ${ARX_INTERFACE}
+ExecStartPost=/usr/bin/python3 /usr/local/libexec/arx-x5-interface-setup wait ${ARX_INTERFACE}
+Restart=no
+TimeoutStartSec=10
+TimeoutStopSec=5
