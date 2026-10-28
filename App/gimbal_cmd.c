@@ -92,7 +92,9 @@ void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
      * 这里被盖掉。这样不需要在状态机里维护"冻结/解冻"的第二套状态。 */
     /* 离线那一支取自**本台臂**的模式字段：总模式状态机是按臂各跑一份的(每臂各自握手、
      * 各自看门狗)，A 台掉线进了 damping 不该把 B 台也带成 damping。 */
-    obj->mode = Rc_Online() ? ((rc.sw_a == 1) ? arm_run : arm_stop) : obj->arm->arm_mode;
+    uint8_t rc_stable = HAL_GetTick() > 1000;//1s
+    obj->mode = Rc_Online() && rc_stable ? ((rc.sw_a == 1) ? arm_run : arm_stop)
+                                         : obj->arm->arm_mode;
     /* 控制类型：源工程有 关节 / 笛卡尔 / 自定义腕点 三种(靠遥控器或图传切)，本工程
      * 只剩下关节空间这一种(见 gimbal_cmd.h 的 Arm_ctrl_type)。 */
     obj->ctrl_type = arm_ctrl_joint;
