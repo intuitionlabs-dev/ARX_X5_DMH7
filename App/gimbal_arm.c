@@ -327,7 +327,7 @@ static void pid_init(Gimbal* obj) {
     obj->pid_cfgs[JOINT1][0].Irange = 1;
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][1], 0.000199999995, 0.00150000001, 9.99999975e-05, 500, 12);
     obj->pid_cfgs[JOINT1][1].Irange = 20;
-    obj->pid_mit_kpkd[JOINT1][0] = 30;
+    obj->pid_mit_kpkd[JOINT1][0] = 0;
     obj->pid_mit_kpkd[JOINT1][1] = 5;
 
     PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][0], 4, 0, 50, 200, 1000);
