@@ -127,13 +127,13 @@ void Gimbal_Update(Gimbal* obj) {
 
     // DEBUG:拷贝控制器数据
     if (obj == g_arm[0].gimbal) {
-        g_fdb_pos = obj->joint3->motor_controller->fdb_position;
-        g_fdb_speed = obj->joint3->motor_controller->fdb_speed;
-        g_ref_pos = obj->joint3->motor_controller->ref_position;
-        g_ref_speed = obj->joint3->motor_controller->ref_speed;
-        g_speed_comp = obj->joint3->motor_controller->speed_comp;
-        g_output = obj->joint3->motor_controller->output;
-        g_ouput_comp = obj->joint3->motor_controller->output_comp;
+        g_fdb_pos = obj->joint1->motor_controller->fdb_position;
+        g_fdb_speed = obj->joint1->motor_controller->fdb_speed;
+        g_ref_pos = obj->joint1->motor_controller->ref_position;
+        g_ref_speed = obj->joint1->motor_controller->ref_speed;
+        g_speed_comp = obj->joint1->motor_controller->speed_comp;
+        g_output = obj->joint1->motor_controller->output;
+        g_ouput_comp = obj->joint1->motor_controller->output_comp;
     }
 
     /* 杂项 */
@@ -313,13 +313,61 @@ static void Joint_Dynamics_Comp_Calc(Gimbal* obj) {
 #endif
 }
 
-/* Metal 使用电机侧 MIT PD；主机位置环、速度环均为零。 */
+
 static void pid_init(Gimbal* obj) {
     memset(obj->pid_cfgs, 0, sizeof(obj->pid_cfgs));
-    for (int i = 0; i < ARM_MOTOR_NUM; ++i) {
-        obj->pid_mit_kpkd[i][0] = METAL_MOTOR_KP[i];
-        obj->pid_mit_kpkd[i][1] = METAL_MOTOR_KD[i];
-    }
+
+    /* 下标 0：位置环；下标 1：速度环。
+     * 参数顺序：Kp、Ki、Kd、积分累加限幅、输出限幅。
+     */
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][0], 0, 0, 0, 0, 0);
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][1], 0, 0, 0, 0, 0);
+    obj->pid_cfgs[JOINT1][0].Irange = 0;
+    obj->pid_cfgs[JOINT1][1].Irange = 0;
+    obj->pid_mit_kpkd[JOINT1][0] = 200;
+    obj->pid_mit_kpkd[JOINT1][1] = 3;
+
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][0], 0, 0, 0, 0, 0);
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][1], 0, 0, 0, 0, 0);
+    obj->pid_cfgs[JOINT2][0].Irange = 0;
+    obj->pid_cfgs[JOINT2][1].Irange = 0;
+    obj->pid_mit_kpkd[JOINT2][0] = 500;
+    obj->pid_mit_kpkd[JOINT2][1] = 5;
+
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][0], 0, 0, 0, 0, 0);
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][1], 0, 0, 0, 0, 0);
+    obj->pid_cfgs[JOINT3][0].Irange = 0;
+    obj->pid_cfgs[JOINT3][1].Irange = 0;
+    obj->pid_mit_kpkd[JOINT3][0] = 400;
+    obj->pid_mit_kpkd[JOINT3][1] = 5;
+
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT4][0], 0, 0, 0, 0, 0);
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT4][1], 0, 0, 0, 0, 0);
+    obj->pid_cfgs[JOINT4][0].Irange = 0;
+    obj->pid_cfgs[JOINT4][1].Irange = 0;
+    obj->pid_mit_kpkd[JOINT4][0] = 200;
+    obj->pid_mit_kpkd[JOINT4][1] = 2;
+
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT5][0], 0, 0, 0, 0, 0);
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT5][1], 0, 0, 0, 0, 0);
+    obj->pid_cfgs[JOINT5][0].Irange = 0;
+    obj->pid_cfgs[JOINT5][1].Irange = 0;
+    obj->pid_mit_kpkd[JOINT5][0] = 20;
+    obj->pid_mit_kpkd[JOINT5][1] = 0.1f;
+
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT6][0], 0, 0, 0, 0, 0);
+    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT6][1], 0, 0, 0, 0, 0);
+    obj->pid_cfgs[JOINT6][0].Irange = 0;
+    obj->pid_cfgs[JOINT6][1].Irange = 0;
+    obj->pid_mit_kpkd[JOINT6][0] = 20;
+    obj->pid_mit_kpkd[JOINT6][1] = 0.1f;
+
+    PID_SetConfig_Pos(&obj->pid_cfgs[GRIPPER][0], 0, 0, 0, 0, 0);
+    PID_SetConfig_Pos(&obj->pid_cfgs[GRIPPER][1], 0, 0, 0, 0, 0);
+    obj->pid_cfgs[GRIPPER][0].Irange = 0;
+    obj->pid_cfgs[GRIPPER][1].Irange = 0;
+    obj->pid_mit_kpkd[GRIPPER][0] = 20;
+    obj->pid_mit_kpkd[GRIPPER][1] = 0.1f;
 }
 
 static void set_pid_normal(Gimbal* obj) {

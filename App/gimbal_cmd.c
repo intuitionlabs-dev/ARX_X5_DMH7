@@ -258,6 +258,8 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
         // // 右摇杆左右控制 j1，
         // if (Etc_Get(rc.trig.rx_left)) obj->ctrl_src.joint_src.joint_angle[JOINT1] += 30;
         // if (Etc_Get(rc.trig.rx_right)) obj->ctrl_src.joint_src.joint_angle[JOINT1] -= 30;
+        if (fabsf(rc.rx) > 0.1)
+            obj->ctrl_src.joint_src.joint_angle[JOINT1] += fsgn(rc.rx) * 90 / 500.0;
         // 右摇杆上下控制 j2
         // if (Etc_Get(rc.trig.ry_up)) obj->ctrl_src.joint_src.joint_angle[JOINT2] += 30;
         // if (Etc_Get(rc.trig.ry_down)) obj->ctrl_src.joint_src.joint_angle[JOINT2] -= 30;
