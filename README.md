@@ -45,7 +45,7 @@ H7 使用 [Metal 六轴逆动力学](libs/gravity_compensation/c/README.md)，�
 
 RUN 模式以关节反馈位置和命令层参考速度、加速度计算惯性、科氏、重力及摩擦前馈。普通位置目标和自动复位使用五次样条导数；`0x17` 使用上位机给定速度、加速度为零。GRAVITY 模式仅输出重力补偿，STOP / DAMPING 的动力学前馈为零。求解失败时清空力矩并进入 STOP。
 
-本固件与 Metal PC 后端的配置差异如下；动力学模型及补偿系数一致。
+H7 与 Metal PC 后端的关键运动参数对照如下；动力学模型及补偿系数一致。
 
 | 参数 | H7 | Metal PC 后端 |
 | --- | --- | --- |
@@ -60,9 +60,10 @@ RUN 模式以关节反馈位置和命令层参考速度、加速度计算惯性�
 | 组件 | 目录 | 文档入口 |
 | --- | --- | --- |
 | H7 固件 | `App/`、`Bsp/`、`Core/` | [通信协议](libs/frame/protocol_doc.md) |
-| PC 控制程序 | `sdk/arx_x5_control/` | [使用说明](sdk/arx_x5_control/README.md) |
+| Metal PC 控制程序 | `sdk/metal_arm_control/` | [使用说明](sdk/metal_arm_control/README.md) |
+| ARX X5 PC 控制程序 | `sdk/arx_x5_control/` | [使用说明](sdk/arx_x5_control/README.md) |
 | SDK | `sdk/` | [使用说明](sdk/README.md)、[API](sdk/API.md)、[配置](sdk/config/README.md) |
-| USB-CAN 传输子包 | `sdk/arx_x5_control/usb2can/` | [接口与配置](sdk/arx_x5_control/usb2can/README.md) |
+| USB-CAN 传输子包 | 各 PC 控制包的 `usb2can/` | [Metal](sdk/metal_arm_control/usb2can/README.md)、[ARX X5](sdk/arx_x5_control/usb2can/README.md) |
 | 动力学库 | `libs/gravity_compensation/` | [使用说明](libs/gravity_compensation/README.md) |
 
 SDK 作为 Git 子模块管理。
@@ -73,7 +74,7 @@ git submodule update --init --recursive sdk
 ```
 
 PC 控制程序的 SDK 接入说明位于
-[sdk/arx_x5_control/SDK_LOCAL.md](sdk/arx_x5_control/SDK_LOCAL.md)。
+[Metal 接入说明](sdk/metal_arm_control/SDK_LOCAL.md)和 [ARX X5 接入说明](sdk/arx_x5_control/SDK_LOCAL.md)。
 
 在 H7 工程根目录安装 PC 控制包：
 

@@ -1,153 +1,96 @@
-# STM32 用纯 C99 / float 重力补偿
+# C 重力与逆动力学接口
 
-将以下三个文件加入工程即可，其他文件只是说明、示例或开发验证工具：
+计算接口使用 C99 和单精度 `float`，输入关节位置、速度、加速度，输出关节力矩。求解过程使用栈和只读常量，不分配堆内存，不读写电机或通信设备。H7 固件使用 Metal 接口。
 
-- `x5_gravity.h`：接口；`x5_real` 就是 `float`。
-- `x5_gravity.c`：三角函数和重力递推，全部单精度。
-- `x5_gravity_data.h`：三个型号预计算常量。
+## Metal
 
-SDK 关节与电机参数已加入同目录的 **`x5_sdk_parameters.h/.c`**，需要时一并编译。
-内容包括六轴位置限幅、复位姿态、Kp/Kd/Ki、保护阻尼，以及七个电机的 CAN ID、
-SDK 类型、协议范围、反馈阈值和夹爪型号差异。
-全部为 `const float`/整数只读表，不需要初始化，也不自动执行控制或限幅。
-主机 GCC `-O2` 测得 `.text/.data/.bss` 都是 0，`.rodata` 为 832 字节
-（目标编译器对齐可能不同），`nm -u` 无外部依赖。
+| 文件 | 作用 |
+| --- | --- |
+| [metal_dynamics.h](metal_dynamics.h) | 类型、型号、错误码、计算接口 |
+| [metal_dynamics.c](metal_dynamics.c) | 重力及完整逆动力学求解 |
+| [metal_dynamics_data.h](metal_dynamics_data.h) | 两种负载模型的质量、几何、惯量与补偿系数 |
 
-```c
-#include "x5_sdk_parameters.h"
-
-/* 索引 0 是 J1；各角度单位 rad。 */
-float j1_lower = x5_sdk_joints[0].position_min_rad;
-float j2_home = x5_sdk_home_profiles[X5_SDK_HOME_DEFAULT][1];
-unsigned int j3_can_id = x5_sdk_motors[2].can_id; /* 4 */
-```
-
-这些参数的来源、适用模式和未知项见 [参数说明](../sdk_parameters/README.md)。
-新增参数文件采用 BSD-3-Clause，许可文本在 `../sdk_parameters/reference/LICENSE`。
-其中夹爪 home 是运行时采集值，协议最大值不能当作电机额定参数。
-复位预设的索引是应用配置，不能用 `x5_model` 枚举索引复位表。
-将参数文件与重力模块独立编译，不使用时可以完全不加入。
-
-开发验证（不连接硬件）：
-
-```bash
-python3 gravity_compensation/sdk_parameters/generate_c.py --check
-.venv/bin/python -m unittest discover -s tests -p test_sdk_parameters.py -v
-```
-
-**不需要 ROS、KDL、Eigen、Python、libm、malloc 或初始化函数。**
-没有可变全局状态，可重入。仅使用 C 标准头文件里的类型/常量，不调用标准库函数。
-没有单精度 FPU 的 MCU 仍可能使用编译器自己的软浮点运行时；这不是模块引入的数学库。
-
-## 调用
+将 `metal_dynamics.c` 加入工程并链接数学库 `libm`，头文件放在包含路径中。固件运行不需要 Python、ROS、KDL 或 Eigen。
 
 ```c
-#include "x5_gravity.h"
+#include <stddef.h>
+#include "metal_dynamics.h"
 
-float q[6] = {0.0f, 0.2f, -0.3f, 0.1f, 0.0f, 0.0f};
-float torque[6];
+int main(void) {
+    float q[6] = {0.0f, -0.4f, 0.8f, 0.0f, 0.0f, 0.0f};
+    float qd[6] = {0.0f};
+    float qdd[6] = {0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    float torque[6];
 
-int rc = x5_gravity_compute(
-    X5_MODEL_2025, q, 0, X5_GRAVITY_SDK, torque);
-if (rc == X5_GRAVITY_OK) {
-    /* torque[0..5] 是计算结果，单位 N*m；由上层处理输出。 */
+    int status = metal_dynamics_compute(METAL_MODEL_WITH_GRIPPER,
+        q, qd, qdd, NULL, METAL_GRAVITY_SDK, torque);
+    if (status != METAL_DYNAMICS_OK) return 1;
+    /* torque 为 J1～J6 的力矩前馈，单位 N·m。 */
+    return 0;
 }
 ```
 
-- `q`：SDK/URDF 关节顺序 joint1..joint6，单位 rad。
-- 第三个参数为基座系重力向量，传空指针使用 `(0,0,-9.81)`；倾斜安装传入实际向量。
-- `X5_GRAVITY_PHYSICAL`：原始 KDL 静态持有力矩；`X5_GRAVITY_SDK`：再乘厂商系数。
-- 型号枚举与 SDK 一致：2023=0、master=1、2025=2。
-- 非法型号、指针、模式、非有限重力返回 `-1`；非有限或超出范围的角度返回 `-2`。
-  校验失败时不改写输出数组。
-- 这只是离线算法，不含电机电流换算、CAN、限幅和安全状态机。
+| 参数 | 约定 |
+| --- | --- |
+| `model` | `METAL_MODEL_WITH_GRIPPER` 或 `METAL_MODEL_NO_GRIPPER` |
+| `q[6]` | J1～J6 反馈位置，rad |
+| `qd[6]` / `qdd[6]` | 参考速度 rad/s / 参考加速度 rad/s² |
+| `gravity_base[3]` | 基座重力 m/s²；`NULL` 表示 `(0, 0, -9.81)` |
+| `mode` | `METAL_GRAVITY_PHYSICAL` 或 `METAL_GRAVITY_SDK` |
+| `torque[6]` | 输出 N·m，与输入数组分开分配 |
 
-普通主机上也能编译示例，**不加 `-lm`**：
+物理模式输出 `M(q)qdd + C(q,qd)qd + G(q)`。SDK 模式分别缩放重力和科氏项，并叠加摩擦补偿，惯性项保持物理值。具体系数见 [动力学参数表](../README.md)。
 
-```bash
-cc -std=c99 -O2 x5_gravity.c example.c -o example
-./example
-```
+`metal_gravity_compute(model, q, gravity_base, mode, torque)` 提供静态重力接口，等价于速度和加速度均为零的逆动力学。SDK 模式下此接口只产生缩放后的重力项。
 
-STM32 工程建议启用 `-O2`，并按具体芯片/整个工程 ABI 配置 FPU。
-例如 Cortex-M4F 可以使用 `-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard`，
-但不能将此配置套用到没有相应 FPU 的 STM32。所有浮点常量均带 `f` 后缀，计算路径没有 double。
-不要使用破坏 NaN 检查语义的 `-ffast-math`。
+| 返回码 | 含义 |
+| --- | --- |
+| `METAL_DYNAMICS_OK`，0 | 输出有效 |
+| `METAL_DYNAMICS_INVALID_ARGUMENT`，-1 | 型号、模式、指针或有限数检查失败 |
+| `METAL_DYNAMICS_ANGLE_RANGE`，-2 | 任一位置的绝对值超过 128 rad |
+| `METAL_DYNAMICS_NONFINITE_RESULT`，-3 | 计算结果不是有限数 |
 
-## 如何减少运算
+失败时输出数组保持原值，调用者须检查状态码。H7 应用层会清空前馈并进入 STOP。128 rad 是求解器数值范围，机械臂软限位由命令层独立执行。
 
-1. 不运行时解析 URDF。质量、质心与固定连杆偏移已合并成 **3×6×3 个 float，即 216 字节**。
-2. 不计算 3×3/4×4 通用矩阵。仅对 X5 的 X/Y/Z 关节轴旋转三维向量。
-3. 不计算速度、加速度惯性、科里奥利或完整动力学，只保留静态重力项。
-4. 子链合力可直接写成子链质量乘支持加速度，所以合并力矩臂后，省掉反向合力递推。
-5. 第六轴的固定 X 旋转与关节旋转合并；固定 `-3.1416` 保留原值，不近似替换成 `-pi`。
-6. 基座重力沿 Z 轴时，第一轴重力力矩严格为零，跳过第一轴三角函数和最后一次力矩递推。
-7. 正常入口每次只算 5 对 sin/cos，倾斜重力时为 6 对；不用动态内存、递归、缓存表。
+## 模型和参数生成
 
-缩减后的静态递推为：
+模型链为 `base_link → Link6`，均包含六个旋转关节。夹爪负载由 Link6 的惯性参数表示；不单独求解夹爪开合。固定旋转、轴向、质心和惯量直接来自 URDF。
 
-```text
-H_i = m_i*COM_i + M_(i+1)*p_(i+1)     // 编译前计算
-a_i = R_i^T * a_(i-1)                // 正向，a_0 = -gravity
-N_i = H_i × a_i + R_(i+1)*N_(i+1)    // 反向
-tau_i = joint_axis_i · N_i
-```
-
-`M_(i+1)` 是全部后代的质量，不仅是紧邻连杆的质量。
-重力下整条后代链的合力在当前坐标系恰好为 `M_(i+1)*a_i`，因此这种合并不改变物理模型。
-
-若上层已经计算了关节 sin/cos，调用 `x5_gravity_compute_sincos()` 可省掉所有三角运算。
-调用者保证每对 sin/cos 对应同一角度、满足单位圆；接口只检查分量有限且在 `[-1,1]`。
-定义 `X5_GRAVITY_NO_TRIG` 可在编译时完全移除角度入口，进一步减少代码体积。
-
-## 三角函数精度与范围
-
-内部用拆分的 `pi/2` 将角度归约到约 `[-pi/4,pi/4]`，再用 Horner 多项式同时求 sin/cos。
-所有归约与多项式运算都是 float。限定输入 **`|q_i| <= 128 rad`（约 20 圈）**，
-这是为了保持低成本且准确的单精度范围归约；超过范围时明确报错。
-这是计算入口的数值范围，不是机械臂允许的运动限位。预计算 sin/cos 入口没有此角度范围限制。
-
-采用 9 次 sin / 8 次 cos 多项式，截断误差小于约 `2.5e-8`，避免使用远超 float 精度所需的阶数。
-最终误差主要由 float 舍入和递推累积决定，
-不能把此截断误差当作最终力矩精度。完整数值验证见 `validation.json`。
-
-当前验证共 59,832 组（包含两种输出模式），相对已通过 KDL 验证的 double 参考，
-最大绝对力矩误差 **2.16e-6 N·m 以下**；相对原 KDL/厂商独立样例，误差 **9.55e-7 N·m 以下**。
-这是列出的姿态和重力样本上的测量结果，不是对任意输入的全局误差界。
-
-## 资源测量
-
-主机 GCC 15.2 / x86_64 / `-O2`，完整入口 `.text=2550` 字节；只保留预计算 sin/cos
-入口时 `.text=1810` 字节。模型表 216 字节，另有少量只读数学常量；`.data=.bss=0`。
-关闭 x86 red zone 后，`-fstack-usage` 给出的完整调用路径为约 208 字节
-（入口 96 + 内部函数 112），不包含上层数组或中断栈。**这些是主机编译结果，STM32 上须重新测量。**
-
-主机固定姿态、热缓存、100 万次调用的单次 CPU 时间约 51 ns；预计算 sin/cos 入口约 22 ns。
-测试含循环和校验和开销，无 LTO，仅用于同一主机上比较两种接口，不用于推算 STM32 周期数。
+在仓库根目录执行：
 
 ```bash
-# 在本目录下复现主机耗时测试；不要开启 LTO。
-cc -std=c99 -O2 -c x5_gravity.c -o x5_gravity.o
-cc -std=c99 -O2 benchmark.c x5_gravity.o -o benchmark
-./benchmark
+# 检查 C 表与本地 URDF、parameters.py 是否一致
+python3 libs/gravity_compensation/c/generate_dynamics_data.py --robot metal --check
+
+# 修改模型或 parameters.py 后重新生成
+python3 libs/gravity_compensation/c/generate_dynamics_data.py --robot metal
 ```
 
-STM32 上可通过目标编译器的 `size`、链接 map、`-fstack-usage` 检查 Flash/栈占用，
-再用可用的 DWT 周期计数器或定时器测量真实控制循环中的耗时。
+生成器仅依赖 Python 标准库和本目录的解析代码。模型和参数不从网络读取，也不修改 SDK。
 
-## 验证与来源
+## H7 集成
 
-在项目根目录运行开发验证（这一步才需要主机 Python/C 编译器）：
+[gimbal_arm_def.h](../../../App/inc/gimbal_arm_def.h) 提供编译期配置：
 
-```bash
-python3 gravity_compensation/c/verify.py
-python3 gravity_compensation/c/generate_model_data.py --check
-```
+| 配置 | 默认值 |
+| --- | --- |
+| `JOINT_DYNAMICS_COMP_ENABLE` | 1 |
+| `JOINT_DYNAMICS_COMP_MODEL` | `METAL_MODEL_WITH_GRIPPER` |
+| `JOINT_DYNAMICS_GRAVITY_MODE` | `METAL_GRAVITY_SDK` |
+| `JOINT_DYNAMICS_GRAVITY_BASE` | `NULL` |
 
-验证包含三个型号、正负/倾斜/零重力、随机角度、象限边界、±128 rad、厂商/KDL 独立样例、
-非法输入，以及裁剪掉三角函数后的入口。以 `-Wdouble-promotion -Wfloat-conversion -Werror`
-编译；主机 freestanding 对象的 `nm -u` 必须为空，检查无运行库符号依赖。
-来源、许可证和厂商二进制还原边界仍见上级 `PROVENANCE.md`、`LICENSE`。
-移植时应同时保留许可证；生成数据来自 ARX BSD 许可模型，保留 `../models/LICENSE`。
+[gimbal_arm.c](../../../App/gimbal_arm.c) 将关节角度从 deg 转为 rad，将命令层参考速度、加速度转为 rad/s、rad/s²。RUN 使用完整前馈，GRAVITY 使用静态重力，STOP / DAMPING 的动力学前馈为零。普通位置目标和自动复位使用五次样条导数；`0x17` 使用外部速度，参考加速度为零。
 
-目前尚未在真实 STM32 上测量周期数，也未连接机械臂。主机测得的耗时不能作为 MCU 实时性承诺。
+计算频率由 CmdTask 决定，为 500 Hz。CAN 命令发送频率为 J1 500 Hz、其他电机 250 Hz，两者分别调度。编译时应保持 NaN / Inf 检查有效，不启用 `-ffast-math`。MCU 上的实际周期耗时需结合任务调度测量。
+
+## ARX X5 独立接口
+
+| 功能 | 源文件 | 模型 |
+| --- | --- | --- |
+| 静态重力 | `x5_gravity.c`、`x5_gravity_data.h` | 2023 / master / 2025 |
+| 完整逆动力学 | `x5_dynamics.c`、`x5_dynamics_data.h`，同时链接 `x5_gravity.c` | 2023 / master / 2025 |
+| 厂家电机参数 | `x5_sdk_parameters.c` | 见 [参数说明](../sdk_parameters/README.md) |
+
+接口分别见 [x5_gravity.h](x5_gravity.h)、[x5_dynamics.h](x5_dynamics.h)。X5 的 SDK 模式仅对重力项施加 `[0.8, 0.8, 0.8, 1.32, 1.32, 1.32]` 系数。静态重力入口无需 libm，完整逆动力学需要链接 libm。
+
+算法许可证见 [LICENSE](../LICENSE)，模型和厂家参数的来源及许可证见 [PROVENANCE.md](../PROVENANCE.md)。

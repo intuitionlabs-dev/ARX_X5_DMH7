@@ -1,6 +1,62 @@
-# ARX X5 重力与逆动力学计算
+# 六轴重力与逆动力学计算
 
-Python 运行接口包含 `GravityCompensator` 和 `DynamicsCompensator`。运行时使用 Python 标准库。`arx_x5_control` 调用这两个计算接口生成关节前馈。
+本目录提供 Metal 和 ARX X5 的离线力矩计算。H7 固件调用 Metal C 接口，PC 后端使用 SDK 中对应型号的 Python 实现。计算模块只处理关节空间动力学，电机通信、模式切换和输出限幅由控制层负责。
+
+| 型号 | C 接口 | 模型 | 厂家补偿 |
+| --- | --- | --- | --- |
+| Metal | [metal_dynamics.h](c/metal_dynamics.h) | 带夹爪、无夹爪 | 重力缩放、科氏缩放、速度相关摩擦 |
+| ARX X5 | [x5_dynamics.h](c/x5_dynamics.h)、[x5_gravity.h](c/x5_gravity.h) | 2023、master、2025 | 重力缩放 |
+
+两种型号均基于递归牛顿欧拉算法。输入为六轴关节位置、速度、加速度，单位分别为 rad、rad/s、rad/s²；输出为六轴力矩，单位 N·m。基座重力默认为 `(0, 0, -9.81)` m/s²，倾斜安装时需设置基座坐标系中的重力向量。模型不包含用户额外安装的工具或负载。
+
+## Metal H7 控制链
+
+```text
+命令层五次样条 → 参考位置 / 参考速度 / 参考加速度
+                             ↓          ↓
+关节反馈位置 ──────────→ Metal 逆动力学 → 力矩前馈
+                             ↓
+                         电机 MIT 控制
+```
+
+默认使用 `METAL_MODEL_WITH_GRIPPER`。夹爪作为末端负载计入六轴模型，夹爪开合通道不单独参与六轴逆动力学。无夹爪负载使用 `METAL_MODEL_NO_GRIPPER`；模型、补偿开关及基座重力在 [gimbal_arm_def.h](../../App/inc/gimbal_arm_def.h) 中配置。
+
+| 模式 | 动力学输入 | 力矩输出 |
+| --- | --- | --- |
+| RUN | 反馈位置、命令层参考速度和加速度 | 惯性 + 缩放科氏 + 缩放重力 + 摩擦 |
+| GRAVITY | 反馈位置，速度和加速度按零处理 | 缩放重力 |
+| DAMPING / STOP | 不求解 | 动力学前馈为零 |
+
+普通位置目标和自动复位使用五次样条的速度、加速度。`0x17` 位置与速度前馈包中的速度由上位机提供，参考加速度为零。求解失败时应用层清空补偿并进入 STOP；状态码保存在 `Gimbal.dynamics_status`。
+
+Metal SDK 模式的力矩为：
+
+```text
+tau = M(q) * qdd_ref + sC * C(q, qd_ref) * qd_ref + sG * G(q) + F(qd_ref)
+```
+
+`sG`、`sC` 按轴逐项相乘；惯性项不缩放。摩擦项为系数乘参考速度，J3、J4 仅对摩擦计算中的速度限幅。
+
+| 参数 | J1 | J2 | J3 | J4 | J5 | J6 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 重力系数 `sG` | 1.2 | 1.15 | 1.1 | 1.15 | 1 | 1 |
+| 科氏系数 `sC` | 1.1 | 1.15 | 1 | 1 | 1.1 | 1.1 |
+| 摩擦系数 N·m·s/rad | 0.15 | 0.3025 | 0.52 | 0.42 | 0.015 | 0.015 |
+| 摩擦速度绝对限值 rad/s | 不裁剪 | 不裁剪 | 0.8 | 1.2 | 不裁剪 | 不裁剪 |
+
+参数集中在 [parameters.py](parameters.py)，与 SDK Metal 参数一致。C 表由本目录 URDF 和这些参数生成，运行时不解析 URDF。仓库根目录执行：
+
+```bash
+python3 libs/gravity_compensation/c/generate_dynamics_data.py --robot metal --check
+# 修改模型或补偿参数后生成 C 表
+python3 libs/gravity_compensation/c/generate_dynamics_data.py --robot metal
+```
+
+C API 的使用、错误码和编译要求见 [C 接口说明](c/README.md)。模型源文件及许可证见 [来源说明](PROVENANCE.md)。主机数值对照和固件构建不能替代实机跟踪、力矩方向及周期耗时验证。
+
+## ARX X5 独立接口
+
+本目录的 Python `GravityCompensator` 和 `DynamicsCompensator` 提供 X5 离线计算，型号为 `2023`、`master`、`2025`。运行时只依赖 Python 标准库：
 
 ```python
 from libs.gravity_compensation import DynamicsCompensator
@@ -9,142 +65,17 @@ solver = DynamicsCompensator.from_model("2023")
 torque = solver.torques((0, .4, .8, 0, 0, 0), (0,) * 6, (0, 1, 0, 0, 0, 0))
 ```
 
-`torques(q, qd, qdd, sdk_scale=True)` 要求三组 6 元有限数。输入依次使用 rad、rad/s、rad/s²。关节顺序为 joint1…joint6，角度范围为 ±128 rad。输出为 6 元力矩，单位为 N·m。
+X5 SDK 模式只缩放重力项，J1～J3 为 0.8，J4～J6 为 1.32；`sdk_scale=False` 返回物理力矩。输入无效时抛出 `DynamicsError`，错误状态为 `INVALID_ARGUMENT`、`ANGLE_RANGE` 或 `NONFINITE_RESULT`。
 
-结果为 `M(q)qdd + C(q,qd)qd + G(q)`。SDK 系数只作用于重力项。求解器使用六个旋转关节的 URDF 惯量。输入无效时抛出 `DynamicsError`，其 `status` 为 `DynamicsStatus`：-1=无效参数，-2=角度超限，-3=结果非有限数。
-
-`DynamicsCompensator.from_model(model, gravity=(0,0,-9.81))` 使用基座系重力。型号支持 `2023`、`master`、`2025`。C 逆动力学接口为 `c/x5_dynamics.h`，编译时链接 libm。
-
-**当前推荐交付是 [c/ 下的纯 C99 / float 版本](c/README.md)，面向 STM32，无外部依赖，连 libm 也不需要。**
-复制 `x5_gravity.c`、`x5_gravity.h`、`x5_gravity_data.h` 三个文件即可接入。
-Python 实现支持 PC 控制、模型常量生成和独立验证。KDL 源码用于独立数值验证。
-
-```c
-float torque[6];
-int rc = x5_gravity_compute(X5_MODEL_2025, q, 0, X5_GRAVITY_SDK, torque);
-```
-
-下文说明原始提取链路与 Python 验证参考；C 版本的范围、接口和资源优化见上述链接。
-
-本目录提取 ARX X5 的 **URDF → 静态重力力矩 → 厂商缩放后的力矩指令**。
-整个目录可以单独复制，Python 3.10+ 即可运行；不需要 NumPy、ROS、KDL 动态库、
-厂商 SDK 或 CAN。没有硬件初始化、模式切换和发送命令的逻辑。
+X5 C 常量校验命令：
 
 ```bash
-# 在本目录的父目录运行；型号必须明确选择
-python3 -m gravity_compensation --model 2025 --q 0 0 0 0 0 0
+python3 libs/gravity_compensation/c/generate_dynamics_data.py --robot x5 --check
+python3 libs/gravity_compensation/c/generate_model_data.py --check
 ```
 
-```python
-from gravity_compensation import GravityCompensator
+`reference/orocos_kdl` 和 `verification` 提供独立的 KDL 数值参考。构建参考程序时需要 C++ 编译器和 Eigen，控制固件及 Python 离线计算不依赖这些构建产物。
 
-solver = GravityCompensator.from_model("2025")
-q = [0.0, 0.2, -0.3, 0.1, 0.0, 0.0]  # joint1..joint6，rad
-physical_torque = solver.raw_torques(q)  # KDL G(q)，N·m
-vendor_command = solver.sdk_torques(q)  # 应用厂商 0.8 / 1.32 系数
-```
+## 来源与许可证
 
-`2023` 对应 SDK type=0 / `x5.urdf`；`master` 对应 type=1 / `x5_master.urdf`；
-`2025` 对应 type=2 / `x5_2025.urdf`。输入必须是 SDK/URDF 关节坐标，不是未经转换的
-编码器数值。第七通道夹爪不参与这条六关节链的计算。模型、质量和质心均来自固定 SDK 快照，
-不包含用户额外安装的工具或负载。
-
-## 原始调用链与提取范围
-
-```text
-SingleArm.gravity_compensation() -> set_arm_status(3)
-ControllerBase::read() -> 六个实际关节位置
-KinematicDynamicSolver::computeGravityCompensationTorque(q)
-  -> KDL::ChainDynParam::JntToGravity(q)
-  -> KDL::ChainIdSolver_RNE::CartToJnt(q, 0, 0, 0)
-  -> 第 1–3 关节乘 0.8，第 4–6 关节乘 1.32
-ControllerBase::stateGravityCompensation()
-  -> 六关节命令 torque=上述结果，position/velocity/k_p/k_d=0
-  -> CatchSoft() 单独处理夹爪
-```
-
-厂商核心只提供 `.so`，没有上述两个 ARX 方法的 C++ 源码。本模块是根据该固定二进制的
-符号、反汇编和常数还原的可读实现，**不是声称找到了厂商原始源码**。
-KDL 与 kdl_parser 的相关公开源码保存在 `reference/`，原文件不修改。
-厂商实际使用的 KDL 小版本不可从现有快照确认；参考版本固定为 Orocos KDL 1.5.1。
-
-链条是 `base_link -> link6`，默认重力在基座坐标系中为 `(0, 0, -9.81)` m/s²。
-`sdk_torques` 保留原二进制的经验缩放；这些系数的标定依据未知，不将其解释为减速比或电流转换。
-这里的输出位于 CAN 编码、驱动器限幅等处理之前，不是完整硬件控制器的替代品。
-
-## 库内部算法
-
-KDL 的重力函数实际调用逆动力学，但将速度、加速度和外部 wrench 全部设为零。
-因此旋转惯量、科里奥利项、关节惯量项都不参与结果，只需每个连杆的质量、质心和关节几何。
-
-`urdf.py` 提取 URDF 链和坐标约定；`spatial.py` 展开三维旋转、叉乘及坐标变换；
-`solver.py` 实现两次递推。`R_i,p_i` 表示子坐标系到父坐标系的变换：
-
-1. 基座支持加速度 `a_0 = -gravity`。
-2. 正向：`a_i = R_i^T a_parent`，`F_i = m_i a_i`，`N_i = com_i × F_i`。
-3. 反向：先将累计力矩投影到当前关节轴，得到 `tau_i = axis_i · N_i`。
-4. 将该连杆及后代的 wrench 传给父节点：
-   `F_parent += R_i F_i`，`N_parent += R_i N_i + p_i × (R_i F_i)`。
-5. `raw_torques()` 返回持住所需的力矩；`sdk_torques()` 再应用 ARX 六个缩放系数。
-
-质心 xyz 已在 link 坐标系中；不要再用 inertial rpy 旋转它。
-URDF 的 joint rpy 则必须参与几何变换，顺序是 `Rz(yaw) Ry(pitch) Rx(roll)`。
-固定关节的质量也会传回父关节。支持 prismatic 的底层求解器返回相应轴向力 N，
-但 X5 的经验缩放仅用于保持原命名与顺序的六个转动关节。
-
-机械臂倾斜安装时可显式传入基座坐标系的重力方向：
-`GravityCompensator.from_model("2025", gravity=(gx, gy, gz))`。
-这是本模块提供的扩展；原 SDK 的该构造函数固定为负 Z 方向。
-
-## 验证与许可证
-
-运行项目测试：`.venv/bin/python -m unittest discover -s tests -v`。
-当前测试包含单摆解析解、移动关节与固定负载、三个型号的势能数值梯度、
-倾斜/反向/零重力、输入校验、不加载 site-packages 的 CLI，以及独立原生计算生成的回归样例。
-
-已完成两层原生数值验证，固定随机种子 `20261003`：
-
-| 对比对象 | 覆盖范围 | 最大绝对误差 |
-| --- | --- | --- |
-| 原版 KDL 1.5.1 `JntToGravity` | 3 个型号 × 105 个姿态 × 3 个重力向量 = 945 组 | 3.56e-15 N·m 以下 |
-| 厂商 `.so` 的 `computeGravityCompensationTorque` | 3 个型号 × 105 个姿态 = 315 组，包含厂商缩放 | 3.56e-15 N·m 以下 |
-
-两层对比都不连接硬件。第二层是锁定特定 x86_64 库的数学方法 ABI 探针，**不构造厂商对象**，
-不验证厂商 URDF 解析、CAN、驱动器及实机；具体边界见 [PROVENANCE.md](PROVENANCE.md)。
-报告见 `verification/result.json`，15 组独立回归样例见 `verification/fixtures.json`。
-
-要重做原生验证，在项目根目录执行（需 C++17 编译器、CMake；仅验证需要 Eigen）：
-
-```bash
-cmake -S gravity_compensation/verification -B build/gravity-reference -DCMAKE_BUILD_TYPE=Release
-cmake --build build/gravity-reference -j 2
-python3 gravity_compensation/verification/verify.py
-
-# 可选：同固定厂商库的纯数学方法比较。此命令不会构造 SDK 控制器。
-python3 gravity_compensation/verification/verify.py \
-  --vendor-library vendor/ARX_X5/py/arx_x5_python/bimanual/lib/arx_x5_src/libarx_x5_src.so
-```
-
-编译默认使用项目 vendor 中现有的 Eigen 头文件；也可通过
-`-DEIGEN_INCLUDE_DIR=/path/to/eigen3` 指定位置。安装在虚拟环境中的 CMake 可用
-`.venv/bin/cmake` 调用。**正常 Python 计算完全不需要这个编译步骤。**
-`libkdl_parser.so` 占位文件只用于隔离数学探针，不实现解析，不应作为真实 SDK 的依赖使用。
-不要将验证目录加入实机程序的库搜索路径。
-
-校验所有原样复制文件：
-
-```bash
-python3 - <<'PY'
-import hashlib, json
-from pathlib import Path
-root = Path('gravity_compensation')
-for name, digest in json.loads((root / 'UPSTREAM_SHA256.json').read_text()).items():
-    assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest, name
-print('upstream checksums OK')
-PY
-```
-
-新提取的 Python 实现采用 LGPL-2.1-or-later，保留 KDL 算法作者说明，许可证为本目录
-`LICENSE`。`reference/orocos_kdl` 保留其 LGPL 源文件；`reference/kdl_parser` 保留
-文件头中的 BSD 许可证。`models` 来自 ARXrobotics，保留其 BSD 3-Clause `LICENSE`。
-`UPSTREAM_SHA256.json` 记录原样复制文件的 SHA256。原项目 `vendor/ARX_X5` 保持不变。
+算法采用 LGPL-2.1-or-later，见 [LICENSE](LICENSE)。Metal 模型和厂家参数采用 MakerMods MIT 许可，见 [METAL_LICENSE](models/METAL_LICENSE)；X5 模型采用 ARXrobotics BSD-3-Clause 许可，见 [models/LICENSE](models/LICENSE)。完整来源及计算边界见 [PROVENANCE.md](PROVENANCE.md)。

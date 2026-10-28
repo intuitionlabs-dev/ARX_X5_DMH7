@@ -257,8 +257,8 @@ typedef FramePktEmpty FramePktArmInit;   /* 0 字节，线上 datalen = 0 */
 | 码 | 包 | 语义 |
 | --- | --- | --- |
 | `0x12` | `ARM_START` | 使能电机，进常规控制 |
-| `0x13` | `ARM_GRAVITY` | 进重力补偿模式：`libs/gravity_compensation` 计算出的静态重力力矩叠加在前馈上，位置环 Kp 通常需要放宽 |
-| `0x14` | `ARM_STOP` | 失能电机，**不产生力矩** |
+| `0x13` | `ARM_GRAVITY` | 进入 Metal 重力补偿模式：六轴 Kp / Kd 为零，仅输出厂家系数缩放后的静态重力力矩 |
+| `0x14` | `ARM_STOP` | 进入 STOP：发送零增益、零力矩 MIT 控制帧，并保留周期使能 |
 | `0x15` | `ARM_DAMPING` | 进阻尼/保护模式 |
 
 空包的结构体是 GCC 的零长度结构体（`-std=gnu11` 下合法，`sizeof` 为 0）。放进来的目的只是让
@@ -287,8 +287,9 @@ typedef struct {
 } FramePktArmCtrlPosVel;                           /* 共 52 字节     */
 ```
 
-位置 + 速度前馈。`joint_vel[]` 输入到 `Arm_control_data.joint_vel`；那一项经
-`JOINT_SPEEDCOMP_COEF` 变成 `controller.speed_comp`。
+`joint_vel[]` 为上位机给定的关节速度，进入 `Arm_control_data.joint_vel`，经方向、减速比和 `JOINT_SPEEDCOMP_COEF` 转换为电机速度前馈。同时，该参考速度用于 Metal 科氏和摩擦补偿；此命令的参考加速度为零。
+
+`0x16` 纯位置命令使用五次样条生成位置、速度、加速度；规划速度和加速度同时用于动力学前馈。两种命令的动力学位置输入均为关节反馈角。
 
 两个控制包的 `gripper_angle` 均为角度值（deg）。夹爪已初始化时，命令层限幅到 0～约 137.50987°（2.4 rad）。`Set_Motor_ref()` 将目标位置传给 MIT 控制器，编码时转换为 rad。该通道尚未完成真机验证。
 

@@ -1,5 +1,21 @@
 # 来源与还原边界
 
+## Metal Arm
+
+- 厂家来源：[metal-python-ros bccf3c8](https://github.com/makermods-robotics/metal-python-ros/tree/bccf3c8)。
+- H7 计算模型与 SDK `4411fa3` 的 `metal_arm_control/gravity_compensation/models/` 一致。
+- 模型链为 `base_link → Link6`，默认使用带夹爪负载模型，基座重力为 `(0, 0, -9.81)` m/s²。
+
+| 内容 | 厂家路径 | 本仓库路径 |
+| --- | --- | --- |
+| 带夹爪 / 无夹爪 URDF | `metal_sdk/example/urdf/metal_{with,no}_gripper.urdf` | `models/metal_{with,no}_gripper.urdf` |
+| 重力、科氏和摩擦参数 | `metal_sdk/native/kinodynamic/kdl_solver.cpp` | `parameters.py` |
+| C 模型与补偿常量 | 由上述模型和参数生成 | `c/metal_dynamics_data.h` |
+
+`c/metal_dynamics.c` 使用下述 Orocos KDL 的递归牛顿欧拉算法。SDK 模式按 Metal 参数分别缩放重力、科氏项，叠加摩擦补偿，并保留未缩放的惯性力矩。H7 使用反馈位置和命令层参考速度、加速度；厂家跟随增益与电机参数由应用层配置。
+
+模型及厂家参数采用 MakerMods MIT 许可，原始文本保存在 [models/METAL_LICENSE](models/METAL_LICENSE)。算法文件保留 LGPL-2.1-or-later 标识及 KDL 作者信息。网格资源不参与动力学计算；模型未包含额外工具、外部作用力或用户负载。
+
 ## ARX X5
 
 - 仓库：<https://gitee.com/li-bozha0/ARX_X5>
