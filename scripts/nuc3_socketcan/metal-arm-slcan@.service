@@ -1,0 +1,14 @@
+[Unit]
+Description=Metal Arm SocketCAN channel %i
+After=systemd-udevd.service
+
+[Service]
+Type=exec
+EnvironmentFile=/etc/metal-arm/slcan-%i.conf
+ExecStartPre=/usr/sbin/modprobe slcan
+ExecStartPre=/usr/bin/python3 /usr/local/libexec/metal-arm-interface-setup prepare ${METAL_DEVICE}
+ExecStart=/usr/bin/slcand -F -o -c -s8 -S 115200 ${METAL_DEVICE} ${METAL_INTERFACE}
+ExecStartPost=/usr/bin/python3 /usr/local/libexec/metal-arm-interface-setup wait ${METAL_INTERFACE}
+Restart=no
+TimeoutStartSec=10
+TimeoutStopSec=5
