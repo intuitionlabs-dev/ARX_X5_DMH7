@@ -128,10 +128,6 @@ static void rne(const link_data links[6], const rotation3 rotations[6],
     }
 }
 
-static const metal_real gravity_scales[6] = {1.2f, 1.15f, 1.1f, 1.15f, 1.0f, 1.0f};
-static const metal_real coriolis_scales[6] = {1.1f, 1.15f, 1.0f, 1.0f, 1.1f, 1.1f};
-static const metal_real friction_coefficients[6] = {0.15f, 0.3025f, 0.52f, 0.42f, 0.015f, 0.015f};
-
 int metal_dynamics_compute(metal_model model, const metal_real q[6],
     const metal_real qd[6], const metal_real qdd[6], const metal_real gravity_base[3],
     metal_gravity_mode mode, metal_real torque[6]) {
@@ -158,7 +154,7 @@ int metal_dynamics_compute(metal_model model, const metal_real q[6],
         rne(links, rotations, qd, zero, gravity_base, velocity_torque);
         for (int i = 0; i < 6; ++i) {
             metal_real speed = qd[i];
-            const metal_real limit = i == 2 ? 0.8f : (i == 3 ? 1.2f : 0.0f);
+            const metal_real limit = friction_speed_limits[i];
             if (limit > 0.0f) speed = fmaxf(-limit, fminf(limit, speed));
             /* 保留惯性力矩，分别缩放重力与科氏力，并叠加摩擦补偿。 */
             result[i] = (result[i] - velocity_torque[i]) + gravity[i] * gravity_scales[i]

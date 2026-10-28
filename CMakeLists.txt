@@ -98,9 +98,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # 源工程还有个 fast_matrix.c（fast_mat_* 那套矩阵运算），只有 robotics/ 那个
     # C++ 矩阵封装在用，本工程没移植那个框架，所以这个文件没有拿过来。
     libs/fast_math/fast_sin_f32.c
-    # X5 重力补偿和 KDL RNE 逆动力学，许可证为 LGPL-2.1-or-later。
-    libs/gravity_compensation/c/x5_gravity.c
-    libs/gravity_compensation/c/x5_dynamics.c
+    # Metal 重力补偿和 KDL RNE 逆动力学，许可证为 LGPL-2.1-or-later。
+    libs/gravity_compensation/c/metal_dynamics.c
     libs/fps/bsp_supervise.c
     libs/monitor/monitor.c
     libs/move_plan/curves/cubic_spline.c

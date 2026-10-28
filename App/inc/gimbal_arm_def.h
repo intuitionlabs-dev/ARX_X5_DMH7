@@ -14,7 +14,7 @@
 
 #include "robot_def.h"
 #include "can_config.h"
-#include "x5_dynamics.h"
+#include "metal_dynamics.h"
 
 // 电机正方向在运动学坐标系中的方向
 CONSTEXPR int8_t MOTOR_DIR[ARM_JOINT_NUM] = {1, 1, 1, 1, 1, 1};
@@ -96,11 +96,12 @@ CONSTEXPR uint8_t METAL_MOTOR_TX_GROUP[ARM_MOTOR_NUM] = {
 /* 阻尼模式只保留电机侧 Kd，主机级联 PID 为零。 */
 CONSTEXPR float JOINT_DAMPING_MODE_KD[ARM_MOTOR_NUM] = {3, 5, 5, 2, 1, 0.1f, 0.1f};
 
-/* 六轴动力学补偿使用 KDL RNE 与 X5 URDF 的质量、质心和惯量。
- * SDK 模式的重力项系数为 [0.8, 0.8, 0.8, 1.32, 1.32, 1.32]。
- * 基座系重力向量的单位为 m/s²，NULL 表示 (0, 0, -9.81)。
+/* Metal 六轴逆动力学：默认包含厂家夹爪负载。
+ * 无夹爪负载使用 METAL_MODEL_NO_GRIPPER；模型在编译期选择。
+ * SDK 模式分别缩放重力和科氏项，叠加摩擦补偿，惯性项保持物理值。
+ * 基座系重力单位 m/s²，NULL 表示 (0, 0, -9.81)。
  */
 #define JOINT_DYNAMICS_COMP_ENABLE 1
-#define JOINT_DYNAMICS_COMP_MODEL X5_MODEL_2023
-#define JOINT_DYNAMICS_GRAVITY_MODE X5_GRAVITY_SDK
+#define JOINT_DYNAMICS_COMP_MODEL METAL_MODEL_WITH_GRIPPER
+#define JOINT_DYNAMICS_GRAVITY_MODE METAL_GRAVITY_SDK
 #define JOINT_DYNAMICS_GRAVITY_BASE NULL

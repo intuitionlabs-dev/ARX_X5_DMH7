@@ -62,7 +62,7 @@ class MetalInitializationTests(unittest.TestCase):
     def start(self, bus=0, state=WAIT_INIT, mode=STOP, lost=0, rc=0):
         self.lib.init_entry(bus,state,mode,lost,rc)
 
-    def test_limits_match_sdk_at_boundaries_and_random_targets(self):
+    def test_limits_match_h7_profile_at_boundaries_and_random_targets(self):
         rng = random.Random(1438)
         inputs = [profile.AXIS_MIN, profile.AXIS_MAX, (-999,)*7, (999,)*7]
         inputs += [tuple(rng.uniform(-400,400) for _ in range(7)) for _ in range(200)]
@@ -71,7 +71,10 @@ class MetalInitializationTests(unittest.TestCase):
             out = Float13()
             self.lib.init_limits(values,0x7f,out)
             for i in range(7):
-                self.assertAlmostEqual(out[i],profile.clamp_axis(i,values[i])[0],delta=2e-5)
+                # H7 J2 upper limit is calibrated to 4.8 deg; other axes use SDK limits.
+                upper = 4.8 if i == 1 else profile.AXIS_MAX[i]
+                expected = max(profile.AXIS_MIN[i], min(upper, values[i]))
+                self.assertAlmostEqual(out[i],expected,delta=2e-5)
             self.assertEqual(list(out[:6]),list(out[7:]))
         self.lib.init_limits(Float7(*([999]*7)),0,out)
         self.assertEqual(list(out[:7]),[999]*7)

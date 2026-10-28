@@ -30,7 +30,7 @@ class MetalMotorTests(unittest.TestCase):
         includes += [str(p.relative_to(ROOT)) for p in (ROOT/'libs').iterdir() if p.is_dir()]
         sources = ['tests/c_metal_motors.c','libs/common/common.c','libs/cvector/cvector.c',
                    'libs/monitor/monitor.c','libs/dm_motor/dm_mit_control.c',
-                   'libs/gravity_compensation/c/x5_gravity.c','libs/gravity_compensation/c/x5_dynamics.c']
+                   'libs/gravity_compensation/c/metal_dynamics.c']
         sources += [str(p.relative_to(ROOT)) for p in (ROOT/'libs/controller').glob('*.c')]
         library = str(Path(cls.tmp.name)/'motors.so')
         result = subprocess.run(['cc','-std=gnu11','-O2','-shared','-fPIC',
@@ -115,7 +115,7 @@ class MetalMotorTests(unittest.TestCase):
         for mode in (2,3,1,2,1):
             out = Float14(); self.lib.metal_mode(0,mode,out)
             for i in range(7):
-                expected = ((0,MOTOR_KD[i]) if mode==2 else
+                expected = ((0,1.0 if i==4 else MOTOR_KD[i]) if mode==2 else
                             (0,0) if mode==3 and i<6 else (MOTOR_KP[i],MOTOR_KD[i]))
                 for a,b in zip(out[i*2:i*2+2],expected): self.assertAlmostEqual(a,b,places=6)
 

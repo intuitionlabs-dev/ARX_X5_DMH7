@@ -274,34 +274,36 @@ static void Get_Motor_Fdb(Gimbal* obj) {
         obj->arm_feedback_data.motor_temp[i] = motors[i]->t_rotor;
 }
 
-/* arm_run：M(q)*qdd_ref+C(q,qd)*qd+G(q)；纯重力模式：G(q)。
- * 反馈角度和反馈速度使用关节系，目标加速度由命令层提供。
+/* arm_run：M(q)*qdd_ref + sC*C(q,qd_ref)*qd_ref + sG*G(q) + F(qd_ref)。
+ * q 使用关节反馈位置，qd_ref/qdd_ref 使用命令层的参考速度/加速度。
+ * 普通位置目标及复位由同一条五次样条提供两阶导数；0x17 使用外部速度、零加速度。
+ * 纯重力模式仅输出 sG*G(q)。
  */
 static void Joint_Dynamics_Comp_Calc(Gimbal* obj) {
 #if JOINT_DYNAMICS_COMP_ENABLE
-    _Static_assert(ARM_JOINT_NUM == X5_GRAVITY_DOF, "动力学模型关节数必须一致");
+    _Static_assert(ARM_JOINT_NUM == METAL_GRAVITY_DOF, "动力学模型关节数必须一致");
     if (obj->arm_mode != arm_run && obj->arm_mode != arm_only_gravity_comp) {
         memset(obj->tau_comp, 0, sizeof(obj->tau_comp));
-        obj->dynamics_status = X5_DYNAMICS_OK;
+        obj->dynamics_status = METAL_DYNAMICS_OK;
         return;
     }
 
-    x5_real q[ARM_JOINT_NUM], qd[ARM_JOINT_NUM], qdd[ARM_JOINT_NUM];
-    x5_real torque[ARM_JOINT_NUM];
+    metal_real q[ARM_JOINT_NUM], qd[ARM_JOINT_NUM], qdd[ARM_JOINT_NUM];
+    metal_real torque[ARM_JOINT_NUM];
     int status;
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
         q[i] = obj->arm_feedback_data.joint_angle[i] * DEG2RAD;
-        qd[i] = obj->arm_feedback_data.joint_vel[i] * DEG2RAD;
+        qd[i] = obj->arm_control_data.joint_vel[i] * DEG2RAD;
         qdd[i] = obj->arm_control_data.joint_acc[i] * DEG2RAD;
     }
     if (obj->arm_mode == arm_only_gravity_comp) {
-        status = x5_gravity_compute(JOINT_DYNAMICS_COMP_MODEL, q,
+        status = metal_gravity_compute(JOINT_DYNAMICS_COMP_MODEL, q,
             JOINT_DYNAMICS_GRAVITY_BASE, JOINT_DYNAMICS_GRAVITY_MODE, torque);
     } else {
-        status = x5_dynamics_compute(JOINT_DYNAMICS_COMP_MODEL, q, qd, qdd,
+        status = metal_dynamics_compute(JOINT_DYNAMICS_COMP_MODEL, q, qd, qdd,
             JOINT_DYNAMICS_GRAVITY_BASE, JOINT_DYNAMICS_GRAVITY_MODE, torque);
     }
-    if (status != X5_DYNAMICS_OK) {
+    if (status != METAL_DYNAMICS_OK) {
         memset(torque, 0, sizeof(torque));
         obj->arm_mode = arm_stop;
     }
@@ -309,7 +311,7 @@ static void Joint_Dynamics_Comp_Calc(Gimbal* obj) {
     obj->dynamics_status = status;
 #else
     memset(obj->tau_comp, 0, sizeof(obj->tau_comp));
-    obj->dynamics_status = X5_DYNAMICS_OK;
+    obj->dynamics_status = METAL_DYNAMICS_OK;
 #endif
 }
 
