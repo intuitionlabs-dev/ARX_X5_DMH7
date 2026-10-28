@@ -15,7 +15,7 @@
  *                       │                                            │
  *                       │                                            ↓
  *                       └── 也直接写 gimbal_cmd->auto_mode     Gimbal.arm_control_data.mode
- *                          (初始化流程的两步一键动作)               │
+ *                          (初始化和运行中的六轴复位)               │
  *                                                                  ↓
  *                                                        Gimbal_Update() 读 mode
  *
@@ -151,7 +151,7 @@
  *              │                                                          │
  *              └─0x01 版本码不等─→ 丢掉这帧(不回包、状态不动，仍等待握手)  ⇒0x02 且姿态合格
  *                                                                         ↓
- *                                                                      初始化 ──两步一键动作跑完──→ 正常运行
+ *                                                                      初始化 ──六轴复位完成──→ 正常运行
  *                                                                         ⇒0x10 设零        (默认 damping)
  *                                                                         ↓                      │
  *                                                                      校准零点 ⇒跑完回待初始化    │
@@ -179,7 +179,7 @@ typedef enum {
     robot_state_wait_handshake = 0, /* 等待握手：机械臂 stop，只认版本包 */
     robot_state_offline_wait,       /* 离线等待：stop，等 7 台电机全部上线 */
     robot_state_wait_init,          /* 待初始化：stop，等初始化命令帧 / 校准零点帧 */
-    robot_state_initing,            /* 初始化：run，先一键复位、再一键夹爪找零 */
+    robot_state_initing,            /* 初始化：run，六轴复位期间保持夹爪入口角 */
     robot_state_normal,             /* 正常运行：等上位机切 Arm_mode，默认 damping */
     robot_state_comm_lost,          /* 通信离线：damping，收到任意有效帧就回离线等待。
                                      * 初始化跑完过的臂掉线时**不掉进来**（留在正常运行），

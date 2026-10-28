@@ -59,20 +59,10 @@ typedef struct Arm Arm;
  * `if (mode == arm_stop)` 判断都依赖这两个值，所以新值只能往后加。 */
 typedef enum { arm_stop = 0, arm_run, arm_damping, arm_only_gravity_comp } Arm_mode;
 
-/* 机械臂一键模式（源工程 robot_def.h 里的 Arm_auto_mode）。
- * 那边一共 12 个：reset / stretch / store / upstairs / protect / pop /
- * fetch_down / fetch_up / first_ore / gripper_down / turn_around，本工程只做**复位**
- * 和**夹爪找零**。
- * 剩下的那些要么依赖 Plan_pkg(存矿/弹矿/取家矿)、要么依赖底盘(上台阶)、要么依赖图传
- * (一键转身)，本工程一个都没有，所以只留名字在这儿备查。
- * 枚举值和源工程一致（arm_auto_reset 在那边也是 1），以后按名字补回来不会串值。
- * arm_auto_gripper_zero 在源工程里叫 arm_auto_gripper_down，本工程改了名：这边只做
- * "夹爪撞到限位后把那一点设成零点"，不做源工程那套"往下压一颗矿石"。 */
+/* 机械臂自动动作，由总模式状态机调度。 */
 typedef enum {
     arm_auto_none = 0,     // 待命
-    arm_auto_reset,        // 复位
-    arm_auto_gripper_zero, // 夹爪找零（推到抵住机械限位 → 退回半个行程 → 把那里设成零点，
-                           //   见 App/arm_auto.c 和 arm_auto.h）
+    arm_auto_reset,        // 六轴复位
     ARM_AUTO_MODE_NUM,
 } Arm_auto_mode;
 
@@ -98,8 +88,7 @@ typedef struct {
     float joint_angle[ARM_JOINT_NUM];  // 关节角度，deg
     float joint_vel[ARM_JOINT_NUM];    // 关节速度，deg/s
     float joint_acc[ARM_JOINT_NUM];    // 关节加速度，deg/s²
-    float gripper_angle;    // 夹爪开合角，deg，范围 GRIPPER_ANGLE_MIN..MAX(-142..+142)，
-                            //   零点在行程中点 —— 这是找零之后的口径，见 gimbal_cmd_def.h
+    float gripper_angle;    // 夹爪角，deg，范围见 gimbal_cmd_def.h
     float gripper_torque;    // 夹爪力矩，N·m
 } Arm_control_data;
 

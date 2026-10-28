@@ -293,27 +293,12 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
     obj->gimbal->arm_control_data.gripper_angle = cmd->gripper_angle;
 }
 
-/* 一键模式分派(源工程 Gimbal_Cmd_Update() 里那个 switch (obj->auto_mode)，位置一样)。
- * 动作本体全在 App/arm_auto.c，这里只做"哪个模式调哪个函数"。
- *
- * 谁写 auto_mode：**遥控器写不了**(没有空闲按键)，由串口总模式状态机
- * (App/robot_state.c 的 robot_state_initing) 写 —— 初始化流程就靠这两步：
- * 先 arm_auto_reset、等它跑完回 none，再 arm_auto_gripper_zero、再等回 none。
- * 调试器也可以直接写(见 arm_auto.h 的说明)，但注意 **arm_stop 档位下
- * Stop_Mode_Update() 每拍都会把它清 0**。 */
+/* 初始化和 0x18 复位由总模式状态机启动六轴复位动作。 */
 static void Auto_Mode_Update(Gimbal_cmd* obj) {
     switch (obj->auto_mode) {
     case arm_auto_reset:
         Arm_Reset(obj);
         break;
-    case arm_auto_gripper_zero:
-        /* 推到抵住机械限位(判据是反馈角在窗口里不动) → 退回半个行程 → 在那里设零点；
-         * 设零那一步是叫 arm_zero 跑一轮"只有夹爪"的，见 App/arm_auto.c。 */
-        Arm_Gripper_Zero(obj);
-        break;
-        /* 源工程这里还有 10 个：arm_auto_stretch / store / upstairs / pop /
-         * fetch_down / fetch_up / protect / first_ore / gripper_down / turn_around。
-         * 本工程没做，枚举成员在 robot_def.h 里注释着，加的时候在这里补 case。 */
     case arm_auto_none:
     case ARM_AUTO_MODE_NUM:
     default:
@@ -390,9 +375,6 @@ static void Motor_Angle_Limit(Gimbal_cmd* obj) {
         obj->ctrl_src.joint_angle_solved[i] = fclip(obj->ctrl_src.joint_angle_solved[i],
             JOINT_ANGLE_MIN[i], JOINT_ANGLE_MAX[i]);
     }
-    /* 源工程这里还挂着一大段"j1/j2 支架干涉航点"的处理(BRACKET_WAYPOINTS)，但它们全是
-     * 注释掉的调试代码；再往下是夹爪限位 TODO。本工程夹爪的遥控控制没做，整块删了。 */
-
     // 反向传递限位：关节角控制源
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         obj->ctrl_src.joint_src.joint_angle[i] = obj->ctrl_src.joint_angle_solved[i];

@@ -153,7 +153,7 @@ WAIT_SYNC0 --0xAA--> WAIT_SYNC1 --0x55--> HEADER --(累计 6 字节)--> 校验 c
 | --- | --- | --- | --- | --- | --- |
 | `0x00` | `NONE` | — | 0 | 8 | **保留**，表示"没有类型"（解析器复位后的初值）。编码方不要主动用 |
 | `0x01` | `VERSION` | 双向 | 4 | 12 | 版本匹配包，握手 |
-| `0x02` | `ARM_INIT` | 下发 | 0 | 8 | 初始化命令，放行"一键复位 → 一键夹爪找零" |
+| `0x02` | `ARM_INIT` | 下发 | 0 | 8 | 初始化：六轴复位，保持夹爪入口角度 |
 | `0x03`~`0x0F` | — | — | — | — | **预留**：以后的高优先级/短包（心跳、ACK 之类） |
 | `0x10` | `MOTOR_SET_ZERO` | 下发 | 0 | 8 | 触发一轮电机设零 |
 | `0x11` | `MOTOR_SET_ZERO_ACK` | 上报 | 12 | 20 | 设零结束上报结果 |
@@ -163,7 +163,7 @@ WAIT_SYNC0 --0xAA--> WAIT_SYNC1 --0x55--> HEADER --(累计 6 字节)--> 校验 c
 | `0x15` | `ARM_DAMPING` | 下发 | 0 | 8 | 切 `arm_damping`（被动阻尼） |
 | `0x16` | `ARM_CTRL_POS` | 下发 | 28 | 36 | 纯位置指令（角度 + 夹爪） |
 | `0x17` | `ARM_CTRL_POS_VEL` | 下发 | 52 | 60 | 位置 + 速度前馈（角度 + 角速度 + 夹爪） |
-| `0x18` | `ARM_RESET` | 下发 | 0 | 8 | 一键复位（只复位，不做夹爪找零） |
+| `0x18` | `ARM_RESET` | 下发 | 0 | 8 | 六轴复位，保持已有夹爪目标 |
 | `0x80` | `ARM_FEEDBACK` | 上报 | 63 | 71 | 机械臂反馈帧，握手后固定 **250 Hz** |
 | `0x81` | `LINK_STATUS` | 上报 | 88 | 96 | 链路状态帧，握手后固定 **10 Hz**，链路级只一帧 |
 
@@ -229,8 +229,9 @@ typedef struct {
 typedef FramePktEmpty FramePktArmInit;   /* 0 字节，线上 datalen = 0 */
 ```
 
-整包语义就是"**开始初始化**"，没有参数。板子收到后依次做一键复位、一键夹爪找零，
-然后进正常运行（默认阻尼）。
+初始化命令没有参数。受理后记录夹爪入口反馈角，六轴以 2 秒五次样条回到全零姿态，期间保持夹爪目标。完成后夹爪标记为已初始化，进入正常运行（默认阻尼）。电机零点保持厂家配置。
+
+遥控器接管或任一电机掉线会中止初始化并返回入口状态。
 
 **入口有两条**（见第 4 节的状态机）：**待初始化模式**；或者**正常运行模式**下档位是
 `stop` / `damping`。后一种情况下臂不加力，没有位置环在运行，允许直接重做初始化。
@@ -274,7 +275,7 @@ typedef struct {
 ```
 
 - `joint_angle[]`：单位 **deg**，与 `Arm_control_data.joint_angle` 口径一致。
-- `gripper_angle`：夹爪开合，对应 `Arm_control_data.gripper_oc_angle`。
+- `gripper_angle`：夹爪开合，对应 `Arm_control_data.gripper_angle`。
 
 ### 0x17 机械臂控制包（角度 + 角速度 + 夹爪，下发）
 
@@ -289,11 +290,7 @@ typedef struct {
 位置 + 速度前馈。`joint_vel[]` 输入到 `Arm_control_data.joint_vel`；那一项经
 `JOINT_SPEEDCOMP_COEF` 变成 `controller.speed_comp`。
 
-**两个控制包的 `gripper_angle` 还没有真机验证过**。命令层会接收它，并限幅到
-`GRIPPER_ANGLE_MIN/MAX` 之间。驱动侧 `Set_Motor_ref()` 里夹爪的目标位置和力矩前馈
-**已经接通**（`gimbal_arm.c`，deg 由 `dm_mit_control.c` 乘 `DEG2RAD` 进 MIT 帧）。
-这条通道尚未在真机上验证。找零（`Arm_Gripper_Zero`）是它的第一个用户。上位机可以照常发送，
-协议不会变。
+两个控制包的 `gripper_angle` 均为角度值（deg）。夹爪已初始化时，命令层限幅到 0～约 137.50987°（2.4 rad）。`Set_Motor_ref()` 将目标位置传给 MIT 控制器，编码时转换为 rad。该通道尚未完成真机验证。
 
 ### 0x18 一键复位命令包（下发）
 
@@ -301,14 +298,14 @@ typedef struct {
 typedef FramePktEmpty FramePktArmReset;   /* 0 字节，线上 datalen = 0 */
 ```
 
-整包语义就是"**把臂收回复位位姿**"，没有参数。板子执行的是**只有一键复位**那一段：
-五次样条、`ARM_AUTO_RESET_TIME_S`（2 s）走到 `ARM_RESET_ANGLE`，**不做夹爪找零**。
+复位命令没有参数。六轴通过 `ARM_AUTO_RESET_TIME_S`（2 s）五次样条走到全零的 `ARM_RESET_ANGLE`，夹爪保持已有目标角。
 
-**和 `0x02 ARM_INIT` 的区别**（这是新增该码的全部理由）：
+初始化与复位共用六轴规划，入口和夹爪状态处理如下：
 
 | | `0x02 ARM_INIT` | `0x18 ARM_RESET` |
 | --- | --- | --- |
-| 动作 | 一键复位 **+ 一键夹爪找零**（多等 ~4 s） | 只有一键复位 |
+| 六轴动作 | 2 秒五次样条到全零 | 2 秒五次样条到全零 |
+| 夹爪 | 保持入口反馈角，完成后标记已初始化 | 保持已有目标角 |
 | 入口 | **待初始化模式**；或**正常运行 + `stop`/`damping`** | **正常运行模式**（档位不限） |
 | 位姿闸门 | 有，`±ROBOT_INIT_POSE_TOL_DEG`（20°） | **没有** |
 | 完成后的落点 | 正常运行（默认阻尼） | 正常运行（默认阻尼） |
@@ -335,7 +332,7 @@ typedef FramePktEmpty FramePktArmReset;   /* 0 字节，线上 datalen = 0 */
 
 ⚠ **静默失败**：临时规划池被占满时，板子会建立一个空规划，下一拍即报告"完成"。复位实际
 未执行，但状态机认为已完成。板子上**不补充**位姿复核，判据在上位机：在 `7` → `4` 那一刻，
-用反馈帧的 `joint_angle[6]` 与 `ARM_RESET_ANGLE`（`{0, 0.5, 0.5, 0, 0, 0}`）比较一次。
+用反馈帧的 `joint_angle[6]` 与 `ARM_RESET_ANGLE`（`{0, 0, 0, 0, 0, 0}`）比较一次。
 
 ### 0x80 机械臂反馈帧（上报）
 
@@ -485,7 +482,7 @@ if (FrameParserFeed(&parser, byte) == FRAME_OK) {
                                                                               │
                                          ┌──── 0x02 ARM_INIT 且 6 关节位姿合格 ─┘
                                          ↓
-                                     ④ 初始化 ──一键复位 → 一键夹爪找零 都完成──→ ⑤ 正常运行
+                                     ④ 初始化 ──六轴复位完成──→ ⑤ 正常运行
                                                                                     (默认 damping)
                                      ③ 待初始化 ──0x10 MOTOR_SET_ZERO──→ ⑥ 校准零点
                                                                              └─设零完成─→ ③
@@ -505,7 +502,7 @@ if (FrameParserFeed(&parser, byte) == FRAME_OK) {
 | ① | 等待握手 | 0 | `arm_stop` | **只认 `0x01`**，其他包一律不解析（也不回） |
 | ② | 离线等待 | 1 | `arm_stop` | 等 7 台电机全上线（`motor_lost_mask == 0`），自动进 ③ |
 | ③ | 待初始化 | 2 | `arm_stop` | 等 `0x02` 或 `0x10` |
-| ④ | 初始化 | 3 | **`arm_run`** | 两步一键动作，完成后自动进 ⑤ |
+| ④ | 初始化 | 3 | **`arm_run`** | 六轴复位并保持夹爪入口角，完成后自动进 ⑤ |
 | ⑤ | 正常运行 | 4 | **`arm_damping`** | 只有在这个状态才接受模式切换帧/控制帧/`0x18`；掉线时**留在本态**、档位切 damping |
 | ⑥ | 校准零点 | 6 | `arm_stop` | 设零要求电机失能；完成后回 ③ 并回一个 `0x11` |
 | ⑦ | 通信离线 | 5 | `arm_damping` | 掉线保护：位置环关闭，只有关节阻尼。**初始化完成过的臂不掉进来**，见下 |
@@ -528,7 +525,7 @@ if (FrameParserFeed(&parser, byte) == FRAME_OK) {
 3. 初始化 上位机 ──0x02 ARM_INIT(空)──→ 板子                     (③→④→⑤)
           前提：6 个关节的反馈角都在预设初始化位置 ROBOT_INIT_POSE_TOL_DEG(20°) 以内，
           且遥控器离线。不满足 → **拒绝且不回包**，robot_state 停在 2。
-          完成后（复位 + 夹爪找零）自动进 ⑤ 正常运行，默认 damping。
+          六轴复位完成后自动进 ⑤ 正常运行，默认 damping。
 
 4. 上电    上位机 ──0x12 ARM_START(空)──→ 板子                    (⑤ 内切档)
           之后可以随时 0x13 ARM_GRAVITY 切重力补偿、0x15 ARM_DAMPING 切阻尼、

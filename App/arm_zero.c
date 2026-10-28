@@ -231,9 +231,7 @@ static void start(Gimbal* g, uint32_t now) {
     g->zero.participate_override = 0;
     if (g->zero.participate_mask == 0) { /* 覆盖为 0 = 默认集：六个关节 */
         for (int i = 0; i < ARM_MOTOR_NUM; i++) {
-            /* 夹爪**不在默认集里**：它的"零"是行程中点(∓142)，只能靠"推到限位→退回半个
-             * 行程"那个找零流程得到(见 arm_auto.c 的夹爪找零)，把当前开口设成零是错的。
-             * 要设夹爪就显式写 participate_override 点名(那条路本来就这么用)。 */
+            /* 默认保留夹爪厂家零点；显式设零需用 participate_override 选择夹爪。 */
             if (i == GRIPPER) continue;
             g->zero.participate_mask |= (uint8_t)(1u << i);
         }

@@ -1,41 +1,25 @@
 #pragma once
 
-/* 机械臂命令层的板级标定量(角度软限位)。
- *
- * 原样搬自 ec_code/engineer-wheel-leg-v-1/APP/gimbal_cmd/gimbal_cmd_def.h。那边一共
- * 126 行，但大半是自定义控制器(工作空间/映射比例)、支架干涉航点、拓展板磁铁这些本工程
- * 没有的东西，只把**软限位**这几项挑出来 —— 它们和机械结构有关，改机械结构就得重新量。
- *
- * 这几个数配的是**关节角**，即 Arm_control_data.joint_angle / Arm_feedback_data.joint_angle
- * 那一套 deg 坐标，不是电机角度。接进来之前必须先标定完。
- */
+/* Metal 关节空间软限位，单位 deg，与 SDK board_defs/metal_arm.py 一致。
+ * 这些参数作用于 Arm_control_data / Arm_feedback_data 的关节角坐标。 */
 
 #include "robot_def.h"
+#include "common.h"  /* RAD2DEG */
 
 /* 普通关节目标的五次样条过渡时长，s。 */
 CONSTEXPR float JOINT_QUINTIC_DURATION_S = 0.16f;
 
 /* 角度限位，deg */
 CONSTEXPR float JOINT_ANGLE_MIN[ARM_JOINT_NUM] = {
-    -115,
-    0.5,
-    0.5,
-    -90,
-    -90,
-    -112.87,
-}; 
-
-CONSTEXPR float JOINT_ANGLE_MAX[ARM_JOINT_NUM] = {
-    90,
-    206.26,
-    171.88,
-    90,
-    90,
-    119.17,
+    -160, -180, 0, -123, -85, -145,
 };
 
-CONSTEXPR float GRIPPER_ANGLE_MAX = 284.0/2.0;  // 夹爪闭合
-CONSTEXPR float GRIPPER_ANGLE_MIN = -284.0/2.0;  // 夹爪张开
+CONSTEXPR float JOINT_ANGLE_MAX[ARM_JOINT_NUM] = {
+    160, 0, 180, 81, 85, 145,
+};
+
+CONSTEXPR float GRIPPER_ANGLE_MIN = 0.0f;
+CONSTEXPR float GRIPPER_ANGLE_MAX = 2.4f * RAD2DEG;  // 2.4 rad，约 137.50987 deg
 
 /* 规划速度前馈系数，一键模式跑规划时用（Arm_Ref_Set()）。*/
 CONSTEXPR float PLAN_SPEED_COMP_COEF[ARM_JOINT_NUM] = {

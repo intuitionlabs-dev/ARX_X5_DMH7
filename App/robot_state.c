@@ -5,7 +5,7 @@
 #include "main.h" /* HAL_GetTick() */
 
 #include "arm.h"        /* g_arm[] / Arm —— 出力模式存在臂上 */
-#include "arm_auto.h"   /* ARM_RESET_ANGLE / arm_auto_reset / arm_auto_gripper_zero */
+#include "arm_auto.h"   /* ARM_RESET_ANGLE / arm_auto_reset */
 #include "arm_zero.h"   /* gimbal->zero.request / Arm_Zero_Busy() / 状态与结果 */
 #include "gimbal_arm.h" /* gimbal —— 反馈数据（关节角、掉线标志、温度） */
 #include "gimbal_cmd.h" /* gimbal_cmd —— 初始化流程要写它的 auto_mode */
@@ -437,6 +437,8 @@ static void HandleArmInit(Arm* arm) {
      * 「正常运行」，那条路不用这个变量。 */
     arm->init_entry = arm->state;
     arm->init_step = 0U;
+    /* 控制帧在初始化期间无效，夹爪目标保持本次入口的反馈角。 */
+    arm->gimbal->arm_control_data.gripper_angle = arm->gimbal->arm_feedback_data.gripper_angle;
     Robot_State_Enter(arm, robot_state_initing);
 }
 
@@ -622,30 +624,12 @@ static void DrainRx(Arm* arm) {
 
 /* ==================== 各状态的推进 ==================== */
 
-/* 初始化流程。两步一键动作，靠命令层对象的 auto_mode 驱动（和遥控器点动、调试器手工
- * 触发走的是同一个入口）：
- *   ① arm_auto_reset        → 等它自己回 arm_auto_none
- *   ② arm_auto_gripper_zero → 同上（**目前是空壳**，立刻回 none，见 arm_auto.c）
- * 两步都完了 → 正常运行（默认 damping）。
- *
- * 本函数和 Auto_Mode_Update() 在**同一个任务**里（CmdTask），所以直接写 auto_mode
- * 不需要任何保护。
- *
- * ⚠ 一个看不出来的失败模式：临时规划池被占满时 Plan_Group_Temp_Calc_And_Run() 是
- * **静默返回**的（不报错，见 memory arm-auto-framework），于是 Arm_Reset() 的 case 0
- * 起了个空规划、case 1 立刻判定"规划跑完了"、两拍之内就退出。也就是说**复位什么都没做，
- * 但状态机会以为它做完了**。真要判，得在 case 2 结束时拿反馈角和 ARM_RESET_ANGLE 比
- * 一次（跟 Init_Pose_Ok() 同款）。现在没那么做，理由有两条：一是进 normal 之后默认是
- * **damping**、不是 run，臂不会因为"没复位就位控"而乱动；二是上位机本来就该看反馈帧
- * 确认姿态，那才是权威判据。 */
+/* 初始化在保持夹爪入口角度的同时执行六轴复位。
+ * 命令层 auto_mode 回到 none 后标记夹爪已初始化，进入正常运行（阻尼）。
+ * 本函数和命令层都在 CmdTask 中执行。 */
 static void Init_Step(Arm* arm) {
-    /* 遥控器一旦上线 → **判定复位中止，退回待初始化**。
-     *
-     * 为什么不接着跑：遥控器会覆盖 Arm_mode，一旦是 stop 档，命令层的
-     * Stop_Mode_Update() 每拍清 auto_mode，正在跑的复位被打断；等遥控器再离线，
-     * auto_mode 是 none —— 和"复位正常跑完"**长得一模一样**，会被误判成已完成、
-     * 直接给电机使能。在这儿主动中止就没有这个歧义（计划评审时发现的洞）。 */
-    if (Rc_Online()) {
+    /* 遥控器接管或电机掉线时中止，避免把中断的规划标记为初始化完成。 */
+    if (Rc_Online() || !All_Motors_Online(arm)) {
         if (arm->gimbal_cmd != NULL) {
             arm->gimbal_cmd->auto_mode = arm_auto_none;
             arm->gimbal_cmd->auto_step = 0U;
@@ -670,16 +654,9 @@ static void Init_Step(Arm* arm) {
         arm->init_step = 1U;
         break;
 
-    case 1: /* 等复位跑完（Arm_Reset 的 default 分支会把 auto_mode 打回 none） */
+    case 1: /* 六轴复位完成 */
         if (arm->gimbal_cmd->auto_mode == arm_auto_none) {
-            arm->gimbal_cmd->auto_step = 0U;
-            arm->gimbal_cmd->auto_mode = arm_auto_gripper_zero;
-            arm->init_step = 2U;
-        }
-        break;
-
-    case 2: /* 等夹爪找零跑完 */
-        if (arm->gimbal_cmd->auto_mode == arm_auto_none) {
+            arm->gimbal->arm_feedback_data.motor_inited[GRIPPER] = 1U;
             arm->init_step = 0U;
             Robot_State_Enter(arm, robot_state_normal);
         }
@@ -691,11 +668,7 @@ static void Init_Step(Arm* arm) {
     }
 }
 
-/* 一键复位（robot_state_resetting）的推进。只有两拍 —— 这里**没有夹爪找零那一步**，
- * 那正是加 0x18 的理由：只想把臂收回原位时不用白等 4 s 找零、也不会把夹爪零点重设一遍。
- *
- * 跑完回**正常运行（默认 damping）**，不是回待初始化：复位是从 normal 发起的，回去还是
- * 一个可用的会话，上位机按 0x12 就能再进 run。 */
+/* 0x18 执行六轴复位，完成后进入正常运行（阻尼）。 */
 static void Reset_Step(Arm* arm) {
     /* 遥控器上线 → 中止，理由同 Init_Step()：遥控器会覆盖 Arm_mode，stop 档下每拍清
      * auto_mode，正在跑的复位被打断；等遥控器再离线时 auto_mode 也是 none —— 和"复位

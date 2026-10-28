@@ -19,11 +19,8 @@
  *     输入 → 一键模式 → 规划状态检查 → ctrl_src(关节控制源) → 软限位 → TD 平滑
  *          → Gimbal.arm_control_data → (下一句) Gimbal_Update()
  *
- * 一键模式的**触发**目前没接：`auto_mode` 恒为 arm_auto_none，要跑复位得由上层输入
- * 或者调试器直接写它(见下面结构体里那段注释)。
- *
- * 板级标定量(角度软限位、规划速度前馈系数)在 App/inc/gimbal_cmd_def.h，只给
- * gimbal_cmd.c include。
+ * 一键复位由总模式状态机在初始化或收到 0x18 命令时触发。
+ * 角度软限位和规划速度前馈系数位于 App/inc/gimbal_cmd_def.h。
  *
  * 挂载方式：
  *   g_arm[A].gimbal     = Gimbal_Create(A);        // freertos.c 的 StartCmdTask 里
@@ -65,29 +62,6 @@ typedef struct {
     float joint_angle_solved[ARM_JOINT_NUM];  // 最终解算关节角目标值，deg
 } Arm_ctrl_data_src;
 
-/* 「一键夹爪找零」的跨拍状态(Arm_Gripper_Zero 用，动作本体在 App/arm_auto.c)。
- * 必须按台分开：静态变量是所有臂共用一份，第二台一进这个动作就把第一台的进度覆盖掉
- * (找零会拿错限位角去算退到哪儿)。所以放对象里，一次找零在 case 0 整块重置。
- *
- * 字段名沿用 gz_xxx，只是多了 `obj->gz.` 前缀；调试器里读
- * `g_arm[0].gimbal_cmd->gz.stall_angle`。 */
-typedef struct {
-    float win_pos;      // 当前小窗开始时的反馈角，deg
-    float stall_angle;  // 认到"顶住了"那一刻的反馈角 = 机械限位，deg
-    float back_target;  // 退到哪儿(绝对角) = stall_angle - 半个行程，deg
-    uint16_t win_ms;    // 当前小窗已经量了多少 ms
-    uint16_t total_ms;  // 推开阶段一共过了多少 ms
-    uint16_t back_ms;   // 退回阶段一共过了多少 ms
-    uint16_t zero_ms;   // 等设零那一轮等了多久，ms
-    uint16_t settle_ms; // 设零之后等常规帧恢复了多久，ms
-    uint8_t stall_win;  // 已经连续几个小窗没动
-    uint8_t zero_sent;  // 设零请求已经发出去了
-    /* 设零那一轮的结果码(Arm_zero_result)：
-     *   2=OK(位置被拉到 0) 1=UNCONFIRMED(本来就在容差内，写没写进去看不出来) 4=超时 5=没参与。
-     * **第二次跑会看到 1**：那时夹爪就在行程中点上(读数≈0)，本来就分辨不出来。 */
-    uint8_t zero_result;
-} Gripper_zero_state;
-
 typedef struct {
     Quintic_spline curve;
     float target;    // 终点角度，deg
@@ -125,10 +99,6 @@ typedef struct Gimbal_cmd_t {
     float plan_joint_vel[ARM_JOINT_NUM];   // 规划得到的关节速度
     float plan_joint_acc[ARM_JOINT_NUM];   // 规划得到的关节加速度
     uint8_t plan_running;                  // 规划运行标志(Plan_Running_Check() 每拍更新)
-
-    /* ---- 下面这两个都是"per 台"的补充，追加在末尾不动上面的偏移 ----
-     * 夹爪找零的跨拍状态，见 Gripper_zero_state 的说明。 */
-    Gripper_zero_state gz;
 
     /* 反指针：这台命令层挂在**哪台臂**上。用途是**取模式源** —— `obj->arm->arm_mode`
      * 就是"这台臂现在该怎么出力"(总模式状态机给的)。之所以还要有这么一层，是因为
