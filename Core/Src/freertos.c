@@ -27,7 +27,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "DM_motor.h"
-#include "ENCOS_motor.h"
 #include "monitor.h"
 #include "can_loopback_test.h"
 #include "uart_loopback_test.h"
@@ -293,7 +292,7 @@ void StartMotorTask(void *argument)
         uint8_t bus, round;
         Arm_Zero_Loop(g_arm[ARM_A].gimbal);
         Arm_Zero_Loop(g_arm[ARM_B].gimbal);
-        /* 两个驱动都是"一次一帧"的步进形式(见 DM_motor.h / ENCOS_motor.h)：下面这个
+        /* 驱动是"一次一帧"的步进形式(见 DM_motor.h)：下面这个
          * 轮转循环每轮给**每条总线各发一帧**，然后**等一次** 200us 最小帧间隔 —— 这正是
          * 用户指定的"两路交替配对、一个来回等一次"。
          *
@@ -308,7 +307,6 @@ void StartMotorTask(void *argument)
          * 所以最坏一拍等 4×200us = 800us，和只有 CAN1 时是同一个量级；第二路是搭同一轮
          * 的车，不额外付等待。 */
         DMmotor_Send_Begin();
-        ENCOSmotor_Send_Begin();
         /* "本拍属于哪个组"**整拍只锁存一次**。必须在这里锁，不能等到驱动里去现读
          * osKernelGetTickCount()：下面这个轮转循环一拍要跨 600~800us(每轮等一次 200us)，
          * 毫秒边沿会落在循环中间，现读的话同一拍里的电机会拿到两个相位 —— 排在轮转
@@ -324,12 +322,7 @@ void StartMotorTask(void *argument)
                 /* 这台臂在设零 → **它那条总线**关门。必须按臂判：原来是"整条总线"一把闸住
                  * 两个循环，双臂之后那样会让 A 台设零捎带着把 B 台也停了。 */
                 if (Arm_Zero_Busy(g_arm[bus].gimbal)) continue;
-                /* 两条 if **不能写成并列的**：continue 让这条总线这一轮就此打住，保证
-                 * "每路每轮最多 1 帧"。写成并列的话达妙和 ENCOS 会在同一轮各出一帧，
-                 * 那一轮出的是 2 帧、却只等了一次间隔。代价是达妙优先于 ENCOS ——
-                 * 无所谓，每台电机每拍最多只发一次。 */
-                if (DMmotor_Send_Step(bus)) { sent = 1U; continue; }
-                if (ENCOSmotor_Send_Step(bus)) { sent = 1U; }
+                if (DMmotor_Send_Step(bus)) { sent = 1U; }
             }
             if (!sent) break;              /* 这一拍两条总线都没事干了 */
             BSP_CAN_TxGapWait();           /* 一轮之后才等这一次 */

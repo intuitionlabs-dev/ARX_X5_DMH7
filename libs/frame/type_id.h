@@ -128,8 +128,7 @@ typedef struct {
  * 模式下用），0x02 是**上电流程**里那个一次性的放行闸门。两者语义不同，所以是两个码。 */
 typedef FramePktEmpty FramePktArmInit;
 
-/* 「电机设置零点包」：触发一轮设零，参与集固定是全部 7 台（由 libs 那边的
- * arm_zero_encos_enable 决定 j1~j3 是真参与还是占位跳过）。整包的语义就是
+/* 「电机设置零点包」：触发一轮设零，参与集固定是全部 7 台。整包的语义就是
  * "开始设零"，没有参数 —— 所以不带 payload，码表见上。 */
 typedef FramePktEmpty FramePktMotorSetZero;
 

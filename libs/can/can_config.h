@@ -40,7 +40,7 @@
  * 设零/使能/查询这类"必须发出去"的命令帧请用 CAN_TX_GROUP_ALL，别被分组吃掉。
  *
  * 驱动里要**先问一次 `BSP_CAN_TxGroupMatch(config.tx_group)` 再进循环体**
- * (见 libs/dm_motor、libs/encos_motor)：只发不算是浪费，只算不发则 PID 会按
+ * (见 libs/dm_motor)：只发不算是浪费，只算不发则 PID 会按
  * 任务周期(1 kHz)跑而不是发送周期(500 Hz)，而 libs/controller 的 PID 没有 dt，
  * 增益按调用次数算 —— KI 会凭空翻倍。 */
 /* MotorTask 一拍里"每条总线最多发几帧"，也就是轮转循环的轮数上界(见 freertos.c 的

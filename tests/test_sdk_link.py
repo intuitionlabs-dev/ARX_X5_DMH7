@@ -71,7 +71,7 @@ class SDKLinkTests(unittest.TestCase):
             self.assertTrue(a.wait_for(lambda arm: arm.robot_state == S.WAIT_INIT, timeout=1))
             self.assertIsNotNone(a.wait_feedback(timeout=1))
             self.assertEqual(b.robot_state, S.WAIT_INIT)
-            self.assertEqual(link.board_version, sdk.VERSION_CODE)
+            self.assertEqual(link.board_version, link.board_defs.VERSION_CODE)
             self.assertIs(link.arm(0), a)
             a.close()  # SDK Arm 不负责关闭外部传入的共享链路。
             self.assertTrue(link.is_open)
@@ -198,7 +198,8 @@ class SDKLinkTests(unittest.TestCase):
         self.advance(link, 3008)
         self.assertEqual(a.robot_state, S.WAIT_INIT)
         with self.assertRaises(sdk.ProtocolError):
-            link.inject_bytes(P.encode(P.TID_VERSION, P.encode_version()))
+            link.inject_bytes(P.encode(
+                P.TID_VERSION, P.encode_version(link.board_defs.VERSION_CODE)))
 
     def test_queue_backpressure_ordering_and_core_gates(self):
         link = self.make()
