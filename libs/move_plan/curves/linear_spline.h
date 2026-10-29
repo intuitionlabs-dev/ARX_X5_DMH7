@@ -1,22 +1,22 @@
 #pragma once
 #pragma once
 
-// 一次样条配置结构体
+/* 一次样条配置结构体 */
 typedef struct {
-    float x0;    //第一个点的x坐标
-    float y0;    //第一个点的y坐标
-    float x1;    //第二个点的x坐标
-    float y1;    //第二个点的y坐标
-    float xmin;  //样条的x坐标下限
-    float xmax;  //样条的x坐标上限
+    float x0;    /* 第一个点的x坐标 */
+    float y0;    /* 第一个点的y坐标 */
+    float x1;    /* 第二个点的x坐标 */
+    float y1;    /* 第二个点的y坐标 */
+    float xmin;  /* 样条的x坐标下限 */
+    float xmax;  /* 样条的x坐标上限 */
 } Linear_spline_config;
-//一次多项式结构体
+/* 一次多项式结构体 */
 // y = a1*x + a0
 typedef struct {
     float a0;
     float a1;
 } Linear_poly;
-// 一次样条结构体，包含多项式系数和x坐标范围
+/* 一次样条结构体，包含多项式系数和x坐标范围 */
 typedef struct {
     Linear_poly poly;
     float xmin;

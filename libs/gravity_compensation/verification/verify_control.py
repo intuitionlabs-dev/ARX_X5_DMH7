@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LGPL-2.1-or-later
+
 """使用固件的头文件配置在主机验证控制层。"""
 import argparse
 import json

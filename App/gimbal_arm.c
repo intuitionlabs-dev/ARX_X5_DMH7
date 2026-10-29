@@ -1,428 +1,214 @@
 #include "gimbal_arm.h"
-#include <stdlib.h>
-#include <string.h>
 #include "arm.h"
+#include "can_config.h"
 #include "common.h"
-#include "dm_mit_control.h"
-#include "gimbal_arm_def.h"
+#include <stdlib.h>
+#include <math.h>
+#include <string.h>
 
-static void Motor_Lost(void* motor) { (void)motor; }
-static float Metal_Pos_Fdb_Calc(void* arg);
-static float Metal_Speed_Fdb_Calc(void* arg);
-static void Metal_Mit_Control(DM_motor* motor);
-static void Motor_Lost_Handle(Gimbal* obj);
-static uint8_t Arm_Auto_Init(Gimbal* obj);
-static void Get_Motor_Fdb(Gimbal* obj);
-static void Joint_Dynamics_Comp_Calc(Gimbal* obj);
-static void Set_Motor_ref(Gimbal* obj);
-static void pid_init(Gimbal* obj);
-static void set_pid_normal(Gimbal* obj);
-static void set_pid_zero(Gimbal* obj);
-static void set_pid_damping(Gimbal* obj);
-static PID_Config zero_config;
-
-/* 调试器观测臂 A 的 J3。 */
+/* 调试器观测控制器数据。 */
 float g_fdb_pos, g_fdb_speed, g_ref_pos, g_ref_speed;
-float g_speed_comp, g_output,g_speed_output, g_ouput_comp;
+float g_speed_comp, g_output, g_speed_output, g_ouput_comp;
 
-Gimbal* Gimbal_Create(uint8_t can_index) {
-    if (can_index >= ARM_NUM) return NULL;
-    Gimbal* obj = calloc(1, sizeof(Gimbal));
-    if (obj == NULL) return NULL;
+/* 根据机型配置创建单臂电机和控制工作区。 */
+Gimbal* Gimbal_Create_Profile(const Arm_profile* profile, uint8_t can_index) {
+    /* 总线索引或机型配置无效时拒绝创建。 */
+    if (can_index >= DEVICE_CAN_CNT || !Arm_Profile_Validate(profile)) return NULL;
+    Gimbal* obj = calloc(1, sizeof(*obj));
+    /* 控制对象分配失败时返回空指针。 */
+    if (!obj) return NULL;
+    obj->profile = profile;
     obj->can_index = can_index;
-    pid_init(obj);
-    DM_motor** slots[ARM_MOTOR_NUM] = {&obj->joint1, &obj->joint2, &obj->joint3,
-        &obj->joint4, &obj->joint5, &obj->joint6, &obj->gripper};
+    /* 逐电机创建驱动并设置初始模式。 */
     for (int i = 0; i < ARM_MOTOR_NUM; ++i) {
-        DM_motor_config config = {
-            .bsp_can_index = can_index,
-            .can_tx_id = METAL_MOTOR_TX_ID[i],
-            .can_rx_id = METAL_MOTOR_RX_ID[i],
-            .motor_controller_config = {
-                .control_type = PID_MODEL,
-                .control_depth = POS_CONTROL_CASCADE,
-                .position_pid_config = obj->pid_cfgs[i][0],
-                .speed_pid_config = obj->pid_cfgs[i][1],
-            },
-            .pos_fdb_calc = Metal_Pos_Fdb_Calc,
-            .speed_fdb_calc = Metal_Speed_Fdb_Calc,
-            .lost_callback_ = Motor_Lost,
-            .control_mode = dm_mit,
-            .output_mode = dm_output_normal,
-            .tx_group = METAL_MOTOR_TX_GROUP[i],
-            .max_position = METAL_MOTOR_PMAX,
-            .max_speed = METAL_MOTOR_VMAX[i],
-            .max_torque = METAL_MOTOR_TMAX[i],
-            .max_kp = 500.0f,
-            .max_kd = 5.0f,
-        };
-        DM_motor* motor = DMmotor_Create(&config, Metal_Mit_Control);
-        if (motor == NULL) return NULL;
-        *slots[i] = motor;
-        motor->config.arg = motor;
-        motor->kp = obj->pid_mit_kpkd[i][0];
-        motor->kd = obj->pid_mit_kpkd[i][1];
-        obj->motor_controller_list[i] = motor->motor_controller;
-        obj->motor_monitor_list[i] = motor->monitor;
-        motor->monitor->count = 0;
+        Arm_motor* motor = &obj->motors[i];
+        motor->config = &profile->motors[i];
+        /* 在临界区内创建驱动并发布初始增益。 */
+        const uint32_t interrupt_mask = Arm_Motors_Lock();
+        const int created = motor->config->driver->create(motor, motor->config, can_index);
+        /* 创建成功后初始化监控状态和停止增益。 */
+        if (created) {
+            motor->monitor->count = 0;
+            motor->config->driver->mode(motor, 0, motor->config->kp, motor->config->kd);
+        }
+        Arm_Motors_Unlock(interrupt_mask);
+        /* 任一电机创建失败时终止控制对象创建。 */
+        if (!created) return NULL;
     }
-    PID_SetConfig_Pos(&zero_config, 0, 0, 0, 0, 0);
+    /* 加载各关节电机零点偏移，单位 deg。 */
+    for (int i = 0; i < ARM_JOINT_NUM; ++i)
+        obj->motor_pos_init[i] = profile->joints[i].position_zero_deg;
     return obj;
 }
 
-void Gimbal_Update(Gimbal* obj) {
-    /* 取指令*/
-    obj->arm_mode = obj->arm_control_data.mode;
-
-    /* 电机掉线相关处理 */
-    Motor_Lost_Handle(obj);  // 放在最前面
-
-    // 首次上电自动初始化。
-    /* 标志位在 obj 里(不是函数内 static)：两台臂各建一次，共用一个 static 的话
-     * 后建的那台一进来就看到标志是 1，Arm_Auto_Init() 永远不跑。 */
-    if (obj->first_init_flag == 0) {
-        //成功后返回1，失败返回0
-        obj->first_init_flag = Arm_Auto_Init(obj);
-        if (!obj->first_init_flag) obj->arm_mode = arm_stop;  // 自动初始化未成功则停机
-    }
-
-    /* 获取电机反馈 */
-    Get_Motor_Fdb(obj);
-
-    /* 使用本周期反馈计算关节力矩。 */
-    Joint_Dynamics_Comp_Calc(obj);
-
-    /* 按模式挑 PID 配置 / kp / kd。**每拍都重设**，所以模式一换下一拍就生效，
-     * 不需要在切换处做任何额外动作。
-     *
-     * 四种模式在这里分成三档：
-     *   arm_run                          位置环正常，kp/kd 正常；
-     *   arm_damping                      位置环全关，kp=0，kd=JOINT_DAMPING_MODE_KD；
-     *   arm_only_gravity_comp            位置环全关，kp=kd=0；
-     *   arm_stop / 其它                   走 normal —— 失能态下这些值用不上（电机不发
-     *                                    力矩），但让它和 run 一致最省心：万一哪天从
-     *                                    stop 直接使能，配置不会是"上一个模式的残留"。 */
-    switch (obj->arm_mode) {
-    case arm_damping:
-        set_pid_damping(obj);
-        break;
-    case arm_only_gravity_comp:
-        set_pid_zero(obj);
-        break;
-    case arm_run:
-    case arm_stop:
-    default:
-        set_pid_normal(obj);
-        break;
-    }
-
-    /* 电机启停标志由 MotorTask 中的 DM 驱动消费。 */
-    DM_motor* motors[ARM_MOTOR_NUM] = {obj->joint1, obj->joint2, obj->joint3,
-        obj->joint4, obj->joint5, obj->joint6, obj->gripper};
-    for (int i = 0; i < ARM_MOTOR_NUM; ++i)
-        motors[i]->enable = obj->arm_mode == arm_stop ? dm_stop : dm_enable;
-
-    /* 电机控制 */
-    Set_Motor_ref(obj);
-
-    // DEBUG:拷贝控制器数据
-    if (obj == g_arm[0].gimbal) {
-        g_fdb_pos = obj->joint2->motor_controller->fdb_position;
-        g_fdb_speed = obj->joint2->motor_controller->fdb_speed;
-        g_ref_pos = obj->joint2->motor_controller->ref_position;
-        g_ref_speed = obj->joint2->motor_controller->ref_speed;
-        g_speed_comp = obj->joint2->motor_controller->speed_comp;
-        g_output = obj->joint2->motor_controller->output;
-        g_ouput_comp = obj->joint2->motor_controller->output_comp;
-        g_speed_output = obj->joint2->motor_controller->pid_speed_data.output;
-    }
-
-    /* 杂项 */
-    obj->arm_feedback_data.mode = obj->arm_mode;
+/* 根据板级绑定创建指定机械臂。 */
+Gimbal* Gimbal_Create(uint8_t arm_index) {
+    /* 机械臂索引越界时拒绝创建。 */
+    if (arm_index >= ARM_NUM) return NULL;
+    const Arm_binding* binding = &ARM_BINDINGS[arm_index];
+    /* 检查各臂是否独占 CAN 总线。 */
+    for (int i = 0; i < ARM_NUM; ++i)
+        /* 总线绑定冲突时拒绝创建。 */
+        if (i != arm_index && binding->can_index == ARM_BINDINGS[i].can_index) return NULL;
+    return Gimbal_Create_Profile(binding->profile, binding->can_index);
 }
 
-static uint8_t Arm_Auto_Init(Gimbal* obj) {
-    // 判断有无电机掉线
-    for (int i = 0; i < ARM_MOTOR_NUM; i++) {
-        if (obj->arm_feedback_data.is_motor_lost[i]) {
-            return 0;  // 机械臂存在掉线电机则自动初始化失败
-        }
-    }
-
-    // j1-j7电机具有绝对值编码器
-    obj->motor_pos_init[JOINT1] = JOINT1_POS_INIT;
-    obj->motor_pos_init[JOINT2] = JOINT2_POS_INIT;
-    obj->motor_pos_init[JOINT3] = JOINT3_POS_INIT;
-    obj->motor_pos_init[JOINT4] = JOINT4_POS_INIT;
-    obj->motor_pos_init[JOINT5] = JOINT5_POS_INIT;
-    obj->motor_pos_init[JOINT6] = JOINT6_POS_INIT;
-    // 夹爪默认未初始化
-    for (int i = 0; i < ARM_JOINT_NUM; i++) {
-        obj->arm_feedback_data.motor_inited[i] = 1;  // j1-j6电机初始化完成
-    }
-
-    return 1;  // 初始化完成
-}
-
-static void Motor_Lost_Handle(Gimbal* obj) {
-    /* 检测 */
-    uint8_t any_motor_lost = 0;  // 初始化为0
-    for (int i = 0; i < ARM_MOTOR_NUM; i++) {
-        obj->arm_feedback_data.is_motor_lost[i] = is_Offline(obj->motor_monitor_list[i]);
-        // 只要有一个电机掉线，就认为存在掉线
-        any_motor_lost += obj->arm_feedback_data.is_motor_lost[i];
-    }
-
-    // 当j6掉线且未开启掉线保护，认为其未初始化
-    if (ANY_MOTOR_LOST_STOP_ENABLE) {
-        if (obj->arm_feedback_data.is_motor_lost[JOINT6])
-            obj->arm_feedback_data.motor_inited[JOINT6] = 0;
-    }
-    // j1~j6始终认为已初始化，因为它们具有绝对值编码器，掉线后重启仍能获得正确的角度反馈，不会出现误判掉线的情况
-    obj->arm_feedback_data.motor_inited[JOINT1] = 1;
-    obj->arm_feedback_data.motor_inited[JOINT2] = 1;
-    obj->arm_feedback_data.motor_inited[JOINT3] = 1;
-    obj->arm_feedback_data.motor_inited[JOINT4] = 1;
-    obj->arm_feedback_data.motor_inited[JOINT5] = 1;
-    obj->arm_feedback_data.motor_inited[JOINT6] = 1;
-
-    /* 处理 */
-    if (any_motor_lost && ANY_MOTOR_LOST_STOP_ENABLE) {  // 若配置为掉线停机则停机
-        obj->arm_mode = arm_stop;                        // 存在掉线电机，进入stop状态
+/* 按运行模式统一设置 PID 和驱动增益。 */
+static void apply_motor_mode(Gimbal* obj, Arm_mode mode) {
+    /* 被动控制使用零 PID 增益配置。 */
+    const PID_Config zero = {0};
+    /* 逐电机发布使能状态、刚度和阻尼。 */
+    for (int i = 0; i < ARM_MOTOR_NUM; ++i) {
+        Arm_motor* motor = &obj->motors[i];
+        const Arm_motor_config* config = motor->config;
+        const uint8_t passive = mode == arm_damping
+            || (mode == arm_only_gravity_comp && i != GRIPPER);
+        motor->control->pid_pos_data.config = passive ? zero : config->position_pid;
+        motor->control->pid_speed_data.config = passive ? zero : config->speed_pid;
+        const float kp = passive ? 0 : config->kp;
+        const float kd = mode == arm_damping ? config->damping_kd
+            : passive ? 0 : config->kd;
+        config->driver->mode(motor, mode != arm_stop, kp, kd);
     }
 }
 
-static void Set_Motor_ref(Gimbal* obj) {
-    if (obj->arm_mode == arm_stop) {  // stop状态
-        for (int i = 0; i < ARM_MOTOR_NUM; i++) {
-            // 电机位置跟随，防止跳变
-            obj->motor_controller_list[i]->ref_position =
-                obj->motor_controller_list[i]->fdb_position;
-            // 电机速度前馈置零
-            obj->motor_controller_list[i]->speed_comp = 0;
-            // 电机输出补偿置零
-            obj->motor_controller_list[i]->output_comp = 0;
-        }
-        for (int i = 0; i < ARM_JOINT_NUM; i++) {
-            // 关节粘性摩擦前馈置零
-            obj->damp_comp[i] = 0;
-        }
-        return;
+/* 采集电机状态并换算关节和夹爪反馈。 */
+static void get_feedback(Gimbal* obj) {
+    Arm_feedback_data* feedback = &obj->arm_feedback_data;
+    uint8_t online = 1;
+    /* 读取各电机掉线状态和温度。 */
+    for (int i = 0; i < ARM_MOTOR_NUM; ++i) {
+        Arm_motor* motor = &obj->motors[i];
+        feedback->is_motor_lost[i] = is_Offline(motor->monitor);
+        feedback->motor_temp[i] = motor->config->driver->temperature(motor);
+        /* 任一电机掉线时清除全部在线标志。 */
+        if (feedback->is_motor_lost[i]) online = 0;
     }
-
-    /* 被动模式下目标位置跟随反馈；纯重力模式输出静态支撑力矩。 */
-    if (obj->arm_mode == arm_damping || obj->arm_mode == arm_only_gravity_comp) {
-        const uint8_t gravity_on = (obj->arm_mode == arm_only_gravity_comp);
-        for (int i = 0; i < ARM_MOTOR_NUM; i++) {
-            // 电机位置跟随，防止跳变
-            obj->motor_controller_list[i]->ref_position =
-                obj->motor_controller_list[i]->fdb_position;
-            // 电机速度前馈置零
-            obj->motor_controller_list[i]->speed_comp = 0;
-            // 电机输出补偿：先全清，要重力的话下面单独给 6 个关节补
-            obj->motor_controller_list[i]->output_comp = 0;
-        }
-        for (int i = 0; i < ARM_JOINT_NUM; i++) {
-            // 被动模式的粘性摩擦前馈为零。
-            obj->damp_comp[i] = 0;
-            if (gravity_on) {
-                /* 关节力矩转换为电机输出。 */
-                obj->motor_controller_list[i]->output_comp = MOTOR_DIR[i]
-                    * obj->tau_comp[i] * JOINT_TORQUE_TRANS[i] * JOINT_TORQUE_TRANS_COEF[i];
-            }
-        }
-        return;
-    }
-
-    /* 设置关节电机目标位置、速度和力矩前馈 */
-    for (int i = 0; i < ARM_JOINT_NUM; i++) {
-        // 位置
-        obj->motor_controller_list[i]->ref_position =
-            angle_to_pos(obj->arm_control_data.joint_angle[i], obj->motor_pos_init[i],
-                MOTOR_DIR[i], MOTOR_REDUCTION[i]);
-        // 速度前馈
-        obj->motor_controller_list[i]->speed_comp =
-            vel_to_speed(obj->arm_control_data.joint_vel[i], MOTOR_DIR[i], MOTOR_REDUCTION[i])
-            * JOINT_SPEEDCOMP_COEF[i];
-        // 粘性摩擦前馈
-        obj->damp_comp[i] = obj->arm_control_data.joint_vel[i] * DEG2RAD
-            * JOINT_DAMPING[i];
-        // 总力矩前馈,带有修正系数
-        obj->motor_controller_list[i]->output_comp = MOTOR_DIR[i]
-            * (obj->tau_comp[i] + obj->damp_comp[i]) * JOINT_TORQUE_TRANS[i]
-            * JOINT_TORQUE_TRANS_COEF[i];
-    }
-
-    /* 设置夹爪电机目标位置和力矩 */
-    obj->motor_controller_list[GRIPPER]->ref_position = obj->arm_control_data.gripper_angle;
-    obj->motor_controller_list[GRIPPER]->output_comp = obj->arm_control_data.gripper_torque;
-}
-
-static void Get_Motor_Fdb(Gimbal* obj) {
-    /* 控制器回调已经按 Metal 协议转换为 deg / deg/s。 */
-    for (int i = 0; i < ARM_JOINT_NUM; i++) {
-        obj->arm_feedback_data.joint_angle[i] =
-            pos_to_angle(obj->motor_controller_list[i]->fdb_position,
-                obj->motor_pos_init[i], MOTOR_DIR[i], MOTOR_REDUCTION[i]);
-        obj->arm_feedback_data.joint_vel[i] =
-            speed_to_vel(obj->motor_controller_list[i]->fdb_speed,
-                MOTOR_DIR[i], MOTOR_REDUCTION[i]);
-    }
-    obj->arm_feedback_data.gripper_angle = obj->gripper->motor_controller->fdb_position;
-    DM_motor* motors[ARM_MOTOR_NUM] = {obj->joint1, obj->joint2, obj->joint3,
-        obj->joint4, obj->joint5, obj->joint6, obj->gripper};
-    for (int i = 0; i < ARM_MOTOR_NUM; ++i)
-        obj->arm_feedback_data.motor_temp[i] = motors[i]->t_rotor;
-}
-
-/* arm_run：M(q)*qdd_ref + sC*C(q,qd_ref)*qd_ref + sG*G(q) + F(qd_ref)。
- * q 使用关节反馈位置，qd_ref/qdd_ref 使用命令层的参考速度/加速度。
- * 普通位置目标及复位由同一条五次样条提供两阶导数；0x17 使用外部速度、零加速度。
- * 纯重力模式仅输出 sG*G(q)。
- */
-static void Joint_Dynamics_Comp_Calc(Gimbal* obj) {
-#if JOINT_DYNAMICS_COMP_ENABLE
-    _Static_assert(ARM_JOINT_NUM == METAL_GRAVITY_DOF, "动力学模型关节数必须一致");
-    if (obj->arm_mode != arm_run && obj->arm_mode != arm_only_gravity_comp) {
-        memset(obj->tau_comp, 0, sizeof(obj->tau_comp));
-        obj->dynamics_status = METAL_DYNAMICS_OK;
-        return;
-    }
-
-    metal_real q[ARM_JOINT_NUM], qd[ARM_JOINT_NUM], qdd[ARM_JOINT_NUM];
-    metal_real torque[ARM_JOINT_NUM];
-    int status;
+    /* 将电机反馈换算为关节角和关节速度。 */
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
-        q[i] = obj->arm_feedback_data.joint_angle[i] * DEG2RAD;
-        qd[i] = obj->arm_control_data.joint_vel[i] * DEG2RAD;
-        qdd[i] = obj->arm_control_data.joint_acc[i] * DEG2RAD;
+        const Arm_joint_config* joint = &obj->profile->joints[i];
+        controller* control = obj->motors[i].control;
+        feedback->joint_angle[i] = (control->fdb_position-obj->motor_pos_init[i])
+            * joint->direction/joint->reduction;
+        feedback->joint_vel[i] = control->fdb_speed*joint->direction/joint->reduction;
+        /* 绝对编码关节按在线状态标记位置有效性。 */
+        if (joint->absolute_encoder)
+            feedback->motor_inited[i] = !feedback->is_motor_lost[i];
     }
-    if (obj->arm_mode == arm_only_gravity_comp) {
-        status = metal_gravity_compute(JOINT_DYNAMICS_COMP_MODEL, q,
-            JOINT_DYNAMICS_GRAVITY_BASE, JOINT_DYNAMICS_GRAVITY_MODE, torque);
-    } else {
-        status = metal_dynamics_compute(JOINT_DYNAMICS_COMP_MODEL, q, qd, qdd,
-            JOINT_DYNAMICS_GRAVITY_BASE, JOINT_DYNAMICS_GRAVITY_MODE, torque);
+    /* 将夹爪电机位置转换为协议角度。 */
+    feedback->gripper_angle = Arm_Gripper_From_Motor(obj->profile,
+        obj->motors[GRIPPER].control->fdb_position);
+    /* 全部电机在线时记录首次上线完成。 */
+    if (online) obj->first_init_flag = 1;
+    /* 按首次上线状态和掉线策略执行停止保护。 */
+    if (!obj->first_init_flag || (!online && obj->profile->stop_on_motor_lost))
+        obj->arm_mode = arm_stop;
+}
+
+/* 按当前模式计算关节逆动力学补偿。 */
+static void dynamics_update(Gimbal* obj) {
+    memset(obj->tau_comp, 0, sizeof(obj->tau_comp));
+    obj->dynamics_status = ARM_DYNAMICS_OK;
+    /* 模型未配置或模式无需补偿时保持零力矩。 */
+    if (!obj->profile->dynamics
+        || (obj->arm_mode != arm_run && obj->arm_mode != arm_only_gravity_comp)) return;
+    float q[ARM_JOINT_NUM], qd[ARM_JOINT_NUM], qdd[ARM_JOINT_NUM];
+    /* 将角度、参考速度和加速度换算为 SI 单位。 */
+    for (int i = 0; i < ARM_JOINT_NUM; ++i) {
+        q[i] = obj->arm_feedback_data.joint_angle[i]*DEG2RAD;
+        qd[i] = obj->arm_control_data.joint_vel[i]*DEG2RAD;
+        qdd[i] = obj->arm_control_data.joint_acc[i]*DEG2RAD;
     }
-    if (status != METAL_DYNAMICS_OK) {
-        memset(torque, 0, sizeof(torque));
+    /* 按完整逆动力学或静态重力模式计算补偿。 */
+    obj->dynamics_status = Arm_Dynamics_Compute(obj->profile->dynamics, q, qd, qdd,
+        obj->profile->gravity, obj->arm_mode == arm_only_gravity_comp,
+        obj->tau_comp, obj->dynamics_work, ARM_JOINT_NUM);
+    /* 动力学计算失败时清空补偿并停止该臂。 */
+    if (obj->dynamics_status != ARM_DYNAMICS_OK) {
+        memset(obj->tau_comp, 0, sizeof(obj->tau_comp));
         obj->arm_mode = arm_stop;
     }
-    memcpy(obj->tau_comp, torque, sizeof(obj->tau_comp));
-    obj->dynamics_status = status;
-#else
-    memset(obj->tau_comp, 0, sizeof(obj->tau_comp));
-    obj->dynamics_status = METAL_DYNAMICS_OK;
-#endif
 }
 
-static void pid_init(Gimbal* obj) {
-    memset(obj->pid_cfgs, 0, sizeof(obj->pid_cfgs));
-
-    /* 下标 0：位置环；下标 1：速度环。
-     * 参数顺序：Kp、Ki、Kd、积分累加限幅、输出限幅。
-     */
-    // joint1
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][0], 6, 0.00, 50, 200, 1000);
-    obj->pid_cfgs[JOINT1][0].Irange = 1;
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT1][1], 0.000199999995, 0.00150000001, 9.99999975e-05, 500, 12);
-    obj->pid_cfgs[JOINT1][1].Irange = 20;
-    obj->pid_mit_kpkd[JOINT1][0] = 0;
-    obj->pid_mit_kpkd[JOINT1][1] = 5;
-
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][0], 4, 0, 50, 200, 1000);
-    obj->pid_cfgs[JOINT2][0].Irange = 1;
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT2][1], 0.2, 0.0f, 0.0f, 0.0f, 12);
-    obj->pid_mit_kpkd[JOINT2][0] = 30;
-    obj->pid_mit_kpkd[JOINT2][1] = 5;
-
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][0], 4, 0, 50, 200, 1000);
-    obj->pid_cfgs[JOINT3][0].Irange = 1;
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT3][1], 0.1, 0.0f, 0.0f, 0.0f, 12);
-    obj->pid_mit_kpkd[JOINT3][0] = 50;
-    obj->pid_mit_kpkd[JOINT3][1] = 5;
-
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT4][0], 10, 0.08, 50, 200, 1000);
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT4][1], 0, 0, 0, 0, 0);
-    obj->pid_cfgs[JOINT4][0].Irange = 0;
-    obj->pid_cfgs[JOINT4][1].Irange = 0;
-    obj->pid_mit_kpkd[JOINT4][0] = 50;
-    obj->pid_mit_kpkd[JOINT4][1] = 4;
-
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT5][0], 6, 0.08, 50, 200, 1000);
-    obj->pid_cfgs[JOINT5][0].Irange = 0;
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT5][1], 0.0f, 0.0f, 0.0f, 0.0f, 10);
-    obj->pid_mit_kpkd[JOINT5][0] = 10;
-    obj->pid_mit_kpkd[JOINT5][1] = 0.8;
-
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT6][0], 6, 0.08, 50, 200, 1000);
-    obj->pid_cfgs[JOINT6][0].Irange = 0;
-    PID_SetConfig_Pos(&obj->pid_cfgs[JOINT6][1], 0.0f, 0.0f, 0.0f, 0.0f, 10);
-    obj->pid_mit_kpkd[JOINT6][0] = 10;
-    obj->pid_mit_kpkd[JOINT6][1] = 1;
-
-    PID_SetConfig_Pos(&obj->pid_cfgs[GRIPPER][0], 0, 0, 0, 0, 0);
-    PID_SetConfig_Pos(&obj->pid_cfgs[GRIPPER][1], 0, 0, 0, 0, 0);
-    obj->pid_cfgs[GRIPPER][0].Irange = 0;
-    obj->pid_cfgs[GRIPPER][1].Irange = 0;
-    obj->pid_mit_kpkd[GRIPPER][0] = 20;
-    obj->pid_mit_kpkd[GRIPPER][1] = 0.1f;
-}
-
-static void set_pid_normal(Gimbal* obj) {
-    DM_motor* motors[ARM_MOTOR_NUM] = {obj->joint1, obj->joint2, obj->joint3,
-        obj->joint4, obj->joint5, obj->joint6, obj->gripper};
+/* 将关节和夹爪目标换算为电机参考值。 */
+static void set_references(Gimbal* obj) {
+    memset(obj->damp_comp, 0, sizeof(obj->damp_comp));
+    /* 先使所有电机参考位置跟随反馈并清空前馈。 */
     for (int i = 0; i < ARM_MOTOR_NUM; ++i) {
-        motors[i]->motor_controller->pid_pos_data.config = obj->pid_cfgs[i][0];
-        motors[i]->motor_controller->pid_speed_data.config = obj->pid_cfgs[i][1];
-        motors[i]->kp = obj->pid_mit_kpkd[i][0];
-        motors[i]->kd = obj->pid_mit_kpkd[i][1];
+        controller* control = obj->motors[i].control;
+        control->ref_position = isfinite(control->fdb_position) ? control->fdb_position : 0;
+        control->speed_comp = 0;
+        control->output_comp = 0;
     }
-}
-
-static void set_pid_damping(Gimbal* obj) {
-    DM_motor* motors[ARM_MOTOR_NUM] = {obj->joint1, obj->joint2, obj->joint3,
-        obj->joint4, obj->joint5, obj->joint6, obj->gripper};
-    for (int i = 0; i < ARM_MOTOR_NUM; ++i) {
-        motors[i]->motor_controller->pid_pos_data.config = zero_config;
-        motors[i]->motor_controller->pid_speed_data.config = zero_config;
-        motors[i]->kp = 0;
-        motors[i]->kd = JOINT_DAMPING_MODE_KD[i];
-    }
-}
-
-static void set_pid_zero(Gimbal* obj) {
-    set_pid_normal(obj);
-    DM_motor* motors[ARM_JOINT_NUM] = {obj->joint1, obj->joint2, obj->joint3,
-        obj->joint4, obj->joint5, obj->joint6};
+    /* 停止和阻尼模式使用已清空的前馈值。 */
+    if (obj->arm_mode == arm_stop || obj->arm_mode == arm_damping) return;
+    /* 逐轴换算参考角、速度和补偿力矩。 */
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
-        motors[i]->motor_controller->pid_pos_data.config = zero_config;
-        motors[i]->motor_controller->pid_speed_data.config = zero_config;
-        motors[i]->kp = motors[i]->kd = 0;
+        const Arm_joint_config* joint = &obj->profile->joints[i];
+        controller* control = obj->motors[i].control;
+        /* 运行模式设置关节位置和速度前馈。 */
+        if (obj->arm_mode == arm_run) {
+            control->ref_position = obj->arm_control_data.joint_angle[i]
+                * joint->direction*joint->reduction+obj->motor_pos_init[i];
+            control->speed_comp = obj->arm_control_data.joint_vel[i]
+                * joint->direction*joint->reduction*joint->velocity_scale;
+            obj->damp_comp[i] = obj->arm_control_data.joint_vel[i]*DEG2RAD*joint->viscous_damping;
+        }
+        /* 将关节补偿换算为电机输出方向和力矩标定。 */
+        control->output_comp = (obj->tau_comp[i]+obj->damp_comp[i])
+            * joint->direction*joint->torque_scale;
+    }
+    /* 运行模式发布夹爪位置和力矩目标。 */
+    if (obj->arm_mode == arm_run) {
+        controller* grip = obj->motors[GRIPPER].control;
+        grip->ref_position = Arm_Gripper_To_Motor(obj->profile, obj->arm_control_data.gripper_angle);
+        grip->output_comp = obj->arm_control_data.gripper_torque*obj->profile->gripper.torque_scale;
     }
 }
 
-/* DM 驱动保留原始反馈及其内部刻度；应用层使用 Metal 的 65535/4095 刻度。
- * 回调只在 MotorTask 更新控制器反馈，设零复核使用同一位置换算。 */
-float Gimbal_Motor_Position_Rad(const DM_motor* motor) {
-    if ((motor->rx_data[0] & 0x0f) != motor->config.can_tx_id) return 0.0f;
-    uint16_t raw = ((uint16_t)motor->rx_data[1] << 8) | motor->rx_data[2];
-    return raw / 65535.0f * (2.0f * motor->config.max_position) - motor->config.max_position;
-}
+/* 更新反馈、动力学和本周期电机控制输出。 */
+void Gimbal_Update(Gimbal* obj) {
+    /* 控制对象无效时结束本次更新。 */
+    if (!obj) return;
+    obj->arm_mode = obj->arm_control_data.mode;
+    /* 模式值超出有效范围时进入停止模式。 */
+    if ((unsigned)obj->arm_mode > arm_only_gravity_comp) obj->arm_mode = arm_stop;
+    get_feedback(obj);
+    /* 设零期间强制使用停止模式。 */
+    if (Arm_Zero_Busy(obj)) obj->arm_mode = arm_stop;
+    dynamics_update(obj);
+    /* 在临界区内同步发布电机参考值和模式。 */
+    const uint32_t interrupt_mask = Arm_Motors_Lock();
+    set_references(obj);
+    /* 发布前逐电机校验参考值有效性。 */
+    for (int i = 0; i < ARM_MOTOR_NUM; ++i) {
+        const controller* c = obj->motors[i].control;
+        /* 任一参考值异常时标记错误并停止该臂。 */
+        if (!isfinite(c->ref_position) || !isfinite(c->speed_comp) || !isfinite(c->output_comp)) {
+            obj->arm_mode = arm_stop;
+            obj->dynamics_status = ARM_DYNAMICS_INVALID;
+        }
+    }
+    /* 停止模式清空补偿并重建安全参考值。 */
+    if (obj->arm_mode == arm_stop) {
+        memset(obj->tau_comp, 0, sizeof(obj->tau_comp));
+        set_references(obj);
+    }
+    /* 发布增益、使能状态及实际反馈模式。 */
+    apply_motor_mode(obj, obj->arm_mode);
+    obj->arm_feedback_data.mode = obj->arm_mode;
+    Arm_Motors_Unlock(interrupt_mask);
 
-static float Metal_Pos_Fdb_Calc(void* arg) {
-    return Gimbal_Motor_Position_Rad((DM_motor*)arg) * RAD2DEG;
-}
-
-static float Metal_Speed_Fdb_Calc(void* arg) {
-    DM_motor* motor = arg;
-    if ((motor->rx_data[0] & 0x0f) != motor->config.can_tx_id) return 0.0f;
-    uint16_t raw = ((uint16_t)motor->rx_data[3] << 4) | (motor->rx_data[4] >> 4);
-    return (raw / 4095.0f * (2.0f * motor->config.max_speed) - motor->config.max_speed) * RAD2DEG;
-}
-
-static void Metal_Mit_Control(DM_motor* motor) {
-    DM_Mit_Control(motor);
-    /* Metal 目标与反馈均为原始输出轴角，不使用驱动累计圈数修正目标。 */
-    motor->ref_position = motor->motor_controller->ref_position * DEG2RAD;
+    /* 采样 A 臂 JOINT2 的反馈、参考值及控制输出。 */
+    if (obj == g_arm[ARM_A].gimbal) {
+        const controller* control = obj->motors[JOINT2].control;
+        g_fdb_pos = control->fdb_position;
+        g_fdb_speed = control->fdb_speed;
+        g_ref_pos = control->ref_position;
+        g_ref_speed = control->ref_speed;
+        g_speed_comp = control->speed_comp;
+        g_output = control->output;
+        g_ouput_comp = control->output_comp;
+        g_speed_output = control->pid_speed_data.output;
+    }
 }

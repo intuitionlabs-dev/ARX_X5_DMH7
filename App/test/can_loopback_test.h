@@ -4,56 +4,42 @@
 
 #include "test_config.h"
 
-/* CAN1 -> CAN2 自机通信(回环)测试
- *
- * 拓扑:本板 FDCAN1(索引 0) 发，FDCAN2(索引 1) 收。
- * 需要 CAN1、CAN2 的收发器挂在同一条总线上(板外连线或板上跳线):
- *     CAN1_H <-> CAN2_H,  CAN1_L <-> CAN2_L, 总线两端各 120Ω 终端电阻。
- *
- * 前提:CAN1 与 CAN2 的位速率必须完全一致。
- * 当前 CubeMX 配置三路 FDCAN 都是 1.000 Mbit/s
- * (内核时钟 120 MHz，Prescaler=6，Seg1=15，Seg2=4，采样点 80%)，满足该前提。
- *
- * 用法:
- *   CanLoopbackTest_Init();   // 调度器启动前调用(main.c 的 USER CODE BEGIN 2,
- *                             // 紧跟 BSP_CAN_Init() 之后)
- *   循环体里: CanLoopbackTest_Loop();  tick += 1;  osDelayUntil(tick);
- *             (uint32_t tick = osKernelGetTickCount(); 在循环外初始化一次)
- *
- * 结果不走串口，全部记在下面的全局变量里，直接用调试器(JLink/gdb)读地址。
- * 正常时 can_lb_tx_cnt 和 can_lb_rx_cnt 同步增长，bad/lost 恒为 0，
- * 四个总线健康度变量恒为 0。
- */
+/* CAN1 发、CAN2 收；同名 H/L 接线，两端各接 120 Ω 终端电阻。 */
+#define CAN_LB_TX_CAN    0u
+#define CAN_LB_RX_CAN    1u
+#define CAN_LB_ID        0x123u
+/* 配置测试帧发送周期，单位 ms；两路位速率须一致。 */
+#define CAN_LB_PERIOD_MS 100u
 
-/* ---- 可调参数 ---------------------------------------------------------- */
-#define CAN_LB_TX_CAN    0u    /* 发送方 BSP_CAN 索引 -> FDCAN1 */
-#define CAN_LB_RX_CAN    1u    /* 接收方 BSP_CAN 索引 -> FDCAN2 */
-#define CAN_LB_ID        0x123u /* 测试帧使用的标准帧 ID */
-#define CAN_LB_PERIOD_MS 100u   /* 发送周期, ms */
-
+/* 测试启用时提供观测变量及回环接口。 */
 #if TEST_CAN_LOOPBACK_ENABLE
 
-/* ---- 收发统计 ---------------------------------------------------------- */
-extern volatile uint32_t can_lb_tx_cnt;     /* 已发出帧数 */
-extern volatile uint32_t can_lb_rx_cnt;     /* 已正确收到的帧数 */
-extern volatile uint32_t can_lb_bad_cnt;    /* 收到了但 ID/长度/内容不对 */
-extern volatile uint32_t can_lb_lost_cnt;   /* 发出去了但没收到(每周期最多 +1) */
-extern volatile uint8_t  can_lb_last_rx[8]; /* 最近一次收到的原始数据 */
-extern volatile uint32_t can_lb_last_rx_id; /* 最近一次收到的 ID */
-extern volatile uint8_t  can_lb_last_seq;   /* 最近一次收到的帧序号(数据第 0 字节) */
+/* 统计发送、合法接收、异常帧和周期丢帧数量。 */
+extern volatile uint32_t can_lb_tx_cnt;
+extern volatile uint32_t can_lb_rx_cnt;
+extern volatile uint32_t can_lb_bad_cnt;
+extern volatile uint32_t can_lb_lost_cnt;
+/* 保存最近接收数据、标识符和序号。 */
+extern volatile uint8_t  can_lb_last_rx[8];
+extern volatile uint32_t can_lb_last_rx_id;
+extern volatile uint8_t  can_lb_last_seq;
 
-/* ---- 总线健康度(每周期从 HAL 刷新，k=0 -> TX 方, k=1 -> RX 方) --------- */
-extern volatile uint32_t can_lb_tec[2];     /* 发送错误计数 TEC, >96 危险, >255 BUSOFF */
-extern volatile uint32_t can_lb_rec[2];     /* 接收错误计数 REC */
-extern volatile uint8_t  can_lb_busoff[2];  /* 1 = 已经 Bus-Off */
-extern volatile uint8_t  can_lb_warn[2];    /* 1 = 错误计数已到 96 的警告线 */
+/* 保存两端错误计数及告警状态；索引 0 为发送端，1 为接收端。 */
+extern volatile uint32_t can_lb_tec[2];
+extern volatile uint32_t can_lb_rec[2];
+extern volatile uint8_t  can_lb_busoff[2];
+extern volatile uint8_t  can_lb_warn[2];
 
+/* 在 BSP CAN 初始化后登记滤波器和接收回调。 */
 void CanLoopbackTest_Init(void);
+/* 推进周期发送、丢帧检查和总线状态采集。 */
 void CanLoopbackTest_Loop(void);
+/* 测试开关为 0 时提供空调用入口。 */
 #else
-/* 该测试已关闭：接口退化成空函数，main.c / freertos.c 的调用点不用加 #if。
- * 观测变量 can_lb_* 此时不存在，调试器里读不到。 */
+
+/* 测试停用时保留初始化空入口。 */
 static inline void CanLoopbackTest_Init(void) {}
+/* 测试停用时保留周期更新空入口。 */
 static inline void CanLoopbackTest_Loop(void) {}
 
-#endif /* TEST_CAN_LOOPBACK_ENABLE */
+#endif

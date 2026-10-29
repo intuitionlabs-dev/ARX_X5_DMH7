@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: LGPL-2.1-or-later
+
 """Offline CLI: python3 -m gravity_compensation --model 2025 --q 0 0 0 0 0 0"""
 
 import argparse

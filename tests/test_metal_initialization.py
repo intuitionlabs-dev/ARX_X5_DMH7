@@ -31,6 +31,16 @@ class MetalInitializationTests(unittest.TestCase):
                    'libs/cvector/cvector.c','libs/monitor/monitor.c','libs/controller/adrc.c',
                    'libs/move_plan/move_plan/move_plan.c','libs/move_plan/move_plan/plan_group.c']
         sources += [f'libs/move_plan/curves/{kind}_spline.c' for kind in ('linear','cubic','quintic')]
+        models = str(Path(cls.tmp.name)/'models')
+        subprocess.run(['python3',str(ROOT/'libs/gravity_compensation/c/generate_arm_model.py'),
+                        '--output-dir',models],check=True)
+        includes.append(models)
+        sources += ['App/arm_profile.c','App/arm_board.c','App/arm_motor.c',
+                    'App/profiles/metal.c','App/profiles/arx_x5.c','App/arm_initialization.c',
+                    'App/arm_protocol.c','libs/gravity_compensation/c/arm_dynamics.c',
+                    'libs/encos_motor/ENCOS_motor.c','libs/encos_motor/encos_protocol.c',
+                    'libs/encos_motor/encos_mixed_control.c']
+        sources += ['App/arm_zero.c','libs/dm_motor/DM_motor.c','libs/dm_motor/dm_mit_control.c','libs/controller/controller.c','libs/controller/pid.c','libs/controller/lqr.c','libs/controller/smc.c','libs/controller/mrac.c','libs/controller/mpc.c']
         library = str(Path(cls.tmp.name)/'initialization.so')
         result = subprocess.run(['cc','-std=gnu11','-O2','-shared','-fPIC',
             '-fvisibility=hidden','-ffunction-sections','-fdata-sections',

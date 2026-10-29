@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /* 由 generate_dynamics_data.py 从 URDF 生成；单位为 kg、m、kg·m²。 */
 #ifndef METAL_DYNAMICS_DATA_H
 #define METAL_DYNAMICS_DATA_H

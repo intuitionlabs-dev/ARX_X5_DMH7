@@ -156,11 +156,10 @@ class DynamicsControlTests(unittest.TestCase):
 
     def test_shared_tracking_parameters_match_firmware(self):
         root = Path(__file__).resolve().parents[1]
-        cmd = (root / "App/gimbal_cmd.c").read_text()
-        numbers = lambda values: tuple(float(v.strip().rstrip("f")) for v in values.split(",") if v.strip())
-        td = re.search(r"const float td_r\[ARM_JOINT_NUM\] = \{(.*?)\}", cmd, re.S)[1]
-        self.assertEqual(TD_R, numbers(re.sub(r"/\*.*?\*/", "", td, flags=re.S)))
-        # Motor gains are model-specific; test_metal_motors exercises the H7 DM output.
+        for name in ("metal", "arx_x5"):
+            config = (root / f"App/profiles/{name}.c").read_text()
+            values = re.findall(r"\.td_r\s*=\s*([0-9.]+)f?", config)
+            self.assertEqual(TD_R, tuple(float(value) for value in values))
 
     def test_angle_range_stops_and_recovers_each_active_mode(self):
         for kind in (K.START, K.GRAVITY):

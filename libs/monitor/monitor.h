@@ -14,9 +14,7 @@ typedef struct monitor_item_t {
 #pragma pack()
 
 void Monitor_Init(void);
-/* count 的单位是 Monitor_Loop() 的调用周期，**不是毫秒**：注册点按
- * "想要的超时 / Monitor_Loop() 的周期" 给值。改 Monitor_Loop() 的频率，
- * 所有注册点的 count 都要同步改(周期写在 StartMonitorTask()，Core/Src/freertos.c)。 */
+/* count 以 Monitor_Loop 调用周期计数；超时值须按监控周期配置。 */
 monitor_item* Monitor_Register(lost_callback callback, int count, void* callback_data);
 uint8_t is_Offline(monitor_item* obj);
 void Monitor_Loop(void);

@@ -1,21 +1,20 @@
 #include "uart_loopback_test.h"
 
-#include <string.h> /* memcmp */
+#include <string.h>
 
-#include "bsp_uart.h"   /* 串口传输层：DMA 收发 + .RAM_D1 缓冲都封在它里面 */
-#include "main.h"       /* HAL_GetTick() */
-#include "test_config.h" /* 测试例程开关 */
-#include "frame.h" /* 帧协议 + 自动解包 union */
+#include "bsp_uart.h"
+#include "main.h"
+#include "test_config.h"
+#include "frame.h"
 
+/* 启用测试时编译串口双向回环实现。 */
 #if TEST_UART_LOOPBACK_ENABLE
 
-/* 本测试自己的编号和 BSP 的编号必须是一回事。写成 _Static_assert 而不是注释：
- * 对不上时整个测试的语义就反了(收的字节全被当成"非本轮接收方"丢掉)，
- * 而现象只是"ok_cnt 不涨"，很难往这上面想。 */
+/* 在编译期校验 USART2、USART3 的 BSP 索引。 */
 _Static_assert((UART_LB_U2 == BSP_UART_U2) && (UART_LB_U3 == BSP_UART_U3),
     "UART_LB_U2/U3 必须和 BSP_UART_U2/U3 一致");
 
-/* ==================== 观测变量(JLink 直接读) ==================== */
+/* 累计测试帧收发及协议校验结果。 */
 volatile uint32_t uart_lb_tx_cnt;
 volatile uint32_t uart_lb_tx_fail_cnt;
 volatile uint32_t uart_lb_rx_cnt;
@@ -27,8 +26,7 @@ volatile uint32_t uart_lb_crc16_err;
 volatile uint32_t uart_lb_encode_err;
 volatile uint32_t uart_lb_rearm_fail;
 
-/* 按路的数组一律照 BSP_UART_CNT 开、用 **BSP 端口号**当下标（本测试只用 U2/U3 两格，
- * 下标 0 的 USART1 那一格恒 0）。别写成 [2] —— 端口号现在最大是 2，写小了就是越界写。 */
+/* 按用例和 BSP 端口保存分类统计。 */
 volatile uint32_t uart_lb_case_ok[UART_LB_CASE_CNT];
 volatile uint32_t uart_lb_dir_ok[BSP_UART_CNT];
 volatile uint32_t uart_lb_hal_err[BSP_UART_CNT];
@@ -40,32 +38,34 @@ volatile uint32_t uart_lb_ore_cnt[BSP_UART_CNT];
 volatile uint32_t uart_lb_offdir_cnt;
 volatile uint32_t uart_lb_offdir_size;
 
-/* 抓一次"对不上"的现场：收到的 vs 期望的。看一眼就知道是长度/类型错了还是内容错了。 */
+/* 保存最近一次校验失败的实际值与期望值。 */
 volatile uint32_t uart_lb_bad_dir;
 volatile uint32_t uart_lb_bad_got_type;
 volatile uint32_t uart_lb_bad_got_len;
 volatile uint32_t uart_lb_bad_exp_type;
 volatile uint32_t uart_lb_bad_exp_len;
-volatile uint32_t uart_lb_bad_got_hdr; /* 收到的 payload 前 4 字节 */
-volatile uint32_t uart_lb_bad_exp_hdr; /* 期望的 payload 前 4 字节 */
-volatile uint32_t uart_lb_bad_wire;    /* 收到的原始帧头: AA 55 tid len(按小端读成 32 位) */
-volatile uint32_t uart_lb_bad_pay_ok;  /* payload 是否一致(0/1)，用来把"长度错"和"内容错"分开 */
+volatile uint32_t uart_lb_bad_got_hdr;
+volatile uint32_t uart_lb_bad_exp_hdr;
+volatile uint32_t uart_lb_bad_wire;
+volatile uint32_t uart_lb_bad_pay_ok;
 
-/* 抓一次"丢帧"的现场：那一轮到底收进来多少字节、解析器停在哪。 */
-volatile uint32_t uart_lb_lost_state; /* 判 lost 时解析器的状态(0=等AA 1=等55 2=收头 3=收数据 4=收CRC) */
-volatile uint32_t uart_lb_lost_len;   /* 判 lost 时解析器已攒的字节数 */
-volatile uint32_t uart_lb_lost_got;   /* 那一轮该路实际收到多少字节 */
-volatile uint32_t uart_lb_lost_need;  /* 那个用例本来该有多少字节(整帧) */
+/* 保存最近一次丢帧的解析进度和字节计数。 */
+volatile uint32_t uart_lb_lost_state;
+volatile uint32_t uart_lb_lost_len;
+volatile uint32_t uart_lb_lost_got;
+volatile uint32_t uart_lb_lost_need;
 volatile uint32_t uart_lb_lost_case;
-/* 丢帧时"还差几个字节"的直方图。分桶: 0 / 1 / 2 / 3..7 / 8..31 / >=32。
- * 全挤在 [1] 就是帧尾被截(DE 放开早了那种)；铺开到各个桶就是结算早于收完。 */
+
+/* 按缺失字节数和解析状态累计丢帧分布。 */
 #define UART_LB_SHORT_BINS 6U
 volatile uint32_t uart_lb_lost_short[UART_LB_SHORT_BINS];
 volatile uint32_t uart_lb_lost_state_hist[UART_LB_STATE_BINS];
 
-volatile uint32_t uart_lb_dma_mem_bad; /* 非 0 = DMA 缓冲区没落在 DMA 够得着的 RAM 里，见 Init() */
-volatile uint32_t uart_lb_no_dma;      /* 按位：哪一路没配 DMA 流(bit N = BSP 端口号 N) */
+/* 保存 BSP DMA 布局检查结果和缺失配置掩码。 */
+volatile uint32_t uart_lb_dma_mem_bad;
+volatile uint32_t uart_lb_no_dma;
 
+/* 保存吞吐量、最近帧信息和运行轮次。 */
 volatile uint32_t uart_lb_tx_bytes;
 volatile uint32_t uart_lb_rx_bytes;
 volatile uint8_t uart_lb_last_type_id;
@@ -73,48 +73,31 @@ volatile uint8_t uart_lb_last_datalen;
 volatile uint32_t uart_lb_last_seq;
 volatile uint32_t uart_lb_round;
 
-/* ==================== 内部状态 ====================
- *
- * 收发底座在 libs/uart 的 BSP 层：DMA 缓冲、武装、重装、错误恢复、.RAM_D1 段属性
- * 全在那边，这里只做"造帧 → 发 → 收字节 → 摆帧 → 比对"。
- *
- * **两路的接收是常驻武装的** —— 收完一帧，BSP 在自己的回调里立刻重装，上层不用挑时机
- * Arm()/ServiceRearm()，也没有"换方向就 abort 掉另一路"这套动作(那套动作正是假 RxEvent
- * 的来源，见头文件"实测过的坑")。
- *
- * 闸门因此也变简单了：既然两路都在收，就用 s_rx_idx 指定"这一轮谁说的话算数"，
- * 另一路收到的字节一律丢弃并计 uart_lb_offdir_cnt(见 UartLoopbackTest_OnRx)。
- */
-
-/* 每路一个解析器(FrameParser 约 270 字节)。**普通静态即可** —— 解析器是上层
- * 自己的变量，从来不参与 DMA，不需要任何段属性；只有 BSP 的收发缓冲才需要。
- * 照 BSP_UART_CNT 开、用端口号当下标（同上，下标 0 那格不用）。 */
+/* 每个 BSP 端口持有独立解析器。 */
 static FrameParser s_parser[BSP_UART_CNT];
 
-/* 本轮接收方刚解出一整帧。中断里置，任务里读并清。 */
+/* 接收回调发布完整帧就绪标志。 */
 static volatile uint8_t s_rx_ready;
 
-/* 本轮发出去的东西，下一轮结算时拿来比。用 FramePayload 而不是裸数组，
- * 这样"期望值"和"收到的值"走的是同一个 union 视图，比较时两边都不用强转。 */
+/* 保存本轮期望载荷、编码缓冲和帧信息。 */
 static FramePayload s_tx_payload;
-/* 发送源。**普通静态**：BSP_UART_Send() 会把它拷进自己的 .RAM_D1 缓冲再发。 */
+
 static uint8_t s_tx_frame[FRAME_MAX_LEN];
 static FrameTypeId s_tx_type_id;
 static uint8_t s_tx_len;
 
-static uint8_t s_rx_idx;  /* 本轮的接收方，**BSP 端口号**(UART_LB_U2/U3)，不是 0/1 */
-static uint8_t s_pending; /* 有一轮发出去了还没结算 */
+/* 记录本轮接收端、待结算状态和轮次。 */
+static uint8_t s_rx_idx;
+static uint8_t s_pending;
 static uint32_t s_round;
 
-/* 本轮开始时接收方那一路的字节计数。结算时相减 = 这一轮它到底收到多少字节，
- * 跟"该收多少"一比就能分开两种丢帧：字节没到齐(线/中断丢了) vs 字节到齐了但没凑成帧。 */
+/* 保存本轮开始时的接收字节计数基线。 */
 static uint32_t s_round_bytes_base;
 
-/* 边界帧用的码：0x7F 现在是没分配的。选个没分配的码是**故意的** —— 它顺带证明帧层
- * 不认识 type_id：只要长度和 CRC 对就收，不因为码没见过就拒。 */
+/* 使用 0x7F 类型码测试最大载荷帧。 */
 #define UART_LB_TYPE_ID_UNASSIGNED 0x7FU
 
-/* 空包用例轮转用的码表。这几个包"语义全在 type_id 上"，payload 为空。 */
+/* 轮转测试各类空载荷业务报文。 */
 static const FrameTypeId s_empty_ids[] = {
     FRAME_TYPE_ID_MOTOR_SET_ZERO,
     FRAME_TYPE_ID_ARM_START,
@@ -124,44 +107,36 @@ static const FrameTypeId s_empty_ids[] = {
 };
 #define UART_LB_EMPTY_CNT (sizeof s_empty_ids / sizeof s_empty_ids[0])
 
-/* ==================== 造帧 ====================
- *
- * 值全部用轮次 seq 播种：上一轮残留的帧(哪怕是合法的)对不上这一轮的值，
- * 不可能蒙混过关 —— 这是"丢了但没发现"唯一的防线，因为帧层没有序号，
- * 它自己发现不了丢帧(见 frame.h 解析器那段说明)。
- * 结果全部写进 s_tx_type_id / s_tx_len / s_tx_payload 三个静态量，**不返回值** ——
- * 之前返回长度、由调用方再往 s_tx_len 里存，结果漏存了一次，所有帧都被判成错的。
- * 现在只有一处出口，漏不掉。 */
-/* 第 seq 轮该用哪个用例。
- *
- * **除数为什么是 2**：方向每轮换一次(`s_round & 1`)，用例要是也每轮加一，
- * 那方向就和 `seq % 6` 锁死了 —— 偶数轮永远是 U2 收、奇数轮永远是 U3 收，
- * 于是 U2 一辈子只收到偶数码的包(版本/设零回复/位置+速度)，**262 字节的边界帧
- * 和空包永远轮不到 U2 收**，而这恰恰是配置出错时最先暴露的那个用例。
- * 除以 2 让每个用例被两个方向各收一次。 */
+/* 每两轮切换用例以覆盖两个传输方向。 */
 static uint8_t UartLoopbackTest_CaseOf(uint32_t seq) {
     return (uint8_t)((seq / 2U) % UART_LB_CASE_CNT);
 }
 
+/* 根据轮次生成本轮报文类型和载荷。 */
 static void UartLoopbackTest_Build(uint32_t seq) {
     FrameTypeId id = FRAME_TYPE_ID_NONE;
     uint8_t len = 0U;
     uint32_t i;
 
+    /* 按用例选择版本、空包、控制或边界报文。 */
     switch (UartLoopbackTest_CaseOf(seq)) {
-    case 0: /* 版本匹配包：4 字节，唯一一个真去算哈希的用例 */
+    /* 生成携带版本码的报文。 */
+    case 0:
         s_tx_payload.version.code = FrameVersionCode();
         len = (uint8_t)sizeof(FramePktVersion);
         id = FRAME_TYPE_ID_VERSION;
         break;
 
-    case 1: /* 空包：datalen 必须是 0，整帧只剩 7 字节 */
+    /* 从空载荷类型表中选择报文。 */
+    case 1:
         id = s_empty_ids[(seq / (UART_LB_CASE_CNT * 2U)) % UART_LB_EMPTY_CNT];
         len = 0U;
         break;
 
-    case 2: /* 设零回复包：12 字节，里面有个 uint32_t，验非对齐的 4 字节访问 */
+    /* 生成包含逐电机结果的设零应答。 */
+    case 2:
         s_tx_payload.motor_set_zero_ack.state = (uint8_t)(seq & 0xFFU);
+        /* 逐电机填充与轮次相关的结果字节。 */
         for (i = 0U; i < FRAME_PKT_MOTOR_NUM; i++) {
             s_tx_payload.motor_set_zero_ack.result[i] = (uint8_t)(seq + i);
         }
@@ -170,7 +145,9 @@ static void UartLoopbackTest_Build(uint32_t seq) {
         id = FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK;
         break;
 
-    case 3: /* 位置控制包：7 个 float，全落在非 4 倍数地址上 */
+    /* 生成关节位置和夹爪目标报文。 */
+    case 3:
+        /* 逐关节填充位置目标。 */
         for (i = 0U; i < FRAME_PKT_JOINT_NUM; i++) {
             s_tx_payload.arm_ctrl_pos.joint_angle[i] =
                 (float)((int32_t)(seq % 200U) - 100) + (float)i * 0.25f;
@@ -180,7 +157,9 @@ static void UartLoopbackTest_Build(uint32_t seq) {
         id = FRAME_TYPE_ID_ARM_CTRL_POS;
         break;
 
-    case 4: /* 位置+速度控制包：13 个 float，最长的一包 */
+    /* 生成关节位置、速度和夹爪目标报文。 */
+    case 4:
+        /* 逐关节填充位置与速度目标。 */
         for (i = 0U; i < FRAME_PKT_JOINT_NUM; i++) {
             s_tx_payload.arm_ctrl_pos_vel.joint_angle[i] =
                 (float)((int32_t)(seq % 360U) - 180) * 0.5f;
@@ -192,7 +171,9 @@ static void UartLoopbackTest_Build(uint32_t seq) {
         id = FRAME_TYPE_ID_ARM_CTRL_POS_VEL;
         break;
 
-    default: /* 边界帧：payload 顶满 255 字节，整帧 262 —— FrameBuf 的上限 */
+    /* 生成占满最大载荷长度的边界报文。 */
+    default:
+        /* 逐字节填充与轮次相关的边界数据。 */
         for (i = 0U; i < FRAME_MAX_DATA; i++) {
             s_tx_payload.raw[i] = (uint8_t)(seq + i);
         }
@@ -201,29 +182,21 @@ static void UartLoopbackTest_Build(uint32_t seq) {
         break;
     }
 
-    /* 三样一起存：type_id、长度、payload。结算时拿它们跟收到的比，
-     * 缺一样就会把对的帧判成错的 —— 加新用例时记得是**三**样。 */
+    /* 保存类型和长度用于编码与接收比对。 */
     s_tx_type_id = id;
     s_tx_len = len;
 }
 
-/* ==================== 校验 ==================== */
-
-/* 收到的帧和本轮发出去的对不对得上。两层：
- *   - 字节级(memcmp)：证明线上一字不差。
- *   - 按类型读字段：**这一层才是真正验非对齐访问的**。memcmp 走的还是字节，
- *     而包里的 float/uint32 落在帧偏移 6 这种非 4 倍数地址上，只有当成 float 读
- *     一遍才知道 pack(1) 有没有真的让 GCC 生成逐字节访问的代码。
- *     float 直接 == 比是故意的：同一份二进制值来回一趟必须逐位相等。 */
-/* 记一次"对不上"的现场，供调试器看。只记最后一次，够定位了。 */
+/* 保存最近一次报文比对失败的诊断快照。 */
 static void UartLoopbackTest_Snapshot(const FrameParser *p) {
     uint32_t got_hdr = 0U;
     uint32_t exp_hdr = 0U;
     uint32_t wire = 0U;
 
+    /* 提取载荷前缀和原始帧头供调试器比较。 */
     memcpy(&got_hdr, p->buf.f.payload.raw, sizeof got_hdr);
     memcpy(&exp_hdr, s_tx_payload.raw, sizeof exp_hdr);
-    memcpy(&wire, p->buf.raw, sizeof wire); /* AA 55 tid len */
+    memcpy(&wire, p->buf.raw, sizeof wire);
 
     uart_lb_bad_dir = s_rx_idx;
     uart_lb_bad_got_type = p->type_id;
@@ -233,34 +206,44 @@ static void UartLoopbackTest_Snapshot(const FrameParser *p) {
     uart_lb_bad_got_hdr = got_hdr;
     uart_lb_bad_exp_hdr = exp_hdr;
     uart_lb_bad_wire = wire;
-    /* 把"长度/类型错"和"内容错"分开：前者帧头就对不上，后者帧头对但字节不同 */
+
+    /* 记录期望载荷与实际载荷的字节比较结果。 */
     uart_lb_bad_pay_ok = ((s_tx_len == 0U) ||
                           (memcmp(s_tx_payload.raw, p->buf.f.payload.raw, s_tx_len) == 0U))
                              ? 1U
                              : 0U;
 }
 
+/* 比较帧类型、长度、原始载荷和结构化字段。 */
 static int UartLoopbackTest_Match(const FrameParser *p) {
     uint32_t i;
 
+    /* 类型或载荷长度不匹配时报告失败。 */
     if ((p->type_id != s_tx_type_id) || (p->data_len != s_tx_len)) {
         return 0;
     }
+    /* 载荷字节不匹配时报告失败。 */
     if ((s_tx_len > 0U) && (memcmp(s_tx_payload.raw, p->buf.f.payload.raw, s_tx_len) != 0)) {
         return 0;
     }
 
+    /* 按报文类型读取结构化字段进行复核。 */
     switch (p->type_id) {
+    /* 核对版本字段。 */
     case FRAME_TYPE_ID_VERSION:
         return (p->buf.f.payload.version.code == s_tx_payload.version.code);
 
+    /* 核对设零状态、耗时和逐电机结果。 */
     case FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK: {
         const FramePktMotorSetZeroAck *got = &p->buf.f.payload.motor_set_zero_ack;
         const FramePktMotorSetZeroAck *exp = &s_tx_payload.motor_set_zero_ack;
+        /* 状态或耗时不匹配时报告失败。 */
         if ((got->state != exp->state) || (got->elapsed_ms != exp->elapsed_ms)) {
             return 0;
         }
+        /* 逐电机比较设零结果。 */
         for (i = 0U; i < FRAME_PKT_MOTOR_NUM; i++) {
+            /* 任一电机结果不匹配时报告失败。 */
             if (got->result[i] != exp->result[i]) {
                 return 0;
             }
@@ -268,10 +251,13 @@ static int UartLoopbackTest_Match(const FrameParser *p) {
         return 1;
     }
 
+    /* 核对关节位置与夹爪目标。 */
     case FRAME_TYPE_ID_ARM_CTRL_POS: {
         const FramePktArmCtrlPos *got = &p->buf.f.payload.arm_ctrl_pos;
         const FramePktArmCtrlPos *exp = &s_tx_payload.arm_ctrl_pos;
+        /* 逐关节比较位置字段。 */
         for (i = 0U; i < FRAME_PKT_JOINT_NUM; i++) {
+            /* 关节位置不匹配时报告失败。 */
             if (got->joint_angle[i] != exp->joint_angle[i]) {
                 return 0;
             }
@@ -279,10 +265,13 @@ static int UartLoopbackTest_Match(const FrameParser *p) {
         return (got->gripper_angle == exp->gripper_angle);
     }
 
+    /* 核对关节位置、速度与夹爪目标。 */
     case FRAME_TYPE_ID_ARM_CTRL_POS_VEL: {
         const FramePktArmCtrlPosVel *got = &p->buf.f.payload.arm_ctrl_pos_vel;
         const FramePktArmCtrlPosVel *exp = &s_tx_payload.arm_ctrl_pos_vel;
+        /* 逐关节比较位置和速度字段。 */
         for (i = 0U; i < FRAME_PKT_JOINT_NUM; i++) {
+            /* 位置或速度不匹配时报告失败。 */
             if ((got->joint_angle[i] != exp->joint_angle[i]) ||
                 (got->joint_vel[i] != exp->joint_vel[i])) {
                 return 0;
@@ -291,27 +280,20 @@ static int UartLoopbackTest_Match(const FrameParser *p) {
         return (got->gripper_angle == exp->gripper_angle);
     }
 
+    /* 空包和边界帧使用前述字节比较结果。 */
     default:
-        /* 空包和边界帧没有带类型的字段可读(空包 sizeof 为 0)，上面 memcmp 已经够了 */
+
         return 1;
     }
 }
 
-/* ==================== 收 ====================
- *
- * BSP 每收完一段(总线空闲)就调这里，**在中断上下文**：只做"闸门 + 喂解析器 + 计数"，
- * 绝不阻塞、绝不打印。data 指 BSP 内部的 DMA 缓冲，返回后随时被下一次接收覆盖 ——
- * 这里当场喂进解析器，不存指针。
- *
- * 闸门是 s_rx_idx(本轮指定谁收)，**不是**"谁武装了"。现在两路都常驻武装，发送方那一路
- * 也会看到总线上的字节(它自己的收发器 RE̅ 是否跟着 DE 走，取决于板子)；那些字节一律
- * 丢弃，既不喂解析器也不计进 byte_dir，否则发送方会把自己发的那帧也解出来 ——
- * 那正是上一版 offdir_cnt ≈ 轮数的现象。 */
+/* 在中断中解析本轮接收端的数据并发布就绪标志。 */
 static void UartLoopbackTest_OnRx(uint8_t id, const uint8_t *data, uint16_t len) {
     uint32_t i;
 
+    /* 其他端口的数据仅累计丢弃字节数。 */
     if (id != s_rx_idx) {
-        uart_lb_offdir_cnt += (uint32_t)len; /* 非本轮接收方：丢字节，不丢事件 */
+        uart_lb_offdir_cnt += (uint32_t)len;
         uart_lb_offdir_size = (uint32_t)len;
         return;
     }
@@ -319,96 +301,98 @@ static void UartLoopbackTest_OnRx(uint8_t id, const uint8_t *data, uint16_t len)
     uart_lb_rx_bytes += (uint32_t)len;
     uart_lb_byte_dir[id] += (uint32_t)len;
 
+    /* 逐字节推进对应端口的解析器。 */
     for (i = 0U; i < (uint32_t)len; i++) {
         FrameStatus st = FrameParserFeed(&s_parser[id], data[i]);
 
+        /* 完整合法帧置位就绪标志并累计接收数。 */
         if (st == FRAME_OK) {
             s_rx_ready = 1U;
             uart_lb_rx_dir[id]++;
-        } else if (st == FRAME_ERR_CRC8) {
+        } else if (st == FRAME_ERR_CRC8) { /* 帧头校验失败时累计 CRC8 错误。 */
             uart_lb_crc8_err++;
-        } else if (st == FRAME_ERR_CRC16) {
+        } else if (st == FRAME_ERR_CRC16) { /* 整帧校验失败时累计 CRC16 错误。 */
             uart_lb_crc16_err++;
-        } else {
-            /* INCOMPLETE：绝大多数字节走这条，正常 */
+        } else { /* 帧尚未完整时等待后续字节。 */
+
         }
     }
 }
 
-/* ==================== 统计搬运 ====================
- *
- * BSP 的统计(JLink 读得到，但名字是 bsp_uart 那边的)每轮搬进本测试的 uart_lb_* 变量，
- * 这样观测习惯不变：出错时还是看 uart_lb_hal_err / uart_lb_ore_cnt / uart_lb_rearm_fail。
- * 10 ms 搬一次，对调试器来说够实时了。 */
+/* 将 BSP 串口统计复制到测试观测量。 */
 static void UartLoopbackTest_RefreshStat(void) {
     const BspUartStat *s2 = BSP_UART_GetStat(UART_LB_U2);
     const BspUartStat *s3 = BSP_UART_GetStat(UART_LB_U3);
     uint8_t i;
 
+    /* 任一测试端口统计不可用时结束刷新。 */
     if ((s2 == NULL) || (s3 == NULL)) {
         return;
     }
 
+    /* 复制两路 HAL 错误、溢出和 DMA 重装统计。 */
     uart_lb_hal_err[UART_LB_U2] = s2->hal_err;
     uart_lb_hal_err[UART_LB_U3] = s3->hal_err;
     uart_lb_ore_cnt[UART_LB_U2] = s2->ore;
     uart_lb_ore_cnt[UART_LB_U3] = s3->ore;
     uart_lb_rearm_fail = s2->rearm_fail + s3->rearm_fail;
 
-    /* 哪一路在 CubeMX 里没配 DMA 流。**BSP 管的所有路都扫**，包括本测试不用的 USART1 ——
-     * 这一位就是"我在 CubeMX 里配了没"的探针，省得事后猜"为什么这个口没反应"。 */
     uart_lb_no_dma = 0U;
+    /* 遍历全部 BSP 端口生成 DMA 缺失掩码。 */
     for (i = 0U; i < BSP_UART_CNT; i++) {
         const BspUartStat *st = BSP_UART_GetStat(i);
+        /* 端口缺少 DMA 配置时置位对应标志。 */
         if ((st != NULL) && (st->no_dma != 0U)) {
             uart_lb_no_dma |= (1UL << i);
         }
     }
 }
 
-/* ==================== 结算 ==================== */
-
+/* 结算上一轮的丢帧、内容校验和分类结果。 */
 static void UartLoopbackTest_Verify(void) {
     const FrameParser *p;
 
+    /* 没有待结算轮次时结束处理。 */
     if (!s_pending) {
         return;
     }
     s_pending = 0U;
 
+    /* 完整帧尚未就绪时记录丢帧及接收进度。 */
     if (!s_rx_ready) {
-        /* 丢帧现场：s_round 此时还没 ++，所以 s_round-1 就是刚结算的这一轮。
-         *   got == need → 字节全到了，是解析器/标志的问题；
-         *   got <  need → 真有字节没收到，看差多少：差 1 通常是帧头那个 AA 被打断。
-         * state/len 是解析器停在哪儿：len==0 说明它根本没同步上(帧头没看见)。 */
+
         uart_lb_lost_case = UartLoopbackTest_CaseOf(s_round - 1U);
         uart_lb_lost_state = (uint32_t)s_parser[s_rx_idx].state;
         uart_lb_lost_len = (uint32_t)s_parser[s_rx_idx].len;
         uart_lb_lost_got = uart_lb_byte_dir[s_rx_idx] - s_round_bytes_base;
         uart_lb_lost_need = (uint32_t)s_tx_len + FRAME_OVERHEAD;
         uart_lb_lost_cnt++;
+        /* 累计丢帧时解析器所在状态的分布。 */
         {
             uint32_t state_now = (uint32_t)s_parser[s_rx_idx].state;
+            /* 状态索引有效时更新对应桶计数。 */
             if (state_now < (uint32_t)UART_LB_STATE_BINS) {
                 uart_lb_lost_state_hist[state_now]++;
             }
         }
+        /* 计算缺失字节数量并归入长度区间。 */
         {
             uint32_t short_by = (uart_lb_lost_need > uart_lb_lost_got)
                                     ? (uart_lb_lost_need - uart_lb_lost_got)
                                     : 0U;
             uint32_t bin;
+            /* 接收字节已达到期望长度时归入桶 0。 */
             if (short_by == 0U) {
                 bin = 0U;
-            } else if (short_by == 1U) {
+            } else if (short_by == 1U) { /* 缺少 1 字节时归入桶 1。 */
                 bin = 1U;
-            } else if (short_by == 2U) {
+            } else if (short_by == 2U) { /* 缺少 2 字节时归入桶 2。 */
                 bin = 2U;
-            } else if (short_by <= 7U) {
+            } else if (short_by <= 7U) { /* 缺少 3 至 7 字节时归入桶 3。 */
                 bin = 3U;
-            } else if (short_by <= 31U) {
+            } else if (short_by <= 31U) { /* 缺少 8 至 31 字节时归入桶 4。 */
                 bin = 4U;
-            } else {
+            } else { /* 缺少至少 32 字节时归入桶 5。 */
                 bin = 5U;
             }
             uart_lb_lost_short[bin]++;
@@ -423,22 +407,23 @@ static void UartLoopbackTest_Verify(void) {
     uart_lb_last_datalen = p->data_len;
     uart_lb_last_seq = s_round - 1U;
 
+    /* 内容不匹配时保存快照并累计异常帧。 */
     if (!UartLoopbackTest_Match(p)) {
         UartLoopbackTest_Snapshot(p);
         uart_lb_bad_cnt++;
         return;
     }
 
+    /* 内容匹配后更新用例和方向成功计数。 */
     uart_lb_ok_cnt++;
     uart_lb_case_ok[UartLoopbackTest_CaseOf(s_round - 1U)]++;
     uart_lb_dir_ok[s_rx_idx]++;
     uart_lb_ok_dir[s_rx_idx]++;
 }
 
+/* 交替选择方向并启动一轮异步发送。 */
 static void UartLoopbackTest_RunOneRound(void) {
-    /* 方向每轮翻一次。**必须写成"轮次 → 端口号"的映射，不能写成 `s_round & 1`** ——
-     * BSP 端口号里 USART2=1、USART3=2，不再是 0/1；照老写法会去索引下标 0(USART1)
-     * 和 1(USART2)，整个测试的收发方向就错位了，现象只是 ok_cnt 不涨。 */
+
     uint8_t u3_turn = (uint8_t)(s_round & 1U);
     uint8_t rx_idx = (u3_turn != 0U) ? UART_LB_U3 : UART_LB_U2;
     uint8_t tx_idx = (u3_turn != 0U) ? UART_LB_U2 : UART_LB_U3;
@@ -446,59 +431,45 @@ static void UartLoopbackTest_RunOneRound(void) {
 
     UartLoopbackTest_Build(s_round);
 
-    /* 顺序很重要：**先**把闸门和解析器摆好，**再**发。
-     *
-     * 接收方是常驻武装的(BSP 收完一帧自己重装)，所以这里不是"武装"，而是"宣布
-     * 从现在起哪一路算数"：s_rx_idx 一翻，上一轮接收方后来才到的残帧就自动作废。
-     * 反过来的话帧头那几个字节会在解析器还没清干净的时候进来，整帧报废 ——
-     * 而且这事和接线对不对没关系。 */
+    /* 发送前发布接收端并复位解析和计数基线。 */
     s_rx_idx = rx_idx;
     FrameParserReset(&s_parser[rx_idx]);
     s_rx_ready = 0U;
-    s_round_bytes_base = uart_lb_byte_dir[rx_idx]; /* 这一轮"收到多少字节"从这个值起算 */
+    s_round_bytes_base = uart_lb_byte_dir[rx_idx];
 
+    /* 根据类型、载荷和长度编码本轮测试帧。 */
     n = FrameEncode(s_tx_frame, FRAME_MAX_LEN, s_tx_type_id, 0U,
                         (s_tx_len > 0U) ? s_tx_payload.raw : NULL, s_tx_len);
+    /* 编码失败时记录错误并推进轮次。 */
     if (n < 0) {
         uart_lb_encode_err++;
         uart_lb_round = ++s_round;
         return;
     }
 
-    /* DMA 发送。s_tx_frame 只是个普通静态数组，内存段的事 BSP 在内部处理
-     * (它会把数据拷进自己的 .RAM_D1 缓冲)。DE 由 RS485 外设硬件控制，也不用管。
-     *
-     * 不阻塞：一帧最长 262 字节 ≈ 2.84 ms，而一轮 10 ms —— 发完不等，
-     * 下一轮开头再结算。 */
+    /* 发送受理成功后累计发送帧数和字节数。 */
     if (BSP_UART_Send(tx_idx, s_tx_frame, (uint16_t)n) == BSP_UART_OK) {
         uart_lb_tx_cnt++;
         uart_lb_tx_bytes += (uint32_t)n;
-    } else {
-        /* 上一轮还没发完(BSP_UART_ERR_BUSY)。一轮 10 ms、最长一帧 2.84 ms，
-         * 正常不该出现；真出现就是 TC 中断被挡得太久了。 */
+    } else { /* 发送请求失败时累计失败次数。 */
+
         uart_lb_tx_fail_cnt++;
     }
 
+    /* 标记本轮待结算并递增累计轮次。 */
     s_pending = 1U;
     uart_lb_round = ++s_round;
 }
 
+/* 检查 DMA 布局、复位状态并登记两路回调。 */
 void UartLoopbackTest_Init(void) {
-    /* 这里**不动** USART2/3 的中断优先级。
-     * 字节由 DMA 搬，USART 中断只管 IDLE，晚几微秒不丢数据 —— 提优先级没必要(它还会去
-     * 抢 CAN/定时器的中断)。全工程其它用串口收包的地方如果不是 DMA，那条仍然成立:
-     * 优先级 5 正好等于 configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY，临界区一挡就丢字节。 */
 
-    /* 兜底：确认 BSP 的收发缓冲真的落在 DMA 够得着的 RAM 里(链接脚本的 .RAM_D1 段要是
-     * 被 CubeMX 重新生成时冲掉了，那些缓冲会变孤儿段、静默回到 DTCM)。变 1 的时候
-     * 别再怀疑接线和 DMA 流号 —— 症状一定是 tx_cnt 几乎不涨 + hal_err 出现 0x10。 */
     uart_lb_dma_mem_bad = BSP_UART_LayoutOk();
 
     FrameParserReset(&s_parser[UART_LB_U2]);
     FrameParserReset(&s_parser[UART_LB_U3]);
 
-    /* 注册回调。**必须在 BSP_UART_Init() 之后**(BSP 初始化会清回调表)，
-     * 见 main.c 里的调用顺序。 */
+    /* 在 BSP 初始化完成后登记两路接收回调。 */
     BSP_UART_RegisterRxCallback(UART_LB_U2, UartLoopbackTest_OnRx);
     BSP_UART_RegisterRxCallback(UART_LB_U3, UartLoopbackTest_OnRx);
 
@@ -509,26 +480,26 @@ void UartLoopbackTest_Init(void) {
     s_tx_type_id = FRAME_TYPE_ID_NONE;
     s_tx_len = 0U;
 
-    /* 顺手把 BSP 的统计搬一遍：这样**调度器还没起来**时用 JLink 读 uart_lb_no_dma /
-     * uart_lb_hal_err 这些就已经是有意义的值了（不然要等第一轮 Loop 跑过）。 */
     UartLoopbackTest_RefreshStat();
 }
 
+/* 按测试周期刷新统计、结算并启动下一轮。 */
 void UartLoopbackTest_Loop(void) {
     static uint32_t last_tick;
     static uint8_t started;
 
     uint32_t now = HAL_GetTick();
 
+    /* 测试周期未到时等待下一次调用。 */
     if (started && ((uint32_t)(now - last_tick) < UART_LB_PERIOD_MS)) {
         return;
     }
     last_tick = now;
     started = 1U;
 
-    UartLoopbackTest_RefreshStat(); /* 先把 BSP 的统计搬进 uart_lb_* 观测变量 */
-    UartLoopbackTest_Verify();      /* 再结算上一轮 */
+    UartLoopbackTest_RefreshStat();
+    UartLoopbackTest_Verify();
     UartLoopbackTest_RunOneRound();
 }
 
-#endif /* TEST_UART_LOOPBACK_ENABLE */
+#endif

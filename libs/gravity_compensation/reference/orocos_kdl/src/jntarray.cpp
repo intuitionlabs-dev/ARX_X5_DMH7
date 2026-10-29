@@ -1,24 +1,3 @@
-// Copyright  (C)  2007  Ruben Smits <ruben dot smits at mech dot kuleuven dot be>
-
-// Version: 1.0
-// Author: Ruben Smits <ruben dot smits at mech dot kuleuven dot be>
-// Maintainer: Ruben Smits <ruben dot smits at mech dot kuleuven dot be>
-// URL: http://www.orocos.org/kdl
-
-// This library is free software; you can redistribute it and/or
-// modify it under the terms of the GNU Lesser General Public
-// License as published by the Free Software Foundation; either
-// version 2.1 of the License, or (at your option) any later version.
-
-// This library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-// Lesser General Public License for more details.
-
-// You should have received a copy of the GNU Lesser General Public
-// License along with this library; if not, write to the Free Software
-// Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
-
 #include "jntarray.hpp"
 
 namespace KDL
@@ -33,7 +12,6 @@ namespace KDL
         data.setZero();
     }
 
-
     JntArray::JntArray(const JntArray& arg):
         data(arg.data)
     {
@@ -44,7 +22,6 @@ namespace KDL
         data=arg.data;
         return *this;
     }
-
 
     JntArray::~JntArray()
     {
@@ -102,7 +79,7 @@ namespace KDL
         Eigen::Matrix<double,6,1> t=jac.data.lazyProduct(src.data);
         dest=Twist(Vector(t(0),t(1),t(2)),Vector(t(3),t(4),t(5)));
     }
-    
+
     void SetToZero(JntArray& array)
     {
         array.data.setZero();
@@ -116,8 +93,4 @@ namespace KDL
     }
 
     bool operator==(const JntArray& src1,const JntArray& src2){return Equal(src1,src2);}
-    //bool operator!=(const JntArray& src1,const JntArray& src2){return Equal(src1,src2);}
-
 }
-
-

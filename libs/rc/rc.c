@@ -2,39 +2,15 @@
 
 #include "rc_config.h" /* 板级接线 + 调参，只有这个文件看得到 */
 
-#include "main.h" /* HAL_GetTick() / HAL_RCC_GetPCLKxFreq() / RCC */
+#include "main.h"
 
 #include <math.h> /* fabsf()，摇杆/swA 过死区用 */
 
-/* ==================== 遥控器 PWM 输入捕获 ====================
- *
- * 硬件/接线表在 rc_config.h 里，这里只记"为什么"：
- *
- * 1. 时基要是 "1 个计数 = 1 µs + ARR = 0xFFFF(65.535 ms 满量程)"：
- *      - 分辨率 1 µs，对 1000~2000 µs 的遥控信号刚好；
- *      - 但**计数器自己会回绕**(65536 计数 = 65.5 ms，平均每 3.5 个周期一次)，
- *        所以光有 16 位差值分不清"间隔 18 ms"和"间隔 18 ms + 绕了一圈"。
- *        解决办法是开更新中断数回绕、把计数值扩成 32 位，见 Rc_ExtendCnt()。
- *    .ioc 里已经按这个配好了(Prescaler = 239 / Counter Period = 65535)，
- *    Rc_Init() 里那两行 __HAL_TIM_SET_PRESCALER/AUTORELOAD 是把同样的值再写一遍 ——
- *    看着多余，留着是因为 PSC 是按 HAL_RCC_GetPCLKxFreq() 现算的(见第 2 条)，
- *    哪天真改了时钟树、忘了同步 .ioc 里的 Prescaler，这里会自动纠正，
- *    量出来的 µs 也还是对的。
- *    注意 **CubeMX 里没有"更新中断"这个选项**，DIER 的 UIE 位只能由
- *    Rc_Init() 里的 __HAL_TIM_ENABLE_IT(TIM_IT_UPDATE) 打开 —— 这行删不得，
- *    删了回绕计数就没了。NVIC 那边的 TIM1_UP_IRQn / TIM2_IRQn 是 CubeMX 配的。
- *
- * 2. 240 MHz 是现算的(Rc_TimerClockHzOf)，不是写死，改时钟树也跟得上。
- *
- * 3. 四路同时在抓，所以接在哪一路都能认出来(看 rc.cap.active_ch)，频率也是量出来的
- *    (两次上升沿之差)，不用事先知道接收机是 50 Hz 还是几百 Hz。
- */
+/* 捕获时基为 1 MHz、16 位计数器，结合更新中断扩展为 32 位时间戳。 */
 
 rc_t rc;
 
-/* 哪一路捕获挂在哪个定时器/通道对上，来自 rc_config.h。
- * 两张表都由 *_CNT 宏给出项数并对着 rc.h 的个数断言 —— 写短了会被静默补 0，
- * 那会让两路捕获映射到同一个 rc.cap.ch[] 互相踩，必须编译期挡住。 */
+/* 通道映射表的项数须与定时器和捕获通道数量一致。 */
 static TIM_HandleTypeDef *const rc_htim[RC_TIM_CNT] = RC_TIM_ARRAY;
 static const uint8_t rc_ch_cfg[RC_CH_CNT][2] = RC_CH_ARRAY;
 
@@ -43,19 +19,15 @@ static const uint8_t rc_ch_cfg[RC_CH_CNT][2] = RC_CH_ARRAY;
 _Static_assert(RC_TIM_ARRAY_CNT == RC_TIM_CNT, "RC_TIM_ARRAY count != RC_TIM_CNT");
 _Static_assert(RC_CH_ARRAY_CNT == RC_CH_CNT, "RC_CH_ARRAY count != RC_CH_CNT");
 
-/* 反向表：[定时器下标][通道对] -> rc.cap.ch 下标，0xFF = 这一格没配捕获。
- * 中断里手上只有 htim->Instance 和 HAL_TIM_ACTIVE_CHANNEL_x，查这张表最省事。
- * Rc_Init() 里填，之后只读。 */
+/* 将定时器和通道对映射为捕获通道索引，0xFF 表示未配置。 */
 static uint8_t rc_ch_lut[RC_TIM_CNT][2];
 
-/* H7 的规则：APB 预分频为 1 时定时器时钟 = PCLK，否则 = 2×PCLK。
- * ppre 是 RCC_D2CFGR 里 D2PPRE1/D2PPRE2 那三位的原始值。 */
+/* APB 预分频为 1 时 TIMCLK=PCLK，否则 TIMCLK=2×PCLK。 */
 static uint32_t Rc_TimerClockHz(uint32_t pclk, uint32_t ppre) {
     return (ppre == 0U) ? pclk : (pclk * 2U);
 }
 
-/* TIM1/TIM8/TIM15/16/17 挂 APB2(D2PPRE2)，其余(含 TIM2)挂 APB1(D2PPRE1)。
- * 比"下标 0 就是 TIM1"那种硬编码结实：换定时器不用回来改这里。 */
+/* TIM1/8/15/16/17 使用 APB2 时钟，其余捕获定时器使用 APB1 时钟。 */
 static uint32_t Rc_TimerClockHzOf(TIM_TypeDef *inst) {
     if (inst == TIM1 || inst == TIM8 || inst == TIM15 || inst == TIM16 || inst == TIM17) {
         return Rc_TimerClockHz(HAL_RCC_GetPCLK2Freq(),
@@ -65,8 +37,6 @@ static uint32_t Rc_TimerClockHzOf(TIM_TypeDef *inst) {
         (RCC->D2CFGR & RCC_D2CFGR_D2PPRE1) >> RCC_D2CFGR_D2PPRE1_Pos);
 }
 
-/* 计数 -> µs。Rc_Init() 之后计数频率就是 1 MHz，原样返回；写成乘除是为了万一
- * 以后时钟树变了也不至于算错(32 位放不下，用 64 位算)。 */
 static uint32_t Rc_RawToUs(uint32_t raw, uint32_t ch_idx) {
     uint32_t hz = rc.cap.tick_hz[rc_ch_cfg[ch_idx][0]];
     if (hz == 0U) {
@@ -86,23 +56,15 @@ static float Rc_Normalize(uint32_t width_us) {
     return v;
 }
 
-/* ---- 摇杆边沿触发器：建对象 ------------------------------------------------
- * 3 个比例轴 × 2 个方向 = 6 个。这里只管建；每拍的刷新在逻辑层的
- * Rc_Triggers_Update() 里。数值口径和两个阈值都在 rc_config.h 那一段。 */
+/* 为三个摇杆轴分别创建正向和负向滞回触发器。 */
 
-/* 归一化值(-1 ~ +1) -> 触发器要的整数：先加偏置变成非负，再乘 RC_TRIG_SCALE。
- * 偏置是必须的 —— rc.rx/ry/lx 有正有负，直接往无符号转会把负半边折成一个大正数。
- * 中位落在 RC_TRIG_CENTER(= RC_TRIG_BIAS * RC_TRIG_SCALE)。 */
+/* 将归一化值加偏置并缩放为非负触发器输入，中位值为 RC_TRIG_CENTER。 */
 static int16_t Rc_TrigValue(float v) {
     return (int16_t)((v + RC_TRIG_BIAS) * RC_TRIG_SCALE);
 }
 
 static void Rc_Triggers_Create(void) {
-    /* 阈值都从 rc_config.h 的 CENTER/DEAD/FULL 推，取法和源工程 remote 一致：
-     *   cont_pos 传 (CENTER+DEAD, CENTER+FULL) —— 低的是回中复位线，高的是触发线；
-     *   cont_neg 传 (CENTER-FULL, CENTER-DEAD) —— 同理，这一对都在负半边。
-     * **neg 这对的顺序不能写反**：Create() 判 threshold_low >= threshold_high 就
-     * 直接返回 NULL，写反了 6 个指针全 NULL、触发器一声不响地失效。 */
+    /* 正向阈值为 CENTER+DEAD、CENTER+FULL；负向阈值为 CENTER-FULL、CENTER-DEAD。 */
     const int16_t pos_low = (int16_t)(RC_TRIG_CENTER + RC_TRIG_DEAD);
     const int16_t pos_high = (int16_t)(RC_TRIG_CENTER + RC_TRIG_FULL);
     const int16_t neg_low = (int16_t)(RC_TRIG_CENTER - RC_TRIG_FULL);
@@ -117,7 +79,7 @@ static void Rc_Triggers_Create(void) {
     t->lx_left = Edge_Trigger_Continuous_Create(cont_neg, neg_low, neg_high);
 
     /* 一个建不出来就说明堆不够，整体没戏 —— 6 个一起置 NULL，让"要么全在、要么
-     * 全不在"这个不变式成立，Rc_Triggers_Update() 里就只用查第一个指针。 */
+ * 全不在"这个不变式成立，Rc_Triggers_Update() 里就只用查第一个指针。 */
     if (t->rx_right == NULL || t->rx_left == NULL || t->ry_up == NULL ||
         t->ry_down == NULL || t->lx_right == NULL || t->lx_left == NULL) {
         t->rx_right = t->rx_left = t->ry_up = t->ry_down = t->lx_right = t->lx_left = NULL;
@@ -143,27 +105,22 @@ void Rc_Init(void) {
         rc.cap.psc[t] = psc;
         rc.cap.tick_hz[t] = clk_hz / (psc + 1U);
 
-        /* .ioc 里配的就是这两个值(239 / 65535)，这里等于再写一遍。
-         * 上面第 1 条注释里写了为什么留着。 */
+        /* 将计数时基设置为 1 MHz，计数周期为 65536。 */
         __HAL_TIM_SET_PRESCALER(rc_htim[t], psc);
         __HAL_TIM_SET_AUTORELOAD(rc_htim[t], RC_ARR);
         __HAL_TIM_SET_COUNTER(rc_htim[t], 0U);
-        /* PSC 是带影子寄存器的，写进去要等一次更新事件才生效(PSC 没有"关掉预装载"
-         * 的开关)。ARR 这版 CubeMX 配的是 AutoReloadPreload = DISABLE，写进去立即
-         * 生效，本来不用等；但这里两个值一起改，触发一次 UG 最省心。 */
+        /* 触发 UG 使预分频值立即生效，并同步计数周期。 */
         HAL_TIM_GenerateEvent(rc_htim[t], TIM_EVENTSOURCE_UPDATE);
 
-        /* 上面那次 UG 会把 UIF 置起来，先清掉，否则一开中断就白数一次回绕。 */
+        /* 清除 UG 产生的 UIF，避免误计一次回绕。 */
         __HAL_TIM_CLEAR_FLAG(rc_htim[t], TIM_FLAG_UPDATE);
         rc.cap.wrap[t] = 0U;
-        /* 开更新中断，唯一目的是数 16 位计数器的回绕(每 65.536 ms 一次)。
-         * 不数的话，两次边沿的间隔只能靠 16 位差值表达，绕圈时会折叠回来 ——
-         * 详见 Rc_ExtendCnt() 的注释。 */
+        /* 使能更新中断以累计 16 位计数器回绕次数。 */
         __HAL_TIM_ENABLE_IT(rc_htim[t], TIM_IT_UPDATE);
     }
 
     /* 四路输入捕获中断全开。CH1/CH3 是上升沿，CH2/CH4 是同一根线上的下降沿，
-     * 所以每路的脉宽 = 该路的 CH2/CH4 减去 CH1/CH3。 */
+ * 所以每路的脉宽 = 该路的 CH2/CH4 减去 CH1/CH3。 */
     for (uint32_t i = 0; i < RC_CH_CNT; ++i) {
         TIM_HandleTypeDef *ht = rc_htim[rc_ch_cfg[i][0]];
         uint8_t pair = rc_ch_cfg[i][1]; /* 0 = CH1/CH2，1 = CH3/CH4 */
@@ -171,19 +128,15 @@ void Rc_Init(void) {
         HAL_TIM_IC_Start_IT(ht, (pair == 0U) ? TIM_CHANNEL_2 : TIM_CHANNEL_4);
     }
 
-    /* 链路看门狗：四路输入都刷新过一遍才喂一次狗(在 Rc_Loop() 里喂)。
-     * 必须在 Monitor_Init() 之后调 —— main.c 里就是那个顺序。 */
+    /* 在 Monitor_Init 后注册看门狗，由全部通道刷新触发复位。 */
     rc.cap.fb_mask = 0U;
     rc.monitor = Monitor_Register(RC_LOST_CALLBACK, RC_MONITOR_LOST_COUNT, RC_LOST_CALLBACK_DATA);
 
-    /* 6 个摇杆边沿触发器。纯逻辑层的东西，不依赖上面任何一步，放最后只是顺手。
-     * 建失败(堆不够)时 rc.trig 里 6 个全是 NULL —— 看门狗那句注释说的"一眼看出来"。 */
+    /* 创建六个摇杆方向触发器。 */
     Rc_Triggers_Create();
 }
 
-/* 直接按通道号读 CCR，不用 HAL_TIM_ReadCapturedValue()：后者要 TIM_CHANNEL_x，
- * 而中断里拿到的是 htim->Channel(HAL_TIM_ACTIVE_CHANNEL_x)，两套枚举值不一样
- * (0x00/0x04/0x08/0x0C vs 0x01/0x02/0x04/0x08)，传错了会静默读到别的通道。 */
+/* 根据活动通道直接读取对应 CCR 捕获值。 */
 static uint32_t Rc_ReadCcr(TIM_TypeDef *inst, uint32_t ch) {
     switch (ch) {
     case 1U:
@@ -197,10 +150,7 @@ static uint32_t Rc_ReadCcr(TIM_TypeDef *inst, uint32_t ch) {
     }
 }
 
-/* 数回绕：挂在 main.c 的 HAL_TIM_PeriodElapsedCallback() 里。
- * ARR = 0xFFFF、1 MHz，所以每个定时器每 65.536 ms 进一次，只自增一下。
- * 那个回调对**每个**定时器都会调一次(TIM23 的系统 tick 走的就是这里)，
- * 所以"不是参与捕获的定时器"是常态。 */
+/* 在定时器周期回调中累计参与捕获的定时器回绕次数。 */
 void Rc_CountWrap(TIM_HandleTypeDef *htim) {
     for (uint32_t t = 0; t < RC_TIM_CNT; ++t) {
         if (htim->Instance == rc_htim[t]->Instance) {
@@ -210,21 +160,7 @@ void Rc_CountWrap(TIM_HandleTypeDef *htim) {
     }
 }
 
-/* 把 16 位计数值补上回绕次数，拼成 32 位(单位不变，仍是 1 计数 = 1 µs，
- * 要 71 分钟才绕一圈 —— 对遥控信号来说等于不会绕)。
- *
- * 为什么非要这么做：16 位计数器满量程 65536 计数 = 65.5 ms，而周期只有
- * ~18 ms，所以每隔 3.5 个周期就有一次"两次上升沿之间正好跨过 0xFFFF->0"
- * 的情况。只拿 16 位差值来看，"间隔 18440"和"间隔 18440 + 65536"完全长得
- * 一样 —— 信号断 84 ms 再回来，算出来还是 18440，Rc_Loop() 的范围检查
- * 会当成正常帧收下。扩成 32 位之后这两个值就分开了，84 ms 会老老实实
- * 报成 84000 µs 然后被范围检查挡掉。
- *
- * 这里除了读回绕计数，还顺手查一次 UIF，是防一种竞态：回绕和本次捕获
- * 挤在同一瞬间，更新中断还没轮到跑。就地补上，免得少算一次回绕(少算正是
- * 上面那个"把 84 ms 看成 18 ms"的错)。更新中断已经跑过的话 UIF 已清，
- * 不会重复计数；反过来多算一次只会让这一拍的间隔偏大 65.5 ms 而被判废，
- * 落在安全的一侧。 */
+/* 将回绕计数与 16 位捕获值组合为 32 位微秒时间戳；待处理的 UIF 用于补偿回调顺序。 */
 static uint32_t Rc_ExtendCnt(TIM_HandleTypeDef *htim, uint32_t tim_idx, uint32_t val) {
     if (__HAL_TIM_GET_FLAG(htim, TIM_FLAG_UPDATE) != RESET) {
         __HAL_TIM_CLEAR_FLAG(htim, TIM_FLAG_UPDATE);
@@ -233,11 +169,7 @@ static uint32_t Rc_ExtendCnt(TIM_HandleTypeDef *htim, uint32_t tim_idx, uint32_t
     return (rc.cap.wrap[tim_idx] << 16) | val;
 }
 
-/* HAL 的输入捕获回调：TIM1_CC_IRQHandler / TIM2_IRQHandler -> HAL_TIM_IRQHandler()
- * -> 这里。这是全工程唯一的定义(HAL 里那个是 __weak)。
- *
- * 中断里只做两件事：记(扩展成 32 位的)计数、计数。
- * 换算 µs/频率、判有效、挑 active_ch 都放到 Rc_Loop() 里，中断保持短。 */
+/* 输入捕获中断仅保存边沿时间戳和计数，信号换算在 Rc_Loop 中执行。 */
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
     uint32_t tim_idx = RC_TIM_CNT;
     uint32_t ch;
@@ -271,7 +203,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
     }
 
     /* CH1/CH2 量 TI1 那根线(通道对 0)，CH3/CH4 量 TI3(通道对 1)；
-     * 奇数通道抓上升沿。 */
+ * 奇数通道抓上升沿。 */
     uint8_t idx = rc_ch_lut[tim_idx][(ch >= 3U) ? 1U : 0U];
     if (idx == 0xFFU) {
         return; /* 这一对通道没配成捕获 */
@@ -283,13 +215,9 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 
     c->edge_cnt++;
 
-    /* 两次边沿的间隔都用扩展后的 32 位值相减，得到的就是真实计数差。
-     * 千万不能退回去用 (val - rise) & 0xFFFF —— 那只是把跨圈的那一拍照样
-     * 折叠成一个看着合理的假值，分不出"18 ms"和"18 ms + 绕了一圈"。 */
+    /* 边沿间隔采用扩展时间戳相减，保留跨回绕的真实间隔。 */
     if ((ch & 1U) != 0U) {
-        /* 上升沿：和上一次上升沿的差就是周期。
-         * 第一次进来 rise_ext 还是 0，算出来的周期是废的，
-         * Rc_Loop() 用 rise_cnt >= 2 挡掉。 */
+        /* 连续两次上升沿的间隔作为周期；首次采样由 rise_cnt 过滤。 */
         c->rise_raw = val;
         c->period_raw = ext - c->rise_ext;
         c->rise_ext = ext;
@@ -301,33 +229,19 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
     }
 }
 
-/* ==================== 逻辑层：接收机通道 -> 实体 ====================
- *
- * 哪一路接收机接在哪个捕获通道上，写在 rc_config.h 的 RC_RX_CAP / RC_RY_CAP /
- * RC_LX_CAP / RC_SWA_CAP 里(那张接线表)。这里只做换算：
- *   - 摇杆：原样搬捕获层的 value((脉宽 - 1500) / 500，限幅 ±1)存进 *_raw，
- *           再过一个 ±RC_AXIS_DEADBAND 的死区给上层；
- *   - swA ：同一套算法算出 sw_a_raw，再用死区分成 0 / 1。
- * 没信号的那一路给 0 并让 valid_* = 0 —— 不要让上层把上一次的残留值当成
- * 当前位置，丢信号必须看得出来。 */
+/* 按配置映射摇杆和开关通道，应用归一化、死区及有效性判定。 */
 
 /* 取某一路的归一化值，没信号时给 0 */
 static float Rc_CapValue(uint32_t cap) {
     return rc.cap.ch[cap].valid ? rc.cap.ch[cap].value : 0.0f;
 }
 
-/* 摇杆死区：只清零、不重标定 —— 出死区的第一个值就是 ±RC_AXIS_DEADBAND，
- * 不会在边界上跳。捕获层的 rc.cap.ch[].value 保持原始值不动，标定时还要看它。 */
+/* 死区内输出为 0，死区外保留归一化幅值。 */
 static float Rc_AxisDeadband(float v) {
     return (fabsf(v) < RC_AXIS_DEADBAND) ? 0.0f : v;
 }
 
-/* 摇杆 -> 触发器：每拍把 3 个轴的值各喂给"推正/推负"一对。
- * 和源工程 remote 的 Dt7_Data_Solve() 一样，同一次采样的值喂给一对里的两个 ——
- * 哪个方向会 flag 起来由各自的 type(cont_pos/cont_neg)决定。
- *
- * 不分 link_ok 一律照喂：丢信号时 rx/ry/lx 是 0(中位)，两种触发器都回到复位态、
- * flag 清 0，不会卡在"一直压着"。喂的是死区之后的值(rc.rx/...)，理由见 rc_config.h。 */
+/* 每周期更新正负触发器；信号丢失时使用中位输入复位触发状态。 */
 static void Rc_Triggers_Update(void) {
     if (rc.trig.rx_right == NULL) {
         return; /* 6 个同生共死，查一个就够；见 Rc_Triggers_Create() 里的整理 */
@@ -347,8 +261,7 @@ static void Rc_Triggers_Update(void) {
 
 /* 捕获层 -> 逻辑层。捕获层那一半在 Rc_Loop() 里已经刷完了。 */
 static void Rc_UpdateLogic(void) {
-    /* 先存死区前的原始值，再从它过死区 —— 原始值留给标定/调试看
-     * (摇杆居中却读出 +0.04，就说明中位偏了 20 µs，光看死区后的 0 是看不出来的) */
+    /* 保留死区处理前的归一化值，供通道标定使用。 */
     rc.rx_raw = Rc_CapValue(RC_RX_CAP);
     rc.ry_raw = Rc_CapValue(RC_RY_CAP);
     rc.lx_raw = Rc_CapValue(RC_LX_CAP);
@@ -357,7 +270,7 @@ static void Rc_UpdateLogic(void) {
     rc.ry = Rc_AxisDeadband(rc.ry_raw);
     rc.lx = Rc_AxisDeadband(rc.lx_raw);
 
-    /* sw_a_raw 留着是为了调试：区分"开关真在中间"和"这路没信号"，两者都是 0 */
+    /* 保存开关通道的归一化值供诊断读取。 */
     rc.sw_a_raw = Rc_CapValue(RC_SWA_CAP);
     rc.sw_a = (uint8_t)(fabsf(rc.sw_a_raw) < RC_SW_A_DEADBAND ? 0U : 1U);
 
@@ -367,7 +280,7 @@ static void Rc_UpdateLogic(void) {
     rc.valid_swa = rc.cap.ch[RC_SWA_CAP].valid;
     rc.link_ok = (uint8_t)(rc.valid_rx && rc.valid_ry && rc.valid_lx && rc.valid_swa);
 
-    /* 触发器放最后，喂的就是上面刚算完的 rx/ry/lx —— 和逻辑层同一拍，不会差一拍 */
+    /* 使用本周期更新的逻辑通道值推进触发器。 */
     Rc_Triggers_Update();
 }
 
@@ -375,12 +288,12 @@ void Rc_Loop(void) {
     uint32_t now = HAL_GetTick();
     int8_t best = -1;
     uint32_t best_age = 0xFFFFFFFFU;
-    uint8_t fresh = 0U; /* 这一拍刷新过的通道位图 */
+    uint8_t fresh = 0U; /* 本周期出现新上升沿的通道位图。 */
 
     for (uint32_t i = 0; i < RC_CH_CNT; ++i) {
         rc_channel_t *c = &rc.cap.ch[i];
 
-        /* 这一拍出现了新的上升沿？更新时间戳(丢信号判断靠它)，顺便记下是哪几路刷新的 */
+        /* 出现新上升沿时更新信号时间戳和通道刷新标志。 */
         if (c->rise_cnt != c->rise_cnt_prev) {
             c->rise_cnt_prev = c->rise_cnt;
             c->last_rise_ms = now;
@@ -413,10 +326,7 @@ void Rc_Loop(void) {
     rc.cap.active_ch = best;
     rc.cap.any_valid = (uint8_t)(best >= 0);
 
-    /* 四路都刷新过一遍才喂一次狗。只要有一路不再更新，fb_mask 永远凑不满，
-     * monitor->count 一路减到 0 -> is_Offline(rc.monitor) 变真。
-     * 这里按字面取"有过新边沿"就算刷新，没有再套 valid/ok —— 那是 link_ok 管的事，
-     * 两者互补：一路吐垃圾脉冲时喂狗还活着但 link_ok = 0(见 rc.h 的说明)。 */
+    /* 全部捕获通道出现新边沿后刷新看门狗；信号合法性由 link_ok 单独表示。 */
     rc.cap.fb_mask = (uint8_t)(rc.cap.fb_mask | fresh);
     if (rc.cap.fb_mask == (uint8_t)((1U << RC_CH_CNT) - 1U)) {
         rc.cap.fb_mask = 0U; /* 下一轮从零重新数 */
@@ -425,6 +335,6 @@ void Rc_Loop(void) {
         }
     }
 
-    /* 捕获层刷完，顺手把逻辑层也推一遍，Rc_Loop() 返回后 rc.rx/... 就是最新的 */
+    /* 捕获数据更新完成后刷新逻辑通道。 */
     Rc_UpdateLogic();
 }

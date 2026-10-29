@@ -3,7 +3,6 @@
 #include "can_config.h"
 #include "stdint.h"
 
-/* 原框架里由 osal/osal.h 提供 */
 typedef uint32_t basic_data_t;
 
 typedef void (*can_rx_callback)(uint8_t can_id, uint32_t identifier, uint8_t* data,
@@ -12,55 +11,18 @@ typedef void (*can_rx_callback)(uint8_t can_id, uint32_t identifier, uint8_t* da
 void BSP_CAN_Init(void);
 void BSP_CAN_AddFilter(uint8_t can_id, uint16_t filter);
 void BSP_CAN_RemoveFilter(uint8_t can_id, uint16_t filter);
-/* 发送一帧。*/
+/* 发送一帧。 */
 void BSP_CAN_Send(uint8_t can_id, uint16_t identifier, uint8_t* data, basic_data_t len);
-/* 掩码里有没有"本拍的组"（本拍的组 = BSP_CAN_TxGroupLatch() 锁存下来的相位）。
- * 驱动拿它把"算控制量"和"发帧"卡在同一个节拍上：算之前在循环体外面问一次，
- * 不匹配就整拍跳过 —— 否则 PID 会按任务周期(1 kHz)跑而不是按发送周期(500 Hz)，
- * 而 libs/controller 的 PID 没有 dt，增益是按调用次数算的，KI 会凭空翻倍。
- * 纯读一个变量，无副作用，随便调。 */
+/* 检查锁存相位是否命中组掩码；驱动据此同步控制计算和发送频率。 */
 uint8_t BSP_CAN_TxGroupMatch(uint8_t tx_group);
 
-/* **每拍开跑前调一次**，把"本拍属于哪个组"锁存下来(相位 = osKernelGetTickCount() % CAN_TX_GROUP_NUM)。
- *
- * 为什么要锁存而不是每次现读时钟：一拍的发送是**轮转**做的(见 freertos.c 的 StartMotorTask)，
- * 一个来回要等 200us 最小帧间隔，4 轮就是 600~800us —— 循环跑到后半截时**毫秒边沿
- * 已经跨过去了**，现读时钟就会让同一拍里的电机用两个不同相位：排在轮转后面的那台
- * 被"下一个组"的门挡掉，那一拍整拍不发。锁存之后同一拍内相位恒定。
- *
- * 没调过这个函数时相位初值是 0(上电第一拍就是相位 0)；
- * **非 MotorTask 的发送方(测试帧等)都用 CAN_TX_GROUP_ALL，不受相位影响**。 */
+/* 每个电机任务周期调用一次，锁存 osKernelGetTickCount() 对应的发送相位。 */
 void BSP_CAN_TxGroupLatch(void);
 
-/* 「距上一帧至少 N 微秒」的忙等(BSP_CAN_TX_MIN_GAP_US，见 bsp_can.c)。
- *
- * **不再是 BSP_CAN_Send() 内部自己等**：那样等于"每帧都等一次"，两台臂各走一路 CAN
- * 之后会让两条总线去抢同一个计时器，把每路的帧率砍半。现在的用法是**调用方
- * (MotorTask)按"轮"等**：一轮里两条总线各发一帧，一轮结束才等这一次 —— 于是
- * 同一个 200us 的节拍被两条总线共用，各自不额外付等待。
- *
- * 副作用(有意接受)：那些"必须立刻发出去"的命令帧(达妙的使能/失能/设零)不再被节流，
- * 它们本来就在"整条总线关门"期间发。
- *
- * BSP_CAN_TX_MIN_GAP_US 配 0 时本函数是空实现，调用方不用写 #if。 */
+/* 每轮各总线发送后忙等最小帧间隔；间隔为 0 时为空实现。 */
 void BSP_CAN_TxGapWait(void);
 
-/* 发送健康检查：**每拍开跑前调一次**，和 BSP_CAN_TxGroupLatch() 并排。
- *
- * 一条发不出去的总线(电缆掉了、电机断电、进了 bus-off)会让 BSP_CAN_Send() 里那段
- * 等待空转。那段等待**照旧保留** —— 一个周期里要连发几帧，靠它把帧塞进 FIFO ——
- * 但只对还能把帧发出去的总线保留：判据是硬件报了 error-passive(经 HAL_FDCAN_GetProtocolStatus
- * 读 PSR，TEC 或 REC ≥ 128 —— 总线上已经没有能应答我们的节点了)，或这一路等 FIFO 等超时攒够了
- * 次数(见 bsp_can.c 的 CAN_TX_TIMEOUT_BLOCK_N)。拔线时硬件正是停在 error-passive：TEC 涨到
- * 128 就冻住了(ISO 11898-1 的例外规则)，`PSR.BO` 恒 0、`CCCR.INIT` 也不会被硬件置起来。
- * 关掉之后发送立刻丢帧返回，每 CAN_TX_PROBE_MS 用 Stop/Start 清一次 CCCR.INIT 重开去试
- * (硬件清掉它才开始 bus-off 恢复序列)，并**把门放开一拍**让这一路真发一次 —— error-passive
- * 只有等一次发送成功才会消，不放行就永远消不掉；重开前先中止掉 FIFO 里挂着的**全部**旧指令，
- * 否则它们会被立刻重发一遍、以失败告终，刚走完的恢复序列立刻又被打断，这一路再也回不来。
- *
- * 为什么非要关：等的结果本来就是超时分支(abort + 丢帧)，帧一样出不去，而等待时间
- * 是花在 **MotorTask** 里的 —— 控制律在发送步骤里算，两条总线共用这一个任务，
- * 于是一条没人应答的总线会把另一条上电机的控制频率一起拖下来。 */
+/* 每周期检查发送健康状态，暂停异常总线并按配置间隔恢复探测。 */
 void BSP_CAN_TxHealthStep(void);
 
 void BSP_CAN_RegisterRxCallback(uint8_t can_id, can_rx_callback func);

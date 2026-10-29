@@ -1,12 +1,11 @@
 #pragma once
 
-/* 本工程自己的 CAN 配置。
- * 值按 CtrBoard-H7_ALL 的实际情况定：三个 FDCAN 实例，CubeMX 里 StdFiltersNbr = 16。 */
+/* 配置 FDCAN 实例、滤波容量和发送相位。 */
 
 #include "fdcan.h"  /* hfdcan1 / hfdcan2 / hfdcan3 */
 
 #define _BSP_FDCAN_ENABLE       1
-#define _BSP_CAN_ENABLE         0  /* 本工程只有 FDCAN；两者同时为 1 会触发 bsp_can.c 的 #error */
+#define _BSP_CAN_ENABLE         0  /* CAN 和 FDCAN 后端须互斥启用。 */
 #define _BSP_DEBUG_CAN_NOT_SEND 0
 
 #define DEVICE_CAN_CNT 3
@@ -20,38 +19,8 @@
 
 #define ID_NOTSET 0x800  /* 大于标准帧 ID 上限 0x7FF，用作“该槽位空闲”的标记 */
 
-/* ---- 发送分组 ----------------------------------------------------------
- * 每次 BSP_CAN_Send() 要多带一个 8 bit 的组掩码：“这一帧属于哪些组”。
- * 总线自己按 `HAL_GetTick() % CAN_TX_GROUP_NUM` 算出**当前组**，
- * 掩码里没有当前组就直接把这次调用丢掉（不发送，也不报错）。
- * 于是**发送频率由掩码决定**。
- *
- * 8 组 ⇒ 单个组 = 125 Hz。要更高频率就把多个组或起来；名字里的 **G 是相位**：
- * 频率相同、G 不同的两路帧会落在不同的 tick 上，天然错峰，不会挤在同一拍里发。
- *
- * 对照表（每一行都标了频率和它占的组号）：
- *   1000 Hz : 全部 8 组 (0..7)                    —— 每拍都发
- *    500 Hz : G0 = 组 0,2,4,6 ；G1 = 组 1,3,5,7   —— 两个相位
- *    250 Hz : G0 = 组 0,4 ；G1 = 1,5 ；G2 = 2,6 ；G3 = 3,7
- *    125 Hz : G0..G7 = 组 0..7                    —— 八个相位
- *
- * 用法示例：4 台达妙都要 500 Hz，但不想同时发 —— 两台用 CAN_TX_500HZ_G0，
- * 另外两台用 CAN_TX_500HZ_G1。改频率只改配置里那一个宏。
- * 设零/使能/查询这类"必须发出去"的命令帧请用 CAN_TX_GROUP_ALL，别被分组吃掉。
- *
- * 驱动里要**先问一次 `BSP_CAN_TxGroupMatch(config.tx_group)` 再进循环体**
- * (见 libs/dm_motor)：只发不算是浪费，只算不发则 PID 会按
- * 任务周期(1 kHz)跑而不是发送周期(500 Hz)，而 libs/controller 的 PID 没有 dt，
- * 增益按调用次数算 —— KI 会凭空翻倍。 */
-/* MotorTask 一拍里"每条总线最多发几帧"，也就是轮转循环的轮数上界(见 freertos.c 的
- * StartMotorTask)。推导：本工程的分组是 j1=G0(0x55,4/8 拍)、j2/j3=G1(0x22,2/8)、
- * j4/j5=G2(0x44,2/8)、j6/夹爪=G3(0x88,2/8)，一个 8 拍周期共 16 帧 ⇒ **每拍最多 3 帧**
- * (第 2、6 拍：j1+j4+j5 = 3)，均值 2。再加上达妙"每 75ms 补发一台使能帧"那一拍多出的
- * 1 帧 ⇒ 上界 4。两路总线同相位(分组门控只看 osKernelGetTickCount()%、与总线无关)，
- * 所以两条总线的帧数永远相等，轮数 = 每路帧数 ≤ 4。
- *
- * 这个上界决定最坏情况下的忙等开销：4 轮 × 200us(BSP_CAN_TX_MIN_GAP_US) = 800us/拍，
- * 而 MotorTask 的周期就是 1ms。**改分组相位之前先回来核这个数。** */
+/* RTOS 调度频率为 1 kHz，8 个相位对应单相位 125 Hz；驱动按掩码决定控制和发送频率。 */
+/* 限制每周期每条总线的发送帧数，含驱动维护命令。 */
 #define CAN_TX_MAX_FRAMES_PER_TICK 4u
 
 #define CAN_TX_GROUP_NUM 8u

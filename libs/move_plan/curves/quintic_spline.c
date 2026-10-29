@@ -2,15 +2,11 @@
 #include <stdlib.h>
 #include "common.h"
 
-/* 私有函数 */
-// 计算五次多项式系数
+/* 计算五次多项式系数 */
 static Quintic_poly poly_calc(float x0, float y0, float dy0, float ddy0, float x1,
     float y1, float dy1, float ddy1);
 
-/**
- * @brief 计算两点确定的五次样条多项式系数
- * @return Quintic_spline* 五次样条对象
- */
+/* 由两端位置、一阶和二阶导数计算五次多项式系数。 */
 Quintic_spline* Quintic_Spline_Create(Quintic_spline_config* config) {
     Quintic_spline* spline = malloc(sizeof(Quintic_spline));
     spline->poly = poly_calc(config->x0, config->y0, config->dy0, config->ddy0,

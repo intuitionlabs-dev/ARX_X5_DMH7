@@ -31,6 +31,15 @@ class MetalMotorTests(unittest.TestCase):
                    'libs/monitor/monitor.c','libs/dm_motor/dm_mit_control.c',
                    'libs/gravity_compensation/c/metal_dynamics.c']
         sources += [str(p.relative_to(ROOT)) for p in (ROOT/'libs/controller').glob('*.c')]
+        models = str(Path(cls.tmp.name)/'models')
+        subprocess.run(['python3',str(ROOT/'libs/gravity_compensation/c/generate_arm_model.py'),
+                        '--output-dir',models],check=True)
+        includes.append(models)
+        sources += ['App/arm_profile.c','App/arm_board.c','App/arm_motor.c',
+                    'App/profiles/metal.c','App/profiles/arx_x5.c','App/arm_initialization.c',
+                    'App/arm_protocol.c','libs/gravity_compensation/c/arm_dynamics.c',
+                    'libs/encos_motor/ENCOS_motor.c','libs/encos_motor/encos_protocol.c',
+                    'libs/encos_motor/encos_mixed_control.c']
         library = str(Path(cls.tmp.name)/'motors.so')
         result = subprocess.run(['cc','-std=gnu11','-O2','-shared','-fPIC',
             '-fvisibility=hidden','-ffunction-sections','-fdata-sections',
@@ -111,6 +120,27 @@ class MetalMotorTests(unittest.TestCase):
                 self.assertEqual(list(out[:4]),[5,expected,expected,0])
                 for i,result in enumerate(out[4:]):
                     self.assertEqual(result,2 if expected & (1<<i) else 5)
+
+    def test_x5_mixed_driver_configuration_and_dispatch(self):
+        counts = (C.c_uint*9)()
+        self.lib.x5_create_and_rates.argtypes = [C.POINTER(C.c_uint)]
+        self.assertEqual(self.lib.x5_create_and_rates(counts),1)
+        for identifier,minimum in ((1,500),(2,250),(4,250),(5,250),(6,250),(7,250),(8,250)):
+            self.assertGreaterEqual(counts[identifier],minimum)
+        self.assertEqual(counts[3],0)
+        self.lib.x5_motor_config.argtypes=[C.c_uint,C.POINTER(C.c_float)]
+        for i,identifier in enumerate((1,2,4,5,6,7,8)):
+            out=(C.c_float*8)()
+            self.lib.x5_motor_config(i,out)
+            self.assertEqual(out[0],identifier)
+            self.assertEqual(out[1],identifier if i<3 else 0)
+            self.assertEqual(out[7],i<3)
+            self.assertEqual(out[2],12.5)
+            self.assertEqual(out[3],18 if i<3 else 45)
+        out=(C.c_float*2)()
+        self.lib.x5_passive_enable.argtypes=[C.POINTER(C.c_float)]
+        self.lib.x5_passive_enable(out)
+        self.assertEqual(list(out),[0,0])
 
 
 if __name__ == '__main__': unittest.main()

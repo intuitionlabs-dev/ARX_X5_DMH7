@@ -1,7 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later
- * Copyright (C) 2009 Ruben Smits and Dominick Vanthienen.
- * 基于 Orocos KDL v1.5.1 ChainIdSolver_RNE 的六轴 C 实现。
- */
+/* 计算 metalarm 六轴递归逆动力学。 */
 #include "metal_dynamics.h"
 #include <math.h>
 

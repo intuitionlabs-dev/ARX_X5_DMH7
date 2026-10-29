@@ -1,13 +1,22 @@
 /* Host harness: production application and unchanged DM driver, simulated CAN/HAL. */
 #include <string.h>
-#include "../App/gimbal_arm.c"
-#include "../App/arm_zero.c"
-#include "../libs/dm_motor/DM_motor.c"
+#include "arm.h"
+#include "../App/gimbal_arm.c" // NOLINT(bugprone-suspicious-include)
+#include "../App/arm_zero.c" // NOLINT(bugprone-suspicious-include)
+#include "../libs/dm_motor/DM_motor.c" // NOLINT(bugprone-suspicious-include)
 
 #define EXPORT __attribute__((visibility("default")))
 Arm g_arm[ARM_NUM];
 static uint32_t clock_ms;
 static can_rx_callback receivers[DEVICE_CAN_CNT];
+static can_rx_callback registered[DEVICE_CAN_CNT][4];
+static unsigned registered_count[DEVICE_CAN_CNT];
+static Gimbal* x5;
+static unsigned x5_frames[9];
+static uint8_t x5_last[9][8];
+static void dispatch(uint8_t bus, uint32_t id, uint8_t* data, uint32_t length) {
+    for (unsigned i=0; i<registered_count[bus]; ++i) registered[bus][i](bus,id,data,length);
+}
 static uint8_t frames[ARM_NUM][ARM_MOTOR_NUM][8];
 static unsigned controls[ARM_NUM][ARM_MOTOR_NUM], enables[ARM_NUM][ARM_MOTOR_NUM];
 static unsigned burst[ARM_NUM], peak[ARM_NUM];
@@ -15,13 +24,22 @@ static uint8_t saved_zero[ARM_NUM], emulate_zero;
 
 uint32_t HAL_GetTick(void) { return clock_ms; }
 void FrameRateStatistics(FPS_t* fps) { fps->now = clock_ms; fps->count++; }
-void BSP_CAN_RegisterRxCallback(uint8_t bus, can_rx_callback fn) { receivers[bus] = fn; }
+void BSP_CAN_RegisterRxCallback(uint8_t bus, can_rx_callback fn) {
+    registered[bus][registered_count[bus]++] = fn;
+    receivers[bus] = dispatch;
+}
 void BSP_CAN_AddFilter(uint8_t bus, uint16_t id) { (void)bus; (void)id; }
 uint8_t BSP_CAN_TxGroupMatch(uint8_t group) { return (group >> (clock_ms % 8)) & 1; }
 
-static DM_motor* motor_at(unsigned bus, unsigned index) { return dm_at(g_arm[bus].gimbal, index); }
+static DM_motor* motor_at(unsigned bus, unsigned index) { return g_arm[bus].gimbal->motors[index].context; }
 
 void BSP_CAN_Send(uint8_t bus, uint16_t id, uint8_t* data, basic_data_t len) {
+    if (bus == 2) {
+        if (id < 1 || id > 8 || len > 8) abort();
+        x5_frames[id]++;
+        memcpy(x5_last[id],data,len);
+        return;
+    }
     if (bus >= ARM_NUM || id < 1 || id > 7 || len != 8) abort();
     const uint8_t special[7] = {255,255,255,255,255,255,255};
     unsigned i = id-1;
@@ -43,7 +61,7 @@ void BSP_CAN_Send(uint8_t bus, uint16_t id, uint8_t* data, basic_data_t len) {
     }
 }
 
-EXPORT void metal_fixture_init(void) {
+EXPORT void metal_fixture_init(void) { // NOLINT(readability-identifier-naming)
     Monitor_Init();
     DMmotor_Driver_Init();
     for (unsigned bus = 0; bus < ARM_NUM; ++bus) {
@@ -52,7 +70,7 @@ EXPORT void metal_fixture_init(void) {
     }
 }
 
-EXPORT void metal_config(unsigned bus, unsigned i, float* out) {
+EXPORT void metal_config(unsigned bus, unsigned i, float* out) { // NOLINT(readability-identifier-naming)
     DM_motor* m = motor_at(bus,i);
     float values[] = {m->config.can_tx_id, m->config.can_rx_id,
         m->config.max_position, m->config.max_speed, m->config.max_torque,
@@ -62,19 +80,19 @@ EXPORT void metal_config(unsigned bus, unsigned i, float* out) {
     memcpy(out, values, sizeof(values));
 }
 
-EXPORT void metal_feedback(unsigned bus, unsigned id, const uint8_t* data) {
+EXPORT void metal_feedback(unsigned bus, unsigned id, const uint8_t* data) { // NOLINT(readability-identifier-naming)
     receivers[bus](bus, id, (uint8_t*)data, 8);
 }
 
-EXPORT void metal_position_speed(unsigned bus, unsigned i, float* out) {
+EXPORT void metal_position_speed(unsigned bus, unsigned i, float* out) { // NOLINT(readability-identifier-naming)
     DM_motor* m = motor_at(bus,i);
     out[0] = m->config.pos_fdb_calc(m->config.arg) * DEG2RAD;
     out[1] = m->config.speed_fdb_calc(m->config.arg) * DEG2RAD;
 }
 
-EXPORT void metal_encode(unsigned bus, unsigned i, const float* refs, int rounds, uint8_t* out) {
+EXPORT void metal_encode(unsigned bus, unsigned i, const float* refs, int rounds, uint8_t* out) { // NOLINT(readability-identifier-naming)
     DM_motor* m = motor_at(bus,i);
-    set_pid_normal(g_arm[bus].gimbal);
+    apply_motor_mode(g_arm[bus].gimbal, arm_run);
     m->enable = dm_enable;
     m->round = rounds;
     m->motor_controller->ref_position = refs[0] * RAD2DEG;
@@ -88,7 +106,7 @@ EXPORT void metal_encode(unsigned bus, unsigned i, const float* refs, int rounds
     memcpy(out, frames[bus][i], 8);
 }
 
-EXPORT void metal_rates(unsigned duration, unsigned* out) {
+EXPORT void metal_rates(unsigned duration, unsigned* out) { // NOLINT(readability-identifier-naming)
     clock_ms = (clock_ms+8) & ~7u;
     memset(controls, 0, sizeof(controls));
     memset(enables, 0, sizeof(enables));
@@ -108,7 +126,7 @@ EXPORT void metal_rates(unsigned duration, unsigned* out) {
     }
 }
 
-EXPORT void metal_mode(unsigned bus, unsigned mode, float* out) {
+EXPORT void metal_mode(unsigned bus, unsigned mode, float* out) { // NOLINT(readability-identifier-naming)
     Gimbal* g = g_arm[bus].gimbal;
     for (unsigned i=0; i<7; ++i) motor_at(bus,i)->monitor->reset(motor_at(bus,i)->monitor);
     g->arm_control_data.mode = mode;
@@ -119,7 +137,7 @@ EXPORT void metal_mode(unsigned bus, unsigned mode, float* out) {
     }
 }
 
-EXPORT void metal_zero(unsigned bus, unsigned mask, unsigned* out) {
+EXPORT void metal_zero(unsigned bus, unsigned mask, unsigned* out) { // NOLINT(readability-identifier-naming)
     Gimbal* g = g_arm[bus].gimbal;
     memset(&g->zero, 0, sizeof(g->zero));
     memset(saved_zero, 0, sizeof(saved_zero));
@@ -128,7 +146,8 @@ EXPORT void metal_zero(unsigned bus, unsigned mask, unsigned* out) {
         receivers[bus](bus, 0x11+i, data, 8);
     }
     g->zero.request = 1;
-    g->zero.participate_override = mask;
+    g->zero.selection_valid = !!mask;
+    for (unsigned i=0; i<ARM_MOTOR_NUM; ++i) g->zero.selection[i] = (mask >> i)&1;
     emulate_zero = 1;
     for (unsigned n=0; n<3000; ++n, ++clock_ms) {
         Arm_Zero_Loop(g);
@@ -136,8 +155,41 @@ EXPORT void metal_zero(unsigned bus, unsigned mask, unsigned* out) {
     }
     emulate_zero = 0;
     out[0] = g->zero.state;
-    out[1] = g->zero.participate_mask;
+    out[1] = 0;
+    for (unsigned i=0; i<ARM_MOTOR_NUM; ++i) out[1] |= g->zero.participating[i] << i;
     out[2] = saved_zero[bus];
     out[3] = saved_zero[1-bus];
     for (unsigned i=0; i<7; ++i) out[4+i] = g->zero.result[i];
+}
+
+EXPORT unsigned x5_create_and_rates(unsigned* out) { // NOLINT(readability-identifier-naming)
+    x5 = Gimbal_Create_Profile(&ARM_PROFILE_ARX_X5, 2);
+    if (!x5) return 0;
+    for (unsigned tick=0; tick<1000; ++tick) {
+        clock_ms++;
+        Arm_Motors_Send_Begin();
+        for (unsigned round=0; round<4 && Arm_Motors_Send_Step(2); ++round) {}
+    }
+    memcpy(out,x5_frames,sizeof(x5_frames));
+    return 1;
+}
+EXPORT void x5_motor_config(unsigned i, float* out) { // NOLINT(readability-identifier-naming)
+    Arm_motor* motor = &x5->motors[i];
+    const Arm_motor_config* cfg = motor->config;
+    const float values[] = {cfg->tx_id,cfg->rx_id,cfg->position_max,cfg->speed_max,
+        cfg->torque_max,cfg->kp,cfg->kd,cfg->driver==&ARM_DRIVER_ENCOS};
+    memcpy(out,values,sizeof(values));
+}
+EXPORT void x5_passive_enable(float* out) { // NOLINT(readability-identifier-naming)
+    Arm_motor* motor = &x5->motors[0];
+    motor->control->pid_pos_data.config.KP=0;
+    motor->control->pid_speed_data.config.KP=0;
+    motor->config->driver->mode(motor,1,0,35);
+    for (unsigned i=0; i<8; ++i) {
+        ++clock_ms;
+        Arm_Motors_Send_Begin();
+        while (Arm_Motors_Send_Step(2)) {}
+    }
+    out[0]=motor->control->pid_pos_data.config.KP;
+    out[1]=motor->control->pid_speed_data.config.KP;
 }

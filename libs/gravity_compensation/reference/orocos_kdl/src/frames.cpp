@@ -1,37 +1,9 @@
-/***************************************************************************
-                        frames.cxx -  description
-                       -------------------------
-    begin                : June 2006
-    copyright            : (C) 2006 Erwin Aertbelien
-    email                : firstname.lastname@mech.kuleuven.ac.be
-
- History (only major changes)( AUTHOR-Description ) :
-
- ***************************************************************************
- *   This library is free software; you can redistribute it and/or         *
- *   modify it under the terms of the GNU Lesser General Public            *
- *   License as published by the Free Software Foundation; either          *
- *   version 2.1 of the License, or (at your option) any later version.    *
- *                                                                         *
- *   This library is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU     *
- *   Lesser General Public License for more details.                       *
- *                                                                         *
- *   You should have received a copy of the GNU Lesser General Public      *
- *   License along with this library; if not, write to the Free Software   *
- *   Foundation, Inc., 59 Temple Place,                                    *
- *   Suite 330, Boston, MA  02111-1307  USA                                *
- *                                                                         *
- ***************************************************************************/
-
 #include "frames.hpp"
 #include "utilities/utility.h"
 
 #include <algorithm>
 
 namespace KDL {
-
 #ifndef KDL_INLINE
 #include "frames.inl"
 #endif
@@ -51,7 +23,7 @@ namespace KDL {
     }
 
     Frame Frame::DH_Craig1989(double a,double alpha,double d,double theta)
-    // returns Modified Denavit-Hartenberg parameters (According to Craig)
+
     {
         double ct,st,ca,sa;
         ct = cos(theta);
@@ -68,7 +40,7 @@ namespace KDL {
     }
 
     Frame Frame::DH(double a,double alpha,double d,double theta)
-    // returns Denavit-Hartenberg parameters (Non-Modified DH)
+
     {
         double ct,st,ca,sa;
         ct = cos(theta);
@@ -88,7 +60,7 @@ namespace KDL {
     {
         double tmp1 = fabs(data[0]);
         double tmp2 = fabs(data[1]);
-        
+
         if (tmp1 < eps && tmp2 < eps)
             return 0;
 
@@ -98,9 +70,7 @@ namespace KDL {
             return tmp2*sqrt(1+sqr(data[0]/data[1]));
         }
     }
-    // makes v a unitvector and returns the norm of v.
-    // if v is smaller than eps, Vector(1,0) is returned with norm 0.
-    // if this is not good, check the return value of this method.
+
     double Vector2::Normalize(double eps) {
         double v = this->Norm();
         if (v < eps) {
@@ -112,8 +82,6 @@ namespace KDL {
         }
     }
 
-
-    // do some effort not to lose precision
     double Vector::Norm(double eps) const
     {
         double tmp1;
@@ -124,7 +92,6 @@ namespace KDL {
             tmp2=fabs(data[2]);
             if (tmp1 >= tmp2) {
                 if (tmp1 < eps) {
-                    // only to everything exactly zero case, all other are handled correctly
                     return 0;
                 }
                 return tmp1*sqrt(1+sqr(data[1]/data[0])+sqr(data[2]/data[0]));
@@ -141,9 +108,6 @@ namespace KDL {
         }
     }
 
-    // makes v a unitvector and returns the norm of v.
-    // if v is smaller than eps, Vector(1,0,0) is returned with norm 0.
-    // if this is not good, check the return value of this method.
     double Vector::Normalize(double eps) {
         double v = this->Norm();
         if (v < eps) {
@@ -154,7 +118,6 @@ namespace KDL {
             return v;
         }
     }
-
 
     bool Equal(const Rotation& a,const Rotation& b,double eps) {
         return (Equal(a.data[0],b.data[0],eps) &&
@@ -168,10 +131,8 @@ namespace KDL {
                 Equal(a.data[8],b.data[8],eps)    );
     }
 
-
-
     Rotation operator *(const Rotation& lhs,const Rotation& rhs)
-    // Complexity : 27M+27A
+
     {
         return Rotation(
                         lhs.data[0]*rhs.data[0]+lhs.data[1]*rhs.data[3]+lhs.data[2]*rhs.data[6],
@@ -184,7 +145,6 @@ namespace KDL {
                         lhs.data[6]*rhs.data[1]+lhs.data[7]*rhs.data[4]+lhs.data[8]*rhs.data[7],
                         lhs.data[6]*rhs.data[2]+lhs.data[7]*rhs.data[5]+lhs.data[8]*rhs.data[8]
                         );
-
     }
 
     Rotation Rotation::Quaternion(double x,double y,double z, double w)
@@ -196,11 +156,6 @@ namespace KDL {
                         2*x*z-2*w*y, 2*y*z+2*w*x, w2-x2-y2+z2);
     }
 
-    /* From the following sources:
-       http://web.archive.org/web/20041029003853/http:/www.j3d.org/matrix_faq/matrfaq_latest.html
-       http://www.euclideanspace.com/maths/geometry/rotations/conversions/matrixToQuaternion/index.htm
-       RobOOP::quaternion.cpp
-    */
     void Rotation::GetQuaternion(double& x,double& y,double& z, double& w) const
     {
         double trace = (*this)(0,0) + (*this)(1,1) + (*this)(2,2);
@@ -231,7 +186,7 @@ namespace KDL {
                 y = ((*this)(1,2) + (*this)(2,1) ) / s;
                 z = 0.25 * s;
             }
-        }    
+        }
     }
 
 Rotation Rotation::RPY(double roll,double pitch,double yaw)
@@ -245,7 +200,6 @@ Rotation Rotation::RPY(double roll,double pitch,double yaw)
                    -sb1,cb1*sc1,cb1*cc1);
     }
 
-// Gives back a rotation matrix specified with RPY convention
 void Rotation::GetRPY(double& roll,double& pitch,double& yaw) const
     {
 		double epsilon=1E-12;
@@ -268,9 +222,7 @@ Rotation Rotation::EulerZYZ(double Alfa,double Beta,double Gamma) {
                  sa*cb*cg+ca*sg,     -sa*cb*sg+ca*cg,        sa*sb,
                  -sb*cg ,                sb*sg,              cb
                 );
-
      }
-
 
 void Rotation::GetEulerZYZ(double& alpha,double& beta,double& gamma) const {
 		double epsilon = 1E-12;
@@ -291,21 +243,12 @@ void Rotation::GetEulerZYZ(double& alpha,double& beta,double& gamma) const {
  }
 
 Rotation Rotation::Rot(const Vector& rotaxis,double angle) {
-    // The formula is
-    // V.(V.tr) + st*[V x] + ct*(I-V.(V.tr))
-    // can be found by multiplying it with an arbitrary vector p
-    // and noting that this vector is rotated.
     Vector rotvec = rotaxis;
 	rotvec.Normalize();
 	return Rotation::Rot2(rotvec,angle);
 }
 
 Rotation Rotation::Rot2(const Vector& rotvec,double angle) {
-    // rotvec should be normalized !
-    // The formula is
-    // V.(V.tr) + st*[V x] + ct*(I-V.(V.tr))
-    // can be found by multiplying it with an arbitrary vector p
-    // and noting that this vector is rotated.
     double ct = cos(angle);
     double st = sin(angle);
     double vt = 1-ct;
@@ -331,11 +274,8 @@ Rotation Rotation::Rot2(const Vector& rotvec,double angle) {
         );
 }
 
-
-
 Vector Rotation::GetRot() const
-         // Returns a vector with the direction of the equiv. axis
-         // and its norm is angle
+
      {
        Vector axis;
        double angle;
@@ -343,46 +283,30 @@ Vector Rotation::GetRot() const
        return axis * angle;
      }
 
-
-
-/** Returns the rotation angle around the equiv. axis
- * @param axis the rotation axis is returned in this variable
- * @param eps :  in the case of angle == 0 : rot axis is undefined and chosen
- *                                         to be the Z-axis
- *               in the case of angle == PI : 2 solutions, positive Z-component
- *                                            of the axis is chosen.
- * @result returns the rotation angle (between [0..PI] )
- * /todo :
- *   Check corresponding routines in rframes and rrframes
- */
 double Rotation::GetRotAngle(Vector& axis,double eps) const {
-    double angle,x,y,z; // variables for result
-    double epsilon = eps; // margin to allow for rounding errors
-    double epsilon2 = eps*10; // margin to distinguish between 0 and 180 degrees
-
-    // optional check that input is pure rotation, 'isRotationMatrix' is defined at:
-    // http://www.euclideanspace.com/maths/algebra/matrix/orthogonal/rotation/
+    double angle,x,y,z;
+    double epsilon = eps;
+    double epsilon2 = eps*10;
 
     if ((std::abs(data[1] - data[3]) < epsilon)
         && (std::abs(data[2] - data[6])< epsilon)
         && (std::abs(data[5] - data[7]) < epsilon))
     {
-        // singularity found
-        // first check for identity matrix which must have +1 for all terms
-        //  in leading diagonal and zero in other terms
+        /* 处理旋转矩阵对应的轴角奇异情形。 */
+
         if ((std::abs(data[1] + data[3]) < epsilon2)
             && (std::abs(data[2] + data[6]) < epsilon2)
             && (std::abs(data[5] + data[7]) < epsilon2)
             && (std::abs(data[0] + data[4] + data[8]-3) < epsilon2))
         {
-            // this singularity is identity matrix so angle = 0, axis is arbitrary
-            // Choose 0, 0, 1 to pass orocos tests
+            /* 单位旋转的角度为 0，旋转轴可任取单位向量。 */
+
             axis = KDL::Vector(0,0,1);
             angle = 0.0;
             return angle;
         }
 
-        // otherwise this singularity is angle = 180
+        /* 180° 旋转时由对角元素恢复旋转轴。 */
         angle = PI;
         double xx = (data[0] + 1) / 2;
         double yy = (data[4] + 1) / 2;
@@ -393,27 +317,24 @@ double Rotation::GetRotAngle(Vector& axis,double eps) const {
 
         if ((xx > yy) && (xx > zz))
         {
-            // data[0] is the largest diagonal term
             x = sqrt(xx);
             y = xy/x;
             z = xz/x;
         }
         else if (yy > zz)
         {
-            // data[4] is the largest diagonal term
             y = sqrt(yy);
             x = xy/y;
             z = yz/y;
         }
         else
         {
-            // data[8] is the largest diagonal term so base result on this
             z = sqrt(zz);
             x = xz/z;
             y = yz/z;
         }
         axis = KDL::Vector(x, y, z);
-        return angle; // return 180 deg rotation
+        return angle;
     }
 
     double f = (data[0] + data[4] + data[8] - 1) / 2;

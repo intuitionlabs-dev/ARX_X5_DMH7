@@ -1,8 +1,7 @@
 #include "linear_spline.h"
 #include <stdlib.h>
 
-/* 私有函数 */
-// 计算一次多项式系数
+/* 计算一次多项式系数 */
 static Linear_poly poly_calc(float x0, float y0, float x1, float y1);
 
 Linear_spline* Linear_Spline_Create(Linear_spline_config* config) {

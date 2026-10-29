@@ -7,11 +7,7 @@
 
 _Static_assert(FRAME_MAX_LEN == 263U, "帧长常量算错了");
 
-/*
- * FrameBuf 的布局是"自动解包"能不能成立的全部依据：raw 和 f 必须是同尺寸、
- * 且 payload 恰好落在偏移 6。错位了不会报错，只会**静默解出垃圾**，所以在这守住。
- * （真正跑的时候这套布局已经用小工具在 arm-none-eabi-gcc 上实测过一遍。）
- */
+/* 编译期校验帧缓冲尺寸及载荷偏移，保证原始字节与结构化视图一致。 */
 _Static_assert(sizeof(FrameBuf) == FRAME_MAX_LEN, "union 两个视图尺寸不一致");
 _Static_assert(offsetof(FrameBuf, f.header) == 0U, "帧头没在偏移 0");
 _Static_assert(offsetof(FrameBuf, f.payload) == FRAME_HEADER_LEN,
@@ -27,32 +23,16 @@ _Static_assert(FRAME_ARM_ID_OFFSET < FRAME_HEADER_LEN,
 _Static_assert(sizeof(FramePktMotorSetZeroAck) == 12U, "电机设置零点回复包不是 12 字节");
 _Static_assert(sizeof(FramePktArmCtrlPos) == 28U, "控制包(角度+夹爪)不是 28 字节");
 _Static_assert(sizeof(FramePktArmCtrlPosVel) == 52U, "控制包(角度+角速度+夹爪)不是 52 字节");
-/* 反馈帧是 250 Hz 常流里最长的一包，63 是**协议承诺给上位机**的数（两端按这个预留
+/* 反馈帧是 250 Hz 常流里最长的一包，63 是协议承诺给上位机的数（两端按这个预留
  * 缓冲），改结构体就得同步改协议文档，不能让它在编译期悄悄漂移。 */
 _Static_assert(sizeof(FramePktArmFeedback) == 63U, "机械臂反馈帧不是 63 字节");
 _Static_assert(sizeof(FramePktLinkStatus) == 88U, "链路状态包不是 88 字节");
 /* 空包必须是 0 字节：线上 datalen 就靠它。sizeof 万一变成 1，空包会多带一个字节。 */
 _Static_assert(sizeof(FramePktEmpty) == 0U, "空包结构体不是 0 字节");
 
-/* 版本码是 4 字节。这里**没法**断言"哈希等于某个具体值" —— C 的静态期算不出哈希
- * （没有 constexpr），那个值钉在主机测试 uf_unpack_test.c 里，字符串一改测试就红。 */
 _Static_assert(sizeof(FramePktVersion) == 4U, "版本匹配包不是 4 字节");
 
-/*
- * ==================== 对齐断言 ====================
- *
- * 上面那组 sizeof 断言**证明不了对齐**：`{uint8_t; uint8_t[7]; uint32_t;}` 在对齐 1
- * 和对齐 4 下 sizeof 都是 12。而"payload 落在帧偏移 6 上还能安全读 float"恰恰取决于
- * 对齐是不是 1，所以得单独断言。两组互补，不是重复。
- *
- * 换成 #pragma pack 之后这组断言更有必要：pack 是**编译器的全局状态**，靠
- * #pragma pack(push,1)/(pop) 一对括起来，一旦有人在 pack 区外面新加一个要挂进
- * FramePayload 的结构体（或者把 push 挪错了位置），它不会自动被压，编译期
- * 一声不响 —— 只有这里能拦住。
- *
- * 反过来说：**漏 pop 导致的"压过头"这组断言拦不住**（压过头也是 1，断言照样过）。
- * 那个只能靠 push/pop 成对紧贴定义的纪律，见 type_id.h 的说明。
- */
+/* 校验各载荷类型的字节对齐，允许从偏移 6 读取多字节字段。 */
 _Static_assert(_Alignof(FramePktEmpty) == 1U, "空包结构体不是 1 字节对齐");
 _Static_assert(_Alignof(FramePktVersion) == 1U, "版本匹配包不是 1 字节对齐");
 _Static_assert(_Alignof(FramePktMotorSetZeroAck) == 1U, "设零回复包不是 1 字节对齐");
@@ -88,9 +68,7 @@ int32_t FrameEncode(uint8_t *out, uint32_t out_size, FrameTypeId type_id,
   out[2] = type_id;
   out[3] = data_len;
   out[FRAME_ARM_ID_OFFSET] = arm_id;
-  /* crc8 盖 raw[0..4]，**含 arm_id** —— 它比 type_id/datalen 更需要保护：
-   * datalen 被干扰会让帧长错、crc16 兜得住；arm_id 被干扰只会让帧投错臂，
-   * 而错的那台臂拿到的是一帧"格式完全合法"的帧，payload 校验也过得去。 */
+  /* CRC8 覆盖帧头前 5 字节，包含 arm_id。 */
   out[FRAME_HEADER_LEN - 1U] = CRC8_Modbus_calc(out, FRAME_HEADER_LEN - 1U);
 
   for (i = 0U; i < (uint32_t)data_len; i++) {
@@ -113,7 +91,7 @@ uint32_t FrameVersionHash(const char *s) {
   }
 
   while (*s != '\0') {
-    h ^= (uint8_t)(*s++); /* 按字节异或：转 uint8_t 是为了不依赖 char 有没有符号 */
+    h ^= (uint8_t)(*s++); /* 按无符号字节计算哈希，避免 char 符号扩展。 */
     h *= 16777619U;
   }
 
@@ -135,7 +113,7 @@ void FrameParserReset(FrameParser *p) {
 static FrameStatus FrameParserStep(FrameParser *p, uint8_t byte) {
   FrameStatus result = FRAME_INCOMPLETE;
 
-  /* 计在循环**外面**：crc 出错时要靠 continue 把同一个字节重喂一遍，写在里面会重复计数。 */
+  /* 计在循环外面：crc 出错时要靠 continue 把同一个字节重喂一遍，写在里面会重复计数。 */
   p->bytes_in++;
 
   for (;;) {
@@ -202,10 +180,7 @@ static FrameStatus FrameParserStep(FrameParser *p, uint8_t byte) {
         result = FRAME_ERR_CRC16;
         continue;
       }
-      /*
-       * 校验通过。复位状态以便接着解下一帧，但保留 type_id/data_len/frame，
-       * 调用方在这一刻取 payload。
-       */
+      /* 完整帧校验通过后复位解析状态，并保留载荷供调用方读取。 */
       p->state = FRAME_ST_WAIT_SYNC0;
       p->len = 0U;
       p->bytes_ok += (uint32_t)FRAME_LEN(p->data_len);
@@ -221,18 +196,7 @@ static FrameStatus FrameParserStep(FrameParser *p, uint8_t byte) {
 FrameStatus FrameParserFeed(FrameParser *p, uint8_t byte) {
   const FrameStatus st = FrameParserStep(p, byte);
 
-  /*
-   * 每喂完一个字节都刷新一次这个派生量。
-   *
-   * 它等于 `bytes_in - bytes_ok`，**单独存一份是有原因的**：读它的上层跑在任务里、写它的
-   * 是接收中断，两个累计量分开读会读到"中间态" —— 中断正好在两次读之间解完一帧，
-   * 上层的 bytes_ok 差值就会比 bytes_in 差值大，相减**下溢**成一个四十多亿的假数
-   * （一个窗口看着像收到了 4 GB 垃圾）。派生量在中断里跟着两个源一起更新，上层只读它，
-   * 就没有"两次读之间"这回事了。
-   *
-   * 它是**累计值**（和 bytes_in / bytes_ok 一样，不随 FrameParserReset 清零），
-   * 上层按窗口取差即可。unsigned 的模减让回绕是自动对的。
-   */
+  /* 保存 bytes_in-bytes_ok 的快照，供任务读取中断更新的统计。 */
   p->bytes_drop = p->bytes_in - p->bytes_ok;
 
   return st;

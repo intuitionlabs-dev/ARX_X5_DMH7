@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LGPL-2.1-or-later
+
 """从仓库内的 URDF 生成 X5 / Metal 连杆动力学常量。"""
 import argparse
 import math
@@ -42,7 +42,7 @@ def generate(robot="x5"):
     models = (MODEL_FILES if robot == "x5" else
               {name: name + ".urdf" for name in ("metal_with_gripper", "metal_no_gripper")})
     guard = robot.upper() + "_DYNAMICS_DATA_H"
-    lines = ["/* SPDX-License-Identifier: LGPL-2.1-or-later */",
+    lines = [
              "/* 由 generate_dynamics_data.py 从 URDF 生成；单位为 kg、m、kg·m²。 */",
              "#ifndef " + guard, "#define " + guard,
              f"static const link_data {robot}_dynamic_links[{len(models)}][6] = {{"]

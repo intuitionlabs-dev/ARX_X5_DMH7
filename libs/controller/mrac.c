@@ -1,17 +1,7 @@
-/**
- * @file           : mrac.c
- * @brief          :
- * @Author         : 刘文熠
- * @Date           : 2022-04-10 09:36
- * @LastEditTime   : 2022-04-28 17:34
- * @Note           :
- * @Copyright(c)   : 哈尔滨工业大学（深圳）南工骁鹰机器人队版权所有 Critical HIT copyrighted
- */
-
 #include "mrac.h"
 
 #include "common.h"
-// #include "math.h"
+
 #include "string.h"
 
 float sat(float x, float lower_bound, float upper_bound);
@@ -44,11 +34,7 @@ void MTDFunction(MTD_t *ptd, float aim) {
     ptd->x2 += ptd->dt * a;
 }
 
-/**
- * @brief MRAC calculate
- * @param mrac struct, ref, all fdb
- * @retval None
- */
+/* 按参考模型误差更新自适应参数和控制输出。 */
 void mrac_2d_calc(mrac_2d *mrac, float ref, float x1_fdb, float x2_fdb, unsigned char enable) {
     mrac->x1_fdb = x1_fdb;
     mrac->x2_fdb = x2_fdb;
@@ -67,16 +53,16 @@ void mrac_2d_calc(mrac_2d *mrac, float ref, float x1_fdb, float x2_fdb, unsigned
         mrac->x2_err = mrac->x2_ref - mrac->x2_fdb;
         MTDFunction(&mrac->x2_td, mrac->x2_ref);
 
-        // 输出计算
-        mrac->output = mrac->config.k2 * mrac->x2_err +                                       // 速度环
-                       mrac->config.alpha1 * mrac->x2_td.x2 +                                 // 转动惯量补偿项
-                       mrac->config.alpha2 * cosx +                                           // 重力补偿项
-                       mrac->config.alpha3 * sinx +                                           // 重力补偿项
-                       mrac->config.alpha4 * sgn_like(mrac->x2_fdb, 0.5) +                    // 摩擦力（阻力）补偿项
-                       mrac->config.integrator_ki * mrac->integrator_sum_err;                 // 未建模阻力积分
-        mrac->output = sat(mrac->output, -mrac->config.output_max, mrac->config.output_max);  // 输出限幅
+        /* 输出计算 */
+        mrac->output = mrac->config.k2 * mrac->x2_err +                                       /* 速度环 */
+                       mrac->config.alpha1 * mrac->x2_td.x2 +                                 /* 转动惯量补偿项 */
+                       mrac->config.alpha2 * cosx +                                           /* 重力补偿项 */
+                       mrac->config.alpha3 * sinx +                                           /* 重力补偿项 */
+                       mrac->config.alpha4 * sgn_like(mrac->x2_fdb, 0.5) +                    /* 摩擦力（阻力）补偿项 */
+                       mrac->config.integrator_ki * mrac->integrator_sum_err;                 /* 未建模阻力积分 */
+        mrac->output = sat(mrac->output, -mrac->config.output_max, mrac->config.output_max);  /* 输出限幅 */
 
-        // 辨识过程 调试中给gamma得到alpha积分，调试完成后使用直接给定alpha
+        /* 辨识过程 调试中给gamma得到alpha积分，调试完成后使用直接给定alpha */
         mrac->config.alpha1 += mrac->dt * mrac->gamma1 * mrac->x2_err * mrac->x2_td.x2;
         mrac->config.alpha2 += mrac->dt * mrac->gamma2 * mrac->x2_err * cosx;
         mrac->config.alpha3 += mrac->dt * mrac->gamma3 * mrac->x2_err * sinx;
@@ -99,25 +85,25 @@ void mrac_2d_calc(mrac_2d *mrac, float ref, float x1_fdb, float x2_fdb, unsigned
 }
 
 void mrac_Init(mrac_2d *mrac, Mrac_config *config) {
-    memset(mrac, 0, sizeof(mrac_2d));  // 清空内容
-    mrac->config = *config;            // config修改
+    memset(mrac, 0, sizeof(mrac_2d));  /* 清空内容 */
+    mrac->config = *config;            /* config修改 */
 
-    // 给定参数 一般无需修改
-    // 正常控制时gamma0
+    /* 给定参数 一般无需修改 */
+    /* 正常控制时gamma0 */
     mrac->gamma1 = 0;
     mrac->gamma2 = 0;
     mrac->gamma3 = 0;
     mrac->gamma4 = 0;
-    // dt
+
     mrac->dt = 0.001f;
-    // 跟踪微分器参数
+    /* 跟踪微分器参数 */
     mrac->x1_td.r = 8000;
     mrac->x1_td.h = 0.001f;
     mrac->x1_td.dt = 0.001f;
     mrac->x2_td.r = 20000;
     mrac->x2_td.h = 0.001f;
     mrac->x2_td.dt = 0.001f;
-    // td初始化
+    /* td初始化 */
     mrac->x1_td.x1 = 0;
     mrac->x1_td.x2 = 0;
     mrac->x1_td.x = 0;
