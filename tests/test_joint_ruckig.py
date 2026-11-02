@@ -18,7 +18,8 @@ class JointRuckigTests(unittest.TestCase):
                 "cc", *FLAGS, "-ffunction-sections", "-fdata-sections", "-UNDEBUG",
                 *["-I" + str(ROOT / p) for p in INCLUDES],
                 *[str(ROOT / p) for p in sources], ruckig_library(),
-                "-Wl,--gc-sections", "-lstdc++", "-lm", "-o", str(executable)
+                "-Wl,--gc-sections,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free",
+                "-lstdc++", "-lm", "-o", str(executable)
             ], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             result = subprocess.run([str(executable)], capture_output=True, text=True)

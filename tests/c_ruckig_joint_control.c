@@ -3,6 +3,40 @@
 #include <stdio.h>
 #include "../App/gimbal_cmd.c"
 
+/* Linker wrappers verify startup failure cleanup and allocation-free updates. */
+void* __real_malloc(size_t size);
+void* __real_calloc(size_t count, size_t size);
+void* __real_realloc(void* memory, size_t size);
+void __real_free(void* memory);
+static int allocation_budget = -1;
+static int live_allocations;
+static int updating;
+void* __wrap_malloc(size_t size) {
+    assert(!updating);
+    if (allocation_budget == 0) return NULL;
+    if (allocation_budget > 0) --allocation_budget;
+    void* memory = __real_malloc(size);
+    if (memory) ++live_allocations;
+    return memory;
+}
+void* __wrap_calloc(size_t count, size_t size) {
+    assert(!updating);
+    if (allocation_budget == 0) return NULL;
+    if (allocation_budget > 0) --allocation_budget;
+    void* memory = __real_calloc(count, size);
+    if (memory) ++live_allocations;
+    return memory;
+}
+void* __wrap_realloc(void* memory, size_t size) {
+    assert(!updating);
+    return __real_realloc(memory, size);
+}
+void __wrap_free(void* memory) {
+    assert(!updating);
+    if (memory) --live_allocations;
+    __real_free(memory);
+}
+
 rc_t rc;
 static uint8_t rc_offline = 1;
 uint8_t is_Offline(monitor_item* item) { (void)item; return rc_offline; }
@@ -56,7 +90,9 @@ static void constrained_step(Fixture* f) {
             ? f->cmd->joint_ruckig_ref[i].state
             : (ruckig_c_state){f->gimbal.arm_feedback_data.joint_angle[i], 0, 0};
     }
+    updating = 1;
     Arm_Ref_Set(f->cmd);
+    updating = 0;
     assert(f->cmd->mode == arm_run);
     for (int i=0; i<ARM_JOINT_NUM; ++i) {
         const ruckig_c_state next = f->cmd->joint_ruckig_ref[i].state;
@@ -204,9 +240,19 @@ static void errors_and_rc(void) {
 }
 
 int main(void) {
+    Fixture failed = {0};
+    failed.arm.gimbal = &failed.gimbal;
+    /* Object, temporary group, then six independent Ruckig instances. */
+    for (int i=0; i<2+ARM_JOINT_NUM; ++i) {
+        allocation_budget = i;
+        assert(!Gimbal_Cmd_Create(&failed.arm));
+        assert(live_allocations == 0);
+    }
+    allocation_budget = -1;
     position_replan_isolation();
     source_transitions();
     errors_and_rc();
+    assert(live_allocations == 0);
     puts("Joint Ruckig: bounds, continuous replanning, sources, faults, RC and isolation passed");
     return 0;
 }

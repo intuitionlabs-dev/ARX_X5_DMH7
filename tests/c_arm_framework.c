@@ -72,6 +72,24 @@ int main(void) {
         .position_min_duration_s=.16f, .stop_on_motor_lost=1, .initialize=Arm_Initialize_Hold,
         .rc_joint={-1,-1,-1}};
     CHECK(Arm_Profile_Validate(&profile));
+    float* motion_limits[] = {&joints[0].max_velocity_deg_s,
+        &joints[0].max_acceleration_deg_s2, &joints[0].max_jerk_deg_s3};
+    const float invalid_limits[] = {0, -1, NAN, INFINITY};
+    for (unsigned i=0; i<3; ++i) {
+        const float saved = *motion_limits[i];
+        for (unsigned k=0; k<4; ++k) {
+            *motion_limits[i] = invalid_limits[k];
+            CHECK(!Arm_Profile_Validate(&profile));
+        }
+        *motion_limits[i] = saved;
+    }
+    profile.position_min_duration_s = 0;
+    CHECK(Arm_Profile_Validate(&profile));
+    profile.position_min_duration_s = -1;
+    CHECK(!Arm_Profile_Validate(&profile));
+    profile.position_min_duration_s = NAN;
+    CHECK(!Arm_Profile_Validate(&profile));
+    profile.position_min_duration_s = .16f;
     Arm_profile invalid = profile;
     invalid.joint_count++;
     CHECK(!Arm_Profile_Validate(&invalid));
