@@ -110,7 +110,7 @@ def main():
     rows = []
     with (output / "raw.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=["algorithm", "arms", "scenario", "round", "cycles",
-                                                    "cpu_ns", "wall_ns", "checksum"])
+                                                    "cpu_ns", "wall_ns", "checksum"], lineterminator="\n")
         writer.writeheader()
         for arms in (1, 2):
             for scenario, label in enumerate(SCENARIOS):
@@ -142,7 +142,7 @@ def main():
             entry["time_ratio"] = entry["ruckig_mean_us"]/entry["quintic_mean_us"]
             summary.append(entry)
     with (output / "summary.csv").open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(summary[0]))
+        writer = csv.DictWriter(stream, fieldnames=list(summary[0]), lineterminator="\n")
         writer.writeheader()
         writer.writerows(summary)
     print("arms scenario quintic_us ruckig_us quintic_cpu% ruckig_cpu% added_pp")
