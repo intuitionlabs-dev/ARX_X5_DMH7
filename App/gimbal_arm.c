@@ -402,13 +402,13 @@ void Gimbal_Update(Gimbal* obj) {
 
     // DEBUG:拷贝控制器数据
     if (obj == g_arm[0].gimbal) {
-        g_fdb_pos = obj->joint3->motor_controller->fdb_position;
-        g_fdb_speed = obj->joint3->motor_controller->fdb_speed;
-        g_ref_pos = obj->joint3->motor_controller->ref_position;
-        g_ref_speed = obj->joint3->motor_controller->ref_speed;
-        g_speed_comp = obj->joint3->motor_controller->speed_comp;
-        g_output = obj->joint3->motor_controller->output;
-        g_ouput_comp = obj->joint3->motor_controller->output_comp;
+        g_fdb_pos = obj->joint1->motor_controller->fdb_position;
+        g_fdb_speed = obj->joint1->motor_controller->fdb_speed;
+        g_ref_pos = obj->joint1->motor_controller->ref_position;
+        g_ref_speed = obj->joint1->motor_controller->ref_speed;
+        g_speed_comp = obj->joint1->motor_controller->speed_comp;
+        g_output = obj->joint1->motor_controller->output;
+        g_ouput_comp = obj->joint1->motor_controller->output_comp;
     }
 
     /* 杂项 */
