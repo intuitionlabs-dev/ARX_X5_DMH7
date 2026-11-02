@@ -243,6 +243,9 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
+        .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
+        .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
+        .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
         .td_r=1000.0f,
         .absolute_encoder=true},
     /* 关节 2 的坐标换算、角度范围和轨迹参数。 */
@@ -254,6 +257,9 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
+        .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
+        .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
+        .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
         .td_r=4000.0f,
         .absolute_encoder=true},
     /* 关节 3 的坐标换算、角度范围和轨迹参数。 */
@@ -265,6 +271,9 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
+        .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
+        .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
+        .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
         .td_r=4000.0f,
         .absolute_encoder=true},
     /* 关节 4 的坐标换算、角度范围和轨迹参数。 */
@@ -276,6 +285,9 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
+        .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
+        .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
+        .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
         .td_r=2000.0f,
         .absolute_encoder=true},
     /* 关节 5 的坐标换算、角度范围和轨迹参数。 */
@@ -287,6 +299,9 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
+        .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
+        .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
+        .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
         .td_r=2000.0f,
         .absolute_encoder=true},
     /* 关节 6 的坐标换算、角度范围和轨迹参数。 */
@@ -298,6 +313,9 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
+        .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
+        .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
+        .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
         .td_r=2000.0f,
         .absolute_encoder=true},
 };
@@ -343,7 +361,7 @@ const Arm_profile ARM_PROFILE_ARX_X5 = {
         .backoff_timeout_ms=ARM_PROFILE_GRIPPER_BACKOFF_TIMEOUT_MS},
     /* 配置动力学模型、基座重力和位置参考时长。 */
     .dynamics=&dynamics, .gravity={0,0,ARM_PROFILE_BASE_GRAVITY_Z_M_S2},
-    .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
+    .position_min_duration_s=ARM_PROFILE_POSITION_MIN_DURATION_S,
     /* 登记初始化取消和推进回调。 */
     .cancel_initialize=Arm_Initialization_Cancel,
     .initialize=Arm_Initialize_Home,

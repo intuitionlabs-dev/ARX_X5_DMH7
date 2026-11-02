@@ -16,7 +16,11 @@
 
 /* 基座重力、位置参考时长和遥控速度。 */
 #define ARM_PROFILE_BASE_GRAVITY_Z_M_S2 (-9.81f)
-#define ARM_PROFILE_QUINTIC_DURATION_S 0.16f
+#define ARM_PROFILE_POSITION_MIN_DURATION_S 0.16f
+/* 普通位置控制的初始运动约束；各关节可在机型表中单独调整。 */
+#define ARM_PROFILE_MAX_VELOCITY_DEG_S 90.0f
+#define ARM_PROFILE_MAX_ACCELERATION_DEG_S2 360.0f
+#define ARM_PROFILE_MAX_JERK_DEG_S3 3600.0f
 #define ARM_PROFILE_RC_SPEED_DEG_S 90.0f
 
 /* 关节复位和电机设零的共用时限。 */

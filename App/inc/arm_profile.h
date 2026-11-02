@@ -10,6 +10,8 @@ typedef struct {
     float minimum_deg, maximum_deg, reset_deg;
     float torque_scale, viscous_damping, velocity_scale, plan_velocity_scale;
     float td_r;
+    /* 普通位置控制上限，单位 deg/s、deg/s²、deg/s³。 */
+    float max_velocity_deg_s, max_acceleration_deg_s2, max_jerk_deg_s3;
     uint8_t absolute_encoder;
 } Arm_joint_config;
 
@@ -44,7 +46,8 @@ typedef struct Arm_profile { // NOLINT(readability-identifier-naming)
     Arm_init_policy init;
     const Arm_dynamics_model* dynamics;
     float gravity[3];
-    float quintic_duration_s;
+    /* 普通位置轨迹最短时长；0 表示仅由运动约束决定。 */
+    float position_min_duration_s;
     uint8_t stop_on_motor_lost;
     /* start=1 启动；返回 0 等待、1 完成、负值失败。 */
     int (*initialize)(struct Gimbal_cmd_t* cmd, uint8_t start);

@@ -38,8 +38,15 @@ EXPORT void init_fixture(void) { // NOLINT(readability-identifier-naming)
         arm->state = robot_state_wait_init;
         if (cmd) {
             Plan_group_temp temp_group = cmd->temp_group;
+            ruckig_c_context* planners[ARM_JOINT_NUM];
+            for (unsigned i=0; i<ARM_JOINT_NUM; ++i) {
+                planners[i] = cmd->joint_ruckig_ref[i].planner;
+                ruckig_c_reset(planners[i]);
+            }
             memset(cmd, 0, sizeof(*cmd));
             cmd->temp_group = temp_group;
+            for (unsigned i=0; i<ARM_JOINT_NUM; ++i)
+                cmd->joint_ruckig_ref[i].planner = planners[i];
             cmd->arm = arm;
             cmd->gimbal = arm->gimbal;
 

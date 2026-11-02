@@ -6,7 +6,7 @@
 #include "adrc.h"
 #include "gimbal_arm.h"
 
-#include "quintic_spline.h"
+#include "ruckig_c.h"
 #include "plan_group.h"
 
 /* 保存输入关节目标和限位后的求解目标。 */
@@ -20,17 +20,13 @@ typedef struct {
     float joint_angle_solved[ARM_JOINT_NUM];
 } Arm_ctrl_data_src;
 
-/* 保存单关节连续位置参考及曲线推进状态。 */
+/* 保存单关节连续位置参考；双精度状态避免每周期舍入触发重规划。 */
 typedef struct {
-    Quintic_spline curve;
-    float target;
-    float elapsed;
-    float position;
-    float velocity;
-    float acc;
+    ruckig_c_context* planner;
+    ruckig_c_state state;
+    int status;
     uint8_t initialized;
-    uint8_t active;
-} Joint_quintic_ref;
+} Joint_ruckig_ref;
 
 /* 保存单臂命令处理、自动规划和初始化上下文。 */
 typedef struct Gimbal_cmd_t {
@@ -57,7 +53,7 @@ typedef struct Gimbal_cmd_t {
     uint8_t plan_running;
 
     Arm* arm;
-    Joint_quintic_ref joint_quintic_ref[ARM_JOINT_NUM];
+    Joint_ruckig_ref joint_ruckig_ref[ARM_JOINT_NUM];
     /* 保存夹爪搜索、停滞检测、回退和稳定计时状态。 */
     struct {
         uint8_t step, home_active;

@@ -21,14 +21,22 @@ const Robot_ctrl_cmd* Robot_State_Ctrl(const Arm* arm) {
 
 __attribute__((visibility("default")))
 void reference_command_init(const float* feedback) { // NOLINT(readability-identifier-naming)
+    for (int i=0; i<ARM_JOINT_NUM; ++i)
+        ruckig_c_destroy(gimbal_cmd.joint_ruckig_ref[i].planner);
     memset(&gimbal, 0, sizeof(gimbal));
     memset(&gimbal_cmd, 0, sizeof(gimbal_cmd));
     memset(&cmd, 0, sizeof(cmd));
     gimbal_cmd.gimbal = &gimbal;
     gimbal.profile = &profile;
     profile.joints = joints;
-    profile.quintic_duration_s = .16f;
-    for (int i=0; i<ARM_JOINT_NUM; ++i) joints[i].plan_velocity_scale = 1;
+    profile.position_min_duration_s = .16f;
+    for (int i=0; i<ARM_JOINT_NUM; ++i) {
+        joints[i].plan_velocity_scale = 1;
+        joints[i].max_velocity_deg_s = 90;
+        joints[i].max_acceleration_deg_s2 = 360;
+        joints[i].max_jerk_deg_s3 = 3600;
+        gimbal_cmd.joint_ruckig_ref[i].planner = ruckig_c_create(ARM_CONTROL_PERIOD_S);
+    }
     const float r[6] = {1000, 4000, 4000, 2000, 2000, 2000};
     for (int i = 0; i < 6; ++i) {
         TD_Config config = {.r = r[i], .h = .002f, .h0 = .004f};

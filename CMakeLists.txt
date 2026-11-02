@@ -9,8 +9,9 @@ set(CMAKE_PROJECT_NAME CtrBoard-H7_ALL)
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 project(${CMAKE_PROJECT_NAME})
 message("Build type: " ${CMAKE_BUILD_TYPE})
-enable_language(C ASM)
+enable_language(C CXX ASM)
 add_executable(${CMAKE_PROJECT_NAME})
+add_subdirectory(libs/ruckig)
 add_subdirectory(cmake/stm32cubemx)
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/arm_board.c
@@ -102,6 +103,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
+    ruckig::c
 )
 
 add_subdirectory(App/profiles)

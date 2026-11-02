@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from ruckig_test_support import ruckig_library
 
 ROOT = Path(__file__).resolve().parents[1]
 INCLUDES = ['App/inc','Bsp/inc','Core/Inc','Drivers/CMSIS/Include',
@@ -40,7 +41,7 @@ class FrameworkTests(unittest.TestCase):
             self.write_axis_header(folder,6)
             executable = folder/'framework'
             result = subprocess.run(['cc',*FLAGS,'-I'+temp,*['-I'+str(ROOT/p) for p in INCLUDES],
-                *[str(ROOT/p) for p in sources],'-lm','-o',str(executable)],capture_output=True,text=True)
+                *[str(ROOT/p) for p in sources],ruckig_library(),'-lstdc++','-lm','-o',str(executable)],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             result = subprocess.run([str(executable)])
             self.assertEqual(result.returncode,0,f'C 检查行号余数 {result.returncode}')

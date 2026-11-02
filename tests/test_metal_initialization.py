@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from ruckig_test_support import ruckig_library
 
 from sdk.board_defs import metal_arm as profile
 
@@ -47,7 +48,7 @@ class MetalInitializationTests(unittest.TestCase):
             '-Werror=incompatible-pointer-types','-Wno-pointer-to-int-cast','-Wno-int-to-pointer-cast',
             '-DSTM32H723xx','-DUSE_HAL_DRIVER','-DUSE_PWR_LDO_SUPPLY',
             *['-I'+str(ROOT/p) for p in includes], *[str(ROOT/p) for p in sources],
-            '-Wl,--gc-sections','-Wl,-z,defs','-lm','-o',library], capture_output=True,text=True)
+            ruckig_library(),'-lstdc++','-Wl,--gc-sections','-Wl,-z,defs','-lm','-o',library], capture_output=True,text=True)
         if result.returncode:
             raise RuntimeError(result.stdout+result.stderr)
         cls.lib = C.CDLL(library)

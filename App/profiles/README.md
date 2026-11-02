@@ -53,6 +53,9 @@ cmake --build --preset Debug
 
 `Robot_State_Loop()` 处理协议和状态迁移。
 `Gimbal_Cmd_Update()` 处理输入、轨迹和软限位。
+普通关节位置命令及遥控位置目标由 [Ruckig C 接口](../../libs/ruckig/README.md)
+逐轴规划，输出位置、速度和加速度。新目标从上一周期的参考状态连续重规划。
+带速度的 `0x17` 命令保持 TD 位置跟踪及外部速度前馈。
 自动动作通过 MovePlan 临时规划组生成关节位置、速度和加速度。
 `Arm_Reset()` 使用 `switch/case` 推进复位步骤。
 复位目标和持续时间由机型配置提供。
@@ -119,7 +122,24 @@ ARX-X5 的其余关节和夹爪使用 DM MIT。
 | `velocity_scale` | 比例系数 | 电机速度前馈系数 |
 | `plan_velocity_scale` | 比例系数 | 自动轨迹速度前馈系数 |
 | `td_r` | 跟踪微分器参数 | 目标跟踪参数 |
+| `max_velocity_deg_s` | deg/s，正数 | 普通位置轨迹速度上限 |
+| `max_acceleration_deg_s2` | deg/s²，正数 | 普通位置轨迹加速度上限 |
+| `max_jerk_deg_s3` | deg/s³，正数 | 普通位置轨迹加加速度上限 |
 | `absolute_encoder` | 0 / 1 | 在线时能否直接建立位置有效状态 |
+
+`Arm_profile.position_min_duration_s` 指定普通位置轨迹最短时长，0 表示不限。
+默认值为 0.16 s，实际时长可以更长；该参数不控制复位时长。
+两个内置机型的初始运动上限为 90 deg/s、360 deg/s²、3600 deg/s³，
+可在机型表中分别调整每个关节，使用前应按实际负载调试。
+自定义配置必须提供三个有限正数上限，否则 `Arm_Profile_Validate()` 拒绝创建。
+
+切换到普通位置控制时，自动规划／外部速度路径提供上一周期已发布的状态；
+停止、阻尼和重力模式以反馈位置及零导数重置参考。
+Ruckig 求解失败时本周期整臂转为阻尼并清零运动导数，错误码保存在
+`Gimbal_cmd.joint_ruckig_ref[i].status`，后续有效输入可重新规划。
+各轴在命令对象创建时分配实例，周期内不分配内存。
+目标仍先经过原有软限位；Ruckig 的速度、加速度、加加速度约束不等同于轨迹位置约束，
+反向或制动时可能越过目标点。
 
 位置换算为：
 
@@ -236,11 +256,13 @@ SDK 使用现有协议。
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_arm_framework.py' -v
+python3 -m unittest discover -s tests -p 'test_joint_ruckig.py' -v
 python3 -m unittest discover -s tests -p 'test_metal_motors.py' -v
 python3 -m unittest discover -s tests -p 'test_metal_initialization.py' -v
 ```
 
 主机测试覆盖六轴控制流程。
+涉及命令层的主机测试需要 C、C++17 编译器和 CMake，并自动构建 Ruckig C 库。
 编译测试确认其他轴数触发编译错误。
 测试检查协议缓冲区、双臂隔离和初始化策略。
 动力学测试对照两种机型的现有 C 实现。
