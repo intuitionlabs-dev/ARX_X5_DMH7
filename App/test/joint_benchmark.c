@@ -58,6 +58,7 @@ int JointBenchmark_Init(unsigned arms, unsigned algorithm) {
     for (unsigned a=0; a<arms; ++a) {
         Fixture* f = &fixtures[a];
         f->arm.gimbal = &f->gimbal;
+        f->arm.ctrl.valid = 1; /* Ordinary position command, has_vel remains 0. */
         f->gimbal.profile = &f->profile;
         f->profile.joints = f->joints;
         f->profile.position_min_duration_s = ARM_PROFILE_POSITION_MIN_DURATION_S;

@@ -133,4 +133,3 @@ static void Quintic_Reference(Gimbal_cmd* obj, Joint_quintic_ref* refs) {
         }
     }
 }
-
