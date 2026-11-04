@@ -15,6 +15,20 @@ python3 scripts/benchmark_joint_interpolation.py \
 默认对照提交为 `3317d9b9dbe7afa5f0b0b182fe44cf94a8752ec7`，Ruckig 版本为 `HEAD`。
 未提交的生产代码不参与测试；`--baseline`、`--current` 可指定其他兼容提交。
 
+额外比较单精度和原双精度内核：
+
+```bash
+python3 scripts/benchmark_joint_interpolation.py \
+  --double-ref 730d165 --current f0689c9 \
+  --cycles 200000 --rounds 7 --warmup 5000 --cpu 0 \
+  --output-dir build/interpolation-float-benchmark
+```
+
+这会在同一次测试中轮换运行五次插值、双精度和单精度 Ruckig；原双精度提交
+`730d165` 与单精度提交 `f0689c9` 均被重新编译。元数据额外记录标量字节数及
+每轴上下文大小。目标生成和校验和仍使用相同的原始基准实现（计时范围之外），
+以保证三组输入完全一致；Ruckig 单精度求解路径不含双精度运算。
+
 ## 测量范围与计算
 
 - 两边均使用 `-Os`，关闭 LTO，不使用 fast-math；优化等级与固件 Release 一致。

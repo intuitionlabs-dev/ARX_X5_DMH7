@@ -93,6 +93,15 @@ static float target_at(unsigned scenario, unsigned tick, unsigned arm, unsigned 
 }
 
 int main(int argc, char** argv) {
+    if (argc == 2 && strcmp(argv[1], "--info") == 0) {
+#if BENCH_RUCKIG
+        printf("{\"context_bytes\":%zu,\"scalar_bytes\":%zu}\n",
+               ruckig_c_context_size(), sizeof(((ruckig_c_state*)0)->position));
+#else
+        puts("{}");
+#endif
+        return 0;
+    }
     if (argc != 5) {
         fputs("usage: joint-benchmark ARMS SCENARIO CYCLES WARMUP\n", stderr); return 2;
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare committed quintic/Ruckig firmware reference code on a Linux host."""
+"""Compare committed quintic/Ruckig firmware code, optionally FP64 vs FP32."""
 import argparse
 import csv
 from datetime import datetime, timezone
@@ -70,6 +70,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", default=BASELINE)
     parser.add_argument("--current", default="HEAD")
+    parser.add_argument("--double-ref", help="also measure an earlier double Ruckig commit")
     parser.add_argument("--cycles", type=int, default=200000)
     parser.add_argument("--rounds", type=int, default=7)
     parser.add_argument("--warmup", type=int, default=5000)
@@ -86,19 +87,27 @@ def main():
         parser.error("cycles 1..5000000, rounds 1..100, warmup 500..1000000 required")
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    commits, executables = {}, {}
-    for name, ref in (("quintic", args.baseline), ("ruckig", args.current)):
+    commits, executables, layouts = {}, {}, {}
+    current_name = "ruckig_float" if args.double_ref else "ruckig"
+    variants = [("quintic", args.baseline)]
+    if args.double_ref:
+        variants.append(("ruckig_double", args.double_ref))
+    variants.append((current_name, args.current))
+    names = [name for name, _ in variants]
+    for name, ref in variants:
         print(f"Building {name} from {ref}", flush=True)
         source = output / name / "source"
         if source.exists():
             parser.error(f"output already contains {source}; choose a new --output-dir")
         commits[name] = snapshot(ref, source)
-        executables[name] = build(source, output / name / "build", name == "ruckig", args.cmake, args.cc)
+        executables[name] = build(source, output / name / "build", name != "quintic", args.cmake, args.cc)
+        layouts[name] = json.loads(run([str(executables[name]), "--info"]))
     metadata = {
         "utc": datetime.now(timezone.utc).isoformat(), "platform": platform.platform(),
         "cpuinfo": Path("/proc/cpuinfo").read_text().split("\n\n", 1)[0],
         "compiler": run([args.cc, "--version"]).splitlines()[0],
-        "optimization": "-Os, no LTO, no fast-math", "commits": commits,
+        "optimization": "-Os, no LTO, no fast-math", "commits": commits, "layouts": layouts,
+        "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "benchmark_sha256": hashlib.sha256((ROOT / "tests/benchmarks/joint_interpolation.c").read_bytes()).hexdigest(),
         "pinned_cpu": args.cpu, "cycles_per_run": args.cycles, "warmup": args.warmup,
         "rounds": args.rounds, "control_period_us": 2000,
@@ -116,8 +125,9 @@ def main():
             for scenario, label in enumerate(SCENARIOS):
                 print(f"Measuring {arms} arm(s), {label}", flush=True)
                 for repeat in range(args.rounds):
-                    # Alternate order to limit temperature/load bias.
-                    order = ("quintic", "ruckig") if repeat % 2 == 0 else ("ruckig", "quintic")
+                    # Rotate order to limit temperature/load bias.
+                    offset = repeat % len(names)
+                    order = names[offset:] + names[:offset]
                     for name in order:
                         fields = run([str(executables[name]), str(arms), str(scenario),
                                       str(args.cycles), str(args.warmup)]).split(",")
@@ -131,25 +141,27 @@ def main():
     for arms in (1, 2):
         for label in SCENARIOS:
             entry = dict(arms=arms, scenario=label)
-            for name in ("quintic", "ruckig"):
+            for name in names:
                 samples = [r["cpu_ns"]/r["cycles"]/1000 for r in rows
                            if r["arms"] == arms and r["scenario"] == label and r["algorithm"] == name]
                 for suffix, value in (("mean_us", statistics.mean(samples)), ("min_us", min(samples)),
                                       ("max_us", max(samples)), ("stdev_us", statistics.pstdev(samples))):
                     entry[f"{name}_{suffix}"] = value
                 entry[f"{name}_cpu_percent"] = statistics.mean(samples)/2000*100
-            entry["added_cpu_percentage_points"] = entry["ruckig_cpu_percent"] - entry["quintic_cpu_percent"]
-            entry["time_ratio"] = entry["ruckig_mean_us"]/entry["quintic_mean_us"]
+            entry["added_cpu_percentage_points"] = entry[f"{current_name}_cpu_percent"] - entry["quintic_cpu_percent"]
+            entry["time_ratio"] = entry[f"{current_name}_mean_us"]/entry["quintic_mean_us"]
+            if args.double_ref:
+                entry["float_speedup_over_double"] = entry["ruckig_double_mean_us"]/entry["ruckig_float_mean_us"]
+                entry["float_cpu_change_percentage_points"] = entry["ruckig_float_cpu_percent"]-entry["ruckig_double_cpu_percent"]
             summary.append(entry)
     with (output / "summary.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(summary[0]), lineterminator="\n")
         writer.writeheader()
         writer.writerows(summary)
-    print("arms scenario quintic_us ruckig_us quintic_cpu% ruckig_cpu% added_pp")
+    print("arms scenario " + " ".join(f"{name}_us {name}_cpu%" for name in names))
     for row in summary:
-        print(f"{row['arms']} {row['scenario']:14s} {row['quintic_mean_us']:.3f} "
-              f"{row['ruckig_mean_us']:.3f} {row['quintic_cpu_percent']:.4f} "
-              f"{row['ruckig_cpu_percent']:.4f} {row['added_cpu_percentage_points']:.4f}")
+        values = " ".join(f"{row[name+'_mean_us']:.3f} {row[name+'_cpu_percent']:.4f}" for name in names)
+        print(f"{row['arms']} {row['scenario']:14s} {values}")
     print(f"Results: {output}")
 
 
