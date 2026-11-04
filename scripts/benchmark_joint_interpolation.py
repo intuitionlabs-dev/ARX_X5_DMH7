@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import statistics
 import subprocess
@@ -56,10 +57,15 @@ def build(source, output, ruckig, cmake, cc):
     sources += [source / p for p in ("libs/common/common.c", "libs/controller/adrc.c",
                                    "libs/move_plan/curves/quintic_spline.c")]
     executable = output / "joint-benchmark"
+    post_process_references = bool(re.search(
+        r"static\s+(?:void|int)\s+Ctrl_Post_Process\s*\(",
+        (source / "App/gimbal_cmd.c").read_text()))
     command = [cc, "-std=gnu11", "-Os", "-DNDEBUG", "-fno-lto", "-ffunction-sections",
                "-fdata-sections", "-Wno-pointer-to-int-cast", "-Wno-int-to-pointer-cast",
                "-DSTM32H723xx", "-DUSE_HAL_DRIVER", "-DUSE_PWR_LDO_SUPPLY",
-               f"-DBENCH_RUCKIG={int(ruckig)}", *["-I" + str(source / p) for p in includes],
+               f"-DBENCH_RUCKIG={int(ruckig)}",
+               f"-DBENCH_POST_PROCESS_REFERENCES={int(post_process_references)}",
+               *["-I" + str(source / p) for p in includes],
                *map(str, sources), *library, "-Wl,--gc-sections", "-lm", "-o", str(executable)]
     run(command)
     (output / "build-command.txt").write_text(json.dumps(command, indent=2) + "\n")
@@ -111,7 +117,7 @@ def main():
         "benchmark_sha256": hashlib.sha256((ROOT / "tests/benchmarks/joint_interpolation.c").read_bytes()).hexdigest(),
         "pinned_cpu": args.cpu, "cycles_per_run": args.cycles, "warmup": args.warmup,
         "rounds": args.rounds, "control_period_us": 2000,
-        "scope": "Host Arm_Ref_Set plus target copy; excludes dynamics, CAN, RTOS and hardware. Not H7 CPU usage.",
+        "scope": "Host command-layer reference generation plus target copy; excludes dynamics, CAN, RTOS and hardware. Not H7 CPU usage.",
     }
     (output / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n")
     # Pin only after compilation, so builds can use the available cores.

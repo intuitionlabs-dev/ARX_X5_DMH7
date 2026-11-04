@@ -1,11 +1,14 @@
-/* Compile unchanged against either the rebuild or Ruckig command-layer source.
- * This program never opens hardware and measures reference generation only. */
+/* 主机基准调用固件命令层的参考生成路径。 */
 #define _POSIX_C_SOURCE 200809L
 #include <inttypes.h>
 #include <stdio.h>
 #include <time.h>
 #include "gimbal_cmd.c"
 #include "profile_constants.h"
+
+#ifndef BENCH_POST_PROCESS_REFERENCES
+#define BENCH_POST_PROCESS_REFERENCES BENCH_RUCKIG
+#endif
 
 rc_t rc;
 uint8_t is_Offline(monitor_item* item) { (void)item; return 1; }
@@ -34,14 +37,12 @@ static void init(Fixture* f) {
     f->profile.joints = f->joints;
 #if BENCH_RUCKIG
 #ifdef ARM_PROFILE_POSITION_MIN_DURATION_S
-    /* Preserve the configuration when benchmarking historical Ruckig commits. */
     f->profile.position_min_duration_s = ARM_PROFILE_POSITION_MIN_DURATION_S;
 #endif
 #else
     f->profile.quintic_duration_s = ARM_PROFILE_QUINTIC_DURATION_S;
 #endif
     for (int i=0; i<ARM_JOINT_NUM; ++i) {
-        f->joints[i].td_r = 1000;
         f->joints[i].plan_velocity_scale = 1;
 #if BENCH_RUCKIG
         f->joints[i].max_velocity_deg_s = ARM_PROFILE_MAX_VELOCITY_DEG_S;
@@ -66,6 +67,13 @@ static void verify(const Fixture* f) {
             fputs("Nonfinite reference; timing is invalid\n", stderr); exit(3);
         }
     }
+}
+
+static void reference_step(Gimbal_cmd* cmd) {
+#if BENCH_POST_PROCESS_REFERENCES
+    Ctrl_Post_Process(cmd);
+#endif
+    Arm_Ref_Set(cmd);
 }
 
 static void destroy(Fixture* f) {
@@ -127,7 +135,7 @@ int main(int argc, char** argv) {
         for (unsigned a=0; a<arms; ++a) {
             memcpy(fixtures[a].cmd->ctrl_src.joint_angle_solved, targets[k][a],
                    sizeof(targets[k][a]));
-            Arm_Ref_Set(fixtures[a].cmd);
+            reference_step(fixtures[a].cmd);
         }
     for (unsigned a=0; a<arms; ++a) verify(&fixtures[a]);
     const uint64_t wall_start = now_ns(CLOCK_MONOTONIC_RAW);
@@ -136,7 +144,7 @@ int main(int argc, char** argv) {
         for (unsigned a=0; a<arms; ++a) {
             memcpy(fixtures[a].cmd->ctrl_src.joint_angle_solved, targets[k][a],
                    sizeof(targets[k][a]));
-            Arm_Ref_Set(fixtures[a].cmd);
+            reference_step(fixtures[a].cmd);
         }
     const uint64_t cpu_ns = now_ns(CLOCK_THREAD_CPUTIME_ID) - cpu_start;
     const uint64_t wall_ns = now_ns(CLOCK_MONOTONIC_RAW) - wall_start;

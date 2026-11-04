@@ -287,7 +287,13 @@ typedef struct {
 } FramePktArmCtrlPosVel;                           /* 共 52 字节     */
 ```
 
-`joint_vel[]` 为上位机给定的关节速度，进入 `Arm_control_data.joint_vel`，经方向、减速比和 `JOINT_SPEEDCOMP_COEF` 转换为电机速度前馈。同时，该参考速度用于 Metal 科氏和摩擦补偿；此命令的参考加速度为零。
+`joint_angle[]` 通过 Ruckig 生成位置参考。
+Ruckig 的运动上限取自机型配置。
+`joint_vel[]` 为上位机给定的关节速度。
+该速度进入 `Arm_control_data.joint_vel`。
+固件按方向、减速比和 `JOINT_SPEEDCOMP_COEF` 换算电机速度前馈。
+Metal 科氏和摩擦补偿使用该参考速度。
+此命令的参考加速度为零。
 
 `0x16` 纯位置命令使用 Ruckig 逐轴生成位置、速度、加速度，按机型配置约束速度、加速度和加加速度；选择满足起终状态和运动约束的最快可行轨迹，没有额外的最短时长限制。规划速度和加速度同时用于动力学前馈。两种命令的动力学位置输入均为关节反馈角。
 

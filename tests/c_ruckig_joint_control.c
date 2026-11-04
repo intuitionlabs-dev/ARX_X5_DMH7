@@ -12,6 +12,16 @@ void __real_free(void* memory);
 static int allocation_budget = -1;
 static int live_allocations;
 static int updating;
+static unsigned update_calls, new_calculations;
+int __real_ruckig_c_update(ruckig_c_context* context, const ruckig_c_input* input,
+                          ruckig_c_output* output);
+int __wrap_ruckig_c_update(ruckig_c_context* context, const ruckig_c_input* input,
+                          ruckig_c_output* output) {
+    ++update_calls;
+    const int status = __real_ruckig_c_update(context, input, output);
+    if (status >= 0 && output->new_calculation) ++new_calculations;
+    return status;
+}
 void* __wrap_malloc(size_t size) {
     assert(!updating);
     if (allocation_budget == 0) return NULL;
@@ -63,7 +73,7 @@ static void init(Fixture* f) {
     f->profile.rc_joint[1] = f->profile.rc_joint[2] = -1;
     f->profile.rc_speed_deg_s = 90;
     for (int i=0; i<ARM_JOINT_NUM; ++i) {
-        f->joints[i] = (Arm_joint_config){.td_r=1000, .plan_velocity_scale=1,
+        f->joints[i] = (Arm_joint_config){.plan_velocity_scale=1,
             .minimum_deg=-90, .maximum_deg=90, .max_velocity_deg_s=90,
             .max_acceleration_deg_s2=360, .max_jerk_deg_s3=3600};
         f->gimbal.arm_feedback_data.motor_inited[i] = 1;
@@ -83,6 +93,13 @@ static void destroy(Fixture* f) {
     free(f->cmd);
 }
 
+static void reference_step(Fixture* f) {
+    updating = 1;
+    Ctrl_Post_Process(f->cmd);
+    Arm_Ref_Set(f->cmd);
+    updating = 0;
+}
+
 static void constrained_step(Fixture* f) {
     ruckig_c_state previous[ARM_JOINT_NUM];
     for (int i=0; i<ARM_JOINT_NUM; ++i) {
@@ -90,9 +107,7 @@ static void constrained_step(Fixture* f) {
             ? f->cmd->joint_ruckig_ref[i].state
             : (ruckig_c_state){f->gimbal.arm_feedback_data.joint_angle[i], 0, 0};
     }
-    updating = 1;
-    Arm_Ref_Set(f->cmd);
-    updating = 0;
+    reference_step(f);
     assert(f->cmd->mode == arm_run);
     for (int i=0; i<ARM_JOINT_NUM; ++i) {
         const ruckig_c_state next = f->cmd->joint_ruckig_ref[i].state;
@@ -156,7 +171,7 @@ static void short_position_move(void) {
         constrained_step(&f);
         ++steps;
     } while (steps < 80 && f.cmd->joint_ruckig_ref[0].status != RUCKIG_C_FINISHED);
-    /* A small position move must finish before the old 160 ms lower bound. */
+    /* 小角度运动在 80 个控制周期内完成。 */
     assert(steps < 80);
     assert(f.cmd->joint_ruckig_ref[0].status == RUCKIG_C_FINISHED);
     assert(f.gimbal.arm_control_data.joint_angle[0] == .01f);
@@ -167,42 +182,70 @@ static void short_position_move(void) {
 
 static void source_transitions(void) {
     Fixture f; init(&f);
-    /* External velocity still uses TD position and protocol velocity. */
+    /* 外部速度通道使用连续位置参考及协议速度前馈。 */
     f.arm.ctrl.valid = f.arm.ctrl.has_vel = 1;
     for (int i=0; i<ARM_JOINT_NUM; ++i) {
         f.arm.ctrl.joint_vel[i] = 15;
-        f.cmd->joint_angle_td[i].v1 = 20;
-    }
-    Arm_Ref_Set(f.cmd);
-    for (int i=0; i<ARM_JOINT_NUM; ++i) {
-        assert(f.gimbal.arm_control_data.joint_angle[i] == 20);
-        assert(f.gimbal.arm_control_data.joint_vel[i] == 15);
-        assert(f.gimbal.arm_control_data.joint_acc[i] == 0);
+        f.cmd->joint_ruckig_ref[i].state = (ruckig_c_state){20, 0, 0};
+        f.cmd->joint_ruckig_ref[i].initialized = 1;
         f.cmd->ctrl_src.joint_angle_solved[i] = 40;
     }
-    f.arm.ctrl.has_vel = 0;
-    constrained_step(&f);
-    assert(f.gimbal.arm_control_data.joint_angle[0] > 20);
-    /* Automatic motion keeps its own derivatives and velocity scale. */
-    f.cmd->plan_running = 1;
+    const unsigned calculations_before = new_calculations;
+    for (int k=0; k<100; ++k) reference_step(&f);
+    assert(new_calculations == calculations_before+ARM_JOINT_NUM);
     for (int i=0; i<ARM_JOINT_NUM; ++i) {
-        f.cmd->ctrl_src.joint_angle_solved[i] = 10;
-        f.cmd->plan_joint_vel[i] = 5;
-        f.cmd->plan_joint_acc[i] = -30;
-        f.joints[i].plan_velocity_scale = 2;
+        assert(f.gimbal.arm_control_data.joint_angle[i] > 20);
+        assert(f.gimbal.arm_control_data.joint_angle[i] < 40);
+        assert(f.gimbal.arm_control_data.joint_vel[i] == 15);
+        assert(f.gimbal.arm_control_data.joint_acc[i] == 0);
     }
-    Arm_Ref_Set(f.cmd);
-    assert(f.gimbal.arm_control_data.joint_angle[0] == 10);
-    assert(f.gimbal.arm_control_data.joint_vel[0] == 10);
-    assert(f.gimbal.arm_control_data.joint_acc[0] == -30);
+    /* 外部速度变化保持位置轨迹缓存有效。 */
+    const unsigned calculations_after = new_calculations;
+    for (int i=0; i<ARM_JOINT_NUM; ++i) f.arm.ctrl.joint_vel[i] = 20;
+    reference_step(&f);
+    assert(new_calculations == calculations_after);
+    assert(f.gimbal.arm_control_data.joint_vel[0] == 20);
+    const float previous_position = f.gimbal.arm_control_data.joint_angle[0];
+    f.arm.ctrl.has_vel = 0;
+    reference_step(&f);
+    assert(f.gimbal.arm_control_data.joint_angle[0] > previous_position);
+    assert(fabsf(f.gimbal.arm_control_data.joint_vel[0]-20) <= 360*ARM_CONTROL_PERIOD_S);
+    assert(fabsf(f.gimbal.arm_control_data.joint_acc[0]) <= 3600*ARM_CONTROL_PERIOD_S+1e-4f);
+    /* 规划参考逐周期同步到 Ruckig，速度使用机型比例系数。 */
+    f.cmd->plan_running = 1;
+    f.arm.ctrl.has_vel = 1;
+    const unsigned calls_before_plan = update_calls;
+    for (int k=0; k<5; ++k) {
+        for (int i=0; i<ARM_JOINT_NUM; ++i) {
+            f.cmd->ctrl_src.joint_angle_solved[i] = 10 + k*.02f + i;
+            f.cmd->plan_joint_vel[i] = 5 + k;
+            f.cmd->plan_joint_acc[i] = -30 + k;
+            f.joints[i].plan_velocity_scale = 2;
+        }
+        reference_step(&f);
+        assert(f.cmd->mode == arm_run && !f.cmd->external_velocity_active);
+        assert(update_calls == calls_before_plan);
+        for (int i=0; i<ARM_JOINT_NUM; ++i) {
+            const ruckig_c_state state = f.cmd->joint_ruckig_ref[i].state;
+            assert(f.cmd->post_processed_joint_angle[i] == f.cmd->ctrl_src.joint_angle_solved[i]);
+            assert(f.cmd->post_processed_joint_vel[i] == f.cmd->plan_joint_vel[i]*2);
+            assert(f.cmd->post_processed_joint_acc[i] == f.cmd->plan_joint_acc[i]);
+            assert(state.position == f.gimbal.arm_control_data.joint_angle[i]);
+            assert(state.velocity == f.gimbal.arm_control_data.joint_vel[i]);
+            assert(state.acceleration == f.gimbal.arm_control_data.joint_acc[i]);
+        }
+    }
+    f.arm.ctrl.has_vel = 0;
     f.cmd->plan_running = 0;
+    const unsigned calculations_before_resume = new_calculations;
     constrained_step(&f);
+    assert(update_calls == calls_before_plan+ARM_JOINT_NUM);
+    assert(new_calculations == calculations_before_resume+ARM_JOINT_NUM);
     /* STOP, DAMPING and gravity mode reset the position planner to feedback. */
     const Arm_mode modes[] = {arm_stop, arm_damping, arm_only_gravity_comp};
     for (unsigned m=0; m<3; ++m) {
         f.cmd->mode = modes[m];
-        joint_angle_td_follow(f.cmd, f.gimbal.arm_feedback_data.joint_angle);
-        Arm_Ref_Set(f.cmd);
+        reference_step(&f);
         for (int i=0; i<ARM_JOINT_NUM; ++i) {
             assert(f.cmd->joint_ruckig_ref[i].state.position == i);
             assert(f.cmd->joint_ruckig_ref[i].state.velocity == 0);
@@ -215,13 +258,61 @@ static void source_transitions(void) {
     destroy(&f);
 }
 
+static void post_process_and_publication(void) {
+    Fixture f; init(&f);
+    f.cmd->ctrl_src.joint_angle_solved[0] = 30;
+    const unsigned before = update_calls;
+    updating = 1;
+    Ctrl_Post_Process(f.cmd);
+    assert(f.cmd->mode == arm_run);
+    assert(update_calls == before+ARM_JOINT_NUM);
+    assert(f.gimbal.arm_control_data.joint_angle[0] == 0);
+    assert(f.cmd->post_processed_joint_angle[0] > 0);
+    ruckig_c_state states[ARM_JOINT_NUM];
+    for (int i=0; i<ARM_JOINT_NUM; ++i) states[i] = f.cmd->joint_ruckig_ref[i].state;
+    Arm_Ref_Set(f.cmd);
+    Arm_Ref_Set(f.cmd);
+    assert(update_calls == before+ARM_JOINT_NUM);
+    for (int i=0; i<ARM_JOINT_NUM; ++i) {
+        assert(memcmp(&states[i], &f.cmd->joint_ruckig_ref[i].state, sizeof(states[i])) == 0);
+        assert(f.gimbal.arm_control_data.joint_angle[i] == states[i].position);
+        assert(f.gimbal.arm_control_data.joint_vel[i] == states[i].velocity);
+        assert(f.gimbal.arm_control_data.joint_acc[i] == states[i].acceleration);
+        assert(f.gimbal.arm_control_data.joint_angle[i] == f.cmd->post_processed_joint_angle[i]);
+        assert(f.gimbal.arm_control_data.joint_vel[i] == f.cmd->post_processed_joint_vel[i]);
+        assert(f.gimbal.arm_control_data.joint_acc[i] == f.cmd->post_processed_joint_acc[i]);
+    }
+    updating = 0;
+    destroy(&f);
+}
+
+static void invalid_source_references(void) {
+    Fixture f; init(&f);
+    f.arm.ctrl.valid = f.arm.ctrl.has_vel = 1;
+    f.arm.ctrl.joint_vel[ARM_JOINT_NUM-1] = NAN;
+    reference_step(&f);
+    assert(f.cmd->mode == arm_damping);
+    assert(!f.cmd->external_velocity_active);
+    f.cmd->mode = arm_run;
+    f.cmd->plan_running = 1;
+    f.cmd->plan_joint_acc[ARM_JOINT_NUM-1] = INFINITY;
+    reference_step(&f);
+    assert(f.cmd->mode == arm_damping);
+    for (int i=0; i<ARM_JOINT_NUM; ++i) {
+        assert(f.gimbal.arm_control_data.joint_angle[i] == i);
+        assert(f.gimbal.arm_control_data.joint_vel[i] == 0);
+        assert(f.gimbal.arm_control_data.joint_acc[i] == 0);
+    }
+    destroy(&f);
+}
+
 static void errors_and_rc(void) {
     Fixture f; init(&f);
     f.cmd->ctrl_src.joint_angle_solved[0] = 50;
     for (int k=0; k<50; ++k) constrained_step(&f);
     /* Failure on the last axis must also clear already-computed earlier axes. */
     f.joints[ARM_JOINT_NUM-1].max_jerk_deg_s3 = 0;
-    Arm_Ref_Set(f.cmd);
+    reference_step(&f);
     assert(f.cmd->mode == arm_damping && f.gimbal.arm_control_data.mode == arm_damping);
     assert(f.cmd->joint_ruckig_ref[ARM_JOINT_NUM-1].status < 0);
     for (int i=0; i<ARM_JOINT_NUM; ++i) {
@@ -234,7 +325,7 @@ static void errors_and_rc(void) {
     f.cmd->mode = arm_run;
     constrained_step(&f);
     f.cmd->ctrl_src.joint_angle_solved[2] = NAN;
-    Arm_Ref_Set(f.cmd);
+    reference_step(&f);
     assert(f.cmd->mode == arm_damping);
     f.cmd->ctrl_src.joint_angle_solved[2] = 2;
     f.cmd->mode = arm_run;
@@ -274,6 +365,8 @@ int main(void) {
     position_replan_isolation();
     short_position_move();
     source_transitions();
+    post_process_and_publication();
+    invalid_source_references();
     errors_and_rc();
     assert(live_allocations == 0);
     puts("Joint Ruckig: bounds, continuous replanning, sources, faults, RC and isolation passed");

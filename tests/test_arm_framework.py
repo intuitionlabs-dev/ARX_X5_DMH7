@@ -32,7 +32,7 @@ class FrameworkTests(unittest.TestCase):
         sources = ['tests/c_arm_framework.c','App/gimbal_arm.c','App/gimbal_cmd.c',
                    'App/arm_profile.c','App/arm_protocol.c','App/arm_zero.c','App/arm_auto.c',
                    'App/arm_initialization.c','libs/gravity_compensation/c/arm_dynamics.c',
-                   'libs/controller/adrc.c','libs/common/common.c','libs/monitor/monitor.c',
+                   'libs/common/common.c','libs/monitor/monitor.c',
                    'libs/cvector/cvector.c','libs/move_plan/curves/quintic_spline.c',
                    'libs/move_plan/curves/linear_spline.c','libs/move_plan/curves/cubic_spline.c',
                    'libs/move_plan/move_plan/move_plan.c','libs/move_plan/move_plan/plan_group.c']

@@ -50,11 +50,6 @@ EXPORT void init_fixture(void) { // NOLINT(readability-identifier-naming)
             cmd->arm = arm;
             cmd->gimbal = arm->gimbal;
 
-            const float r[] = {1000,4000,4000,2000,2000,2000};
-            for (unsigned i=0; i<6; ++i) {
-                TD_Config cfg = {.r=r[i], .h=.002f, .h0=.004f};
-                TD_Init(&cmd->joint_angle_td[i], &cfg);
-            }
         } else cmd = Gimbal_Cmd_Create(arm);
         arm->gimbal_cmd = cmd;
         memset(arm->gimbal->arm_feedback_data.motor_inited, 1, ARM_JOINT_NUM);

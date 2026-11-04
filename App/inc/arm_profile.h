@@ -9,7 +9,6 @@ typedef struct {
     float direction, reduction, position_zero_deg;
     float minimum_deg, maximum_deg, reset_deg;
     float torque_scale, viscous_damping, velocity_scale, plan_velocity_scale;
-    float td_r;
     /* 普通位置控制上限，单位 deg/s、deg/s²、deg/s³。 */
     float max_velocity_deg_s, max_acceleration_deg_s2, max_jerk_deg_s3;
     uint8_t absolute_encoder;

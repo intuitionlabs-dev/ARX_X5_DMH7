@@ -36,10 +36,7 @@ void reference_command_init(const float* feedback) { // NOLINT(readability-ident
         joints[i].max_jerk_deg_s3 = 3600;
         gimbal_cmd.joint_ruckig_ref[i].planner = ruckig_c_create(ARM_CONTROL_PERIOD_S);
     }
-    const float r[6] = {1000, 4000, 4000, 2000, 2000, 2000};
     for (int i = 0; i < 6; ++i) {
-        TD_Config config = {.r = r[i], .h = .002f, .h0 = .004f};
-        TD_Init(&gimbal_cmd.joint_angle_td[i], &config);
         gimbal.arm_feedback_data.joint_angle[i] = feedback[i];
     }
 }
@@ -56,7 +53,6 @@ void reference_command_step(int mode, int planning, int external_velocity, // NO
         gimbal_cmd.plan_joint_acc[i] = acc[i];
         cmd.joint_vel[i] = velocity[i];
     }
-    if (mode != arm_run) joint_angle_td_follow(&gimbal_cmd, gimbal.arm_feedback_data.joint_angle);
     Ctrl_Post_Process(&gimbal_cmd);
     Arm_Ref_Set(&gimbal_cmd);
     for (int i = 0; i < 6; ++i) {

@@ -60,7 +60,7 @@ int main(void) {
     for (int i = 0; i < ARM_JOINT_NUM; ++i)
         joints[i] = (Arm_joint_config){.direction=-1, .reduction=2, .position_zero_deg=3,
             .minimum_deg=-90, .maximum_deg=90, .reset_deg=5+i, .torque_scale=2,
-            .velocity_scale=1, .plan_velocity_scale=1, .td_r=1000, .absolute_encoder=1,
+            .velocity_scale=1, .plan_velocity_scale=1, .absolute_encoder=1,
             .max_velocity_deg_s=90, .max_acceleration_deg_s2=360, .max_jerk_deg_s3=3600};
     Arm_profile profile = {.name="test", .joint_count=ARM_JOINT_NUM, .motor_count=ARM_MOTOR_NUM,
         .motors=motors, .joints=joints, .gripper={.cmd={0,100}, .motor_deg={80,-120},

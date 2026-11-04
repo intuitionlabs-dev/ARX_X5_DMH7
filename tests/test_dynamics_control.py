@@ -1,12 +1,10 @@
 import math
-from pathlib import Path
-import re
 from unittest.mock import patch
 import unittest
 
 from arx_x5_control import (ArmConfig, ArmMode, Command, CommandKind as K, ControlSystem,
                             DynamicsStatus, MotorAction, RobotState)
-from arx_x5_control.config import JOINT_QUINTIC_DURATION_S, TD_R
+from arx_x5_control.config import JOINT_QUINTIC_DURATION_S
 from arx_x5_control.trajectory import JointQuinticReference, Spline, Waypoint
 from arx_x5_control.gravity_compensation import DynamicsCompensator, DynamicsError
 from test_control import samples
@@ -153,13 +151,6 @@ class DynamicsControlTests(unittest.TestCase):
             with self.assertRaises(DynamicsError) as error:
                 solver.torques(q, qd, qdd)
             self.assertEqual(error.exception.status, status)
-
-    def test_shared_tracking_parameters_match_firmware(self):
-        root = Path(__file__).resolve().parents[1]
-        for name in ("metal", "arx_x5"):
-            config = (root / f"App/profiles/{name}.c").read_text()
-            values = re.findall(r"\.td_r\s*=\s*([0-9.]+)f?", config)
-            self.assertEqual(TD_R, tuple(float(value) for value in values))
 
     def test_angle_range_stops_and_recovers_each_active_mode(self):
         for kind in (K.START, K.GRAVITY):
