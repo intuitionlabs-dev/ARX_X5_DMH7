@@ -9,23 +9,24 @@ extern "C" {
 
 /* Independent single-axis, position-control Ruckig instance. Not thread-safe;
  * use one instance per axis and do not copy the opaque object. Units are chosen
- * by the caller, with seconds as the time unit. */
+ * by the caller, with seconds as the time unit. All scalars are IEEE FP32.
+ * ABI changed from the earlier double interface: rebuild all callers. */
 typedef struct ruckig_c_context ruckig_c_context;
 
 typedef struct {
-    double position, velocity, acceleration;
+    float position, velocity, acceleration;
 } ruckig_c_state;
 
 typedef struct {
     ruckig_c_state current, target;
-    double max_velocity, max_acceleration, max_jerk;
+    float max_velocity, max_acceleration, max_jerk;
     /* Zero selects the fastest feasible trajectory; otherwise a lower bound. */
-    double minimum_duration;
+    float minimum_duration;
 } ruckig_c_input;
 
 typedef struct {
     ruckig_c_state state;
-    double time, duration;
+    float time, duration;
     int new_calculation;
 } ruckig_c_output;
 
@@ -42,7 +43,7 @@ enum {
 };
 
 /* Allocates once. Returns NULL for invalid period or allocation failure. */
-ruckig_c_context* ruckig_c_create(double period_s);
+ruckig_c_context* ruckig_c_create(float period_s);
 void ruckig_c_destroy(ruckig_c_context* context);
 /* Invalidate the cached trajectory. The next update starts at input.current. */
 void ruckig_c_reset(ruckig_c_context* context);

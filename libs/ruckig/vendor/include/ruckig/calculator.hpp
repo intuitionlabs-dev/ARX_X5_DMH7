@@ -53,7 +53,7 @@ public:
 
     //! Calculate the time-optimal waypoint-based trajectory
     template<bool throw_error>
-    Result calculate(const InputParameter<DOFs, CustomVector>& input, Trajectory<DOFs, CustomVector>& trajectory, double delta_time, bool& was_interrupted) {
+    Result calculate(const InputParameter<DOFs, CustomVector>& input, Trajectory<DOFs, CustomVector>& trajectory, float delta_time, bool& was_interrupted) {
         Result result;
 #if defined WITH_CLOUD_CLIENT
         if (use_waypoints_trajectory(input)) {
@@ -70,7 +70,7 @@ public:
 
     //! Continue the trajectory calculation
     template<bool throw_error>
-    Result continue_calculation(const InputParameter<DOFs, CustomVector>& input, Trajectory<DOFs, CustomVector>& trajectory, double delta_time, bool& was_interrupted) {
+    Result continue_calculation(const InputParameter<DOFs, CustomVector>& input, Trajectory<DOFs, CustomVector>& trajectory, float delta_time, bool& was_interrupted) {
         Result result;
 #if defined WITH_CLOUD_CLIENT
         if (use_waypoints_trajectory(input)) {

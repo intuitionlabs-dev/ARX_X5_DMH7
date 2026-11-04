@@ -4,7 +4,7 @@
 
 namespace ruckig {
 
-VelocitySecondOrderStep1::VelocitySecondOrderStep1(double v0, double vf, double aMax, double aMin): _aMax(aMax), _aMin(aMin) {
+VelocitySecondOrderStep1::VelocitySecondOrderStep1(float v0, float vf, float aMax, float aMin): _aMax(aMax), _aMin(aMin) {
     vd = vf - v0;
 }
 
@@ -12,7 +12,7 @@ bool VelocitySecondOrderStep1::get_profile(const Profile& input, Block& block) {
     auto& p = block.p_min;
     p.set_boundary(input);
 
-    const double af = (vd > 0) ? _aMax : _aMin;
+    const float af = (vd > 0) ? _aMax : _aMin;
     p.t[0] = 0;
     p.t[1] = vd / af;
     p.t[2] = 0;

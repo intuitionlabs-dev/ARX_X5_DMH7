@@ -52,7 +52,7 @@ class WaypointsCalculator {
         }
     }
 
-    // Convert a double vector to json
+    // Convert a float vector to json
     template<class V>
     static void double_vector_to_json(nlohmann::json& j, const std::vector<V>& vector) {
         j = nlohmann::json::array();
@@ -82,49 +82,49 @@ public:
     explicit WaypointsCalculator(size_t dofs, size_t): degrees_of_freedom(dofs) { }
 
     template<bool throw_error>
-    Result calculate(const InputParameter<DOFs, CustomVector>& input, Trajectory<DOFs, CustomVector>& traj, double, bool& was_interrupted) {
+    Result calculate(const InputParameter<DOFs, CustomVector>& input, Trajectory<DOFs, CustomVector>& traj, float, bool& was_interrupted) {
         std::cout << "[ruckig] calculate trajectory via cloud API." << std::endl;
 
         nlohmann::json params;
         params["degrees_of_freedom"] = input.degrees_of_freedom;
-        vector_to_json<Vector<double>>(params["current_position"], input.current_position);
-        vector_to_json<Vector<double>>(params["current_velocity"], input.current_velocity);
-        vector_to_json<Vector<double>>(params["current_acceleration"], input.current_acceleration);
-        vector_to_json<Vector<double>>(params["target_position"], input.target_position);
-        vector_to_json<Vector<double>>(params["target_velocity"], input.target_velocity);
-        vector_to_json<Vector<double>>(params["target_acceleration"], input.target_acceleration);
-        vector_to_json<Vector<double>>(params["max_velocity"], input.max_velocity);
-        vector_to_json<Vector<double>>(params["max_acceleration"], input.max_acceleration);
-        vector_to_json<Vector<double>>(params["max_jerk"], input.max_jerk);
+        vector_to_json<Vector<float>>(params["current_position"], input.current_position);
+        vector_to_json<Vector<float>>(params["current_velocity"], input.current_velocity);
+        vector_to_json<Vector<float>>(params["current_acceleration"], input.current_acceleration);
+        vector_to_json<Vector<float>>(params["target_position"], input.target_position);
+        vector_to_json<Vector<float>>(params["target_velocity"], input.target_velocity);
+        vector_to_json<Vector<float>>(params["target_acceleration"], input.target_acceleration);
+        vector_to_json<Vector<float>>(params["max_velocity"], input.max_velocity);
+        vector_to_json<Vector<float>>(params["max_acceleration"], input.max_acceleration);
+        vector_to_json<Vector<float>>(params["max_jerk"], input.max_jerk);
         if (input.min_velocity) {
-            vector_to_json<Vector<double>>(params["min_velocity"], input.min_velocity.value());
+            vector_to_json<Vector<float>>(params["min_velocity"], input.min_velocity.value());
         }
         if (input.min_acceleration) {
-            vector_to_json<Vector<double>>(params["min_acceleration"], input.min_acceleration.value());
+            vector_to_json<Vector<float>>(params["min_acceleration"], input.min_acceleration.value());
         }
         if (!input.intermediate_positions.empty()) {
-            double_vector_to_json<Vector<double>>(params["intermediate_positions"], input.intermediate_positions);
+            double_vector_to_json<Vector<float>>(params["intermediate_positions"], input.intermediate_positions);
         }
         if (input.per_section_max_velocity) {
-            double_vector_to_json<Vector<double>>(params["per_section_max_velocity"], input.per_section_max_velocity.value());
+            double_vector_to_json<Vector<float>>(params["per_section_max_velocity"], input.per_section_max_velocity.value());
         }
         if (input.per_section_max_acceleration) {
-            double_vector_to_json<Vector<double>>(params["per_section_max_acceleration"], input.per_section_max_acceleration.value());
+            double_vector_to_json<Vector<float>>(params["per_section_max_acceleration"], input.per_section_max_acceleration.value());
         }
         if (input.per_section_max_jerk) {
-            double_vector_to_json<Vector<double>>(params["per_section_max_jerk"], input.per_section_max_jerk.value());
+            double_vector_to_json<Vector<float>>(params["per_section_max_jerk"], input.per_section_max_jerk.value());
         }
         if (input.per_section_min_velocity) {
-            double_vector_to_json<Vector<double>>(params["per_section_min_velocity"], input.per_section_min_velocity.value());
+            double_vector_to_json<Vector<float>>(params["per_section_min_velocity"], input.per_section_min_velocity.value());
         }
         if (input.per_section_min_acceleration) {
-            double_vector_to_json<Vector<double>>(params["per_section_min_acceleration"], input.per_section_min_acceleration.value());
+            double_vector_to_json<Vector<float>>(params["per_section_min_acceleration"], input.per_section_min_acceleration.value());
         }
         if (input.max_position) {
-            vector_to_json<Vector<double>>(params["max_position"], input.max_position.value());
+            vector_to_json<Vector<float>>(params["max_position"], input.max_position.value());
         }
         if (input.min_position) {
-            vector_to_json<Vector<double>>(params["min_position"], input.min_position.value());
+            vector_to_json<Vector<float>>(params["min_position"], input.min_position.value());
         }
         vector_to_json<Vector<bool>>(params["enabled"], input.enabled);
         params["control_interface"] = input.control_interface;
@@ -140,7 +140,7 @@ public:
             params["minimum_duration"] = input.minimum_duration.value();
         }
         if (input.per_section_minimum_duration) {
-            vector_to_json<std::vector<double>>(params["per_section_minimum_duration"], input.per_section_minimum_duration.value());
+            vector_to_json<std::vector<float>>(params["per_section_minimum_duration"], input.per_section_minimum_duration.value());
         }
 
         const auto result = client.post(params, throw_error);
@@ -150,8 +150,8 @@ public:
         traj.resize(result["profiles"].size() - 1);
 
         traj.continue_calculation_counter = 0;
-        traj.duration = result["duration"].template get<double>();
-        traj.cumulative_times = result["cumulative_times"].template get<std::vector<double>>();
+        traj.duration = result["duration"].template get<float>();
+        traj.cumulative_times = result["cumulative_times"].template get<std::vector<float>>();
 
         if (!result["message"].empty()) {
             std::cout << "[ruckig] " << result["message"] << std::endl;
@@ -175,7 +175,7 @@ public:
     }
 
     template<bool throw_error>
-    Result continue_calculation(const InputParameter<DOFs, CustomVector>&, Trajectory<DOFs, CustomVector>&, double, bool&) {
+    Result continue_calculation(const InputParameter<DOFs, CustomVector>&, Trajectory<DOFs, CustomVector>&, float, bool&) {
         if constexpr (throw_error) {
             throw RuckigError("continue calculation not available in Ruckig Community Version.");
         } else {

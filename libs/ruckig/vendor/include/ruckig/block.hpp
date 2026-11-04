@@ -23,14 +23,14 @@ class Block {
 
 public:
     struct Interval {
-        double left, right; // [s]
+        float left, right; // [s]
         Profile profile; // Profile corresponding to right (end) time
 
-        explicit Interval(double left, double right): left(left), right(right) { }
+        explicit Interval(float left, float right): left(left), right(right) { }
 
         explicit Interval(const Profile& profile_left, const Profile& profile_right) {
-            const double left_duration = profile_left.t_sum.back() + profile_left.brake.duration + profile_left.accel.duration;
-            const double right_duration = profile_right.t_sum.back() + profile_right.brake.duration + profile_right.accel.duration;
+            const float left_duration = profile_left.t_sum.back() + profile_left.brake.duration + profile_left.accel.duration;
+            const float right_duration = profile_right.t_sum.back() + profile_right.brake.duration + profile_right.accel.duration;
             if (left_duration < right_duration) {
                 left = left_duration;
                 right = right_duration;
@@ -51,7 +51,7 @@ public:
     }
 
     Profile p_min; // Save min profile so that it doesn't need to be recalculated in Step2
-    double t_min; // [s]
+    float t_min; // [s]
 
     // Max. 2 intervals can be blocked: called a and b with corresponding profiles, order does not matter
     std::optional<Interval> a, b;
@@ -68,7 +68,7 @@ public:
             return true;
 
         } else if (valid_profile_counter == 2) {
-            if (std::abs(valid_profiles[0].t_sum.back() - valid_profiles[1].t_sum.back()) < 8 * std::numeric_limits<double>::epsilon()) {
+            if (std::abs(valid_profiles[0].t_sum.back() - valid_profiles[1].t_sum.back()) < 8 * std::numeric_limits<float>::epsilon()) {
                 block.set_min_profile(valid_profiles[0]);
                 return true;
             }
@@ -85,11 +85,11 @@ public:
         // Only happens due to numerical issues
         } else if (valid_profile_counter == 4) {
             // Find "identical" profiles
-            if (std::abs(valid_profiles[0].t_sum.back() - valid_profiles[1].t_sum.back()) < 32 * std::numeric_limits<double>::epsilon() && valid_profiles[0].direction != valid_profiles[1].direction) {
+            if (std::abs(valid_profiles[0].t_sum.back() - valid_profiles[1].t_sum.back()) < 32 * std::numeric_limits<float>::epsilon() && valid_profiles[0].direction != valid_profiles[1].direction) {
                 remove_profile<N>(valid_profiles, valid_profile_counter, 1);
-            } else if (std::abs(valid_profiles[2].t_sum.back() - valid_profiles[3].t_sum.back()) < 256 * std::numeric_limits<double>::epsilon() && valid_profiles[2].direction != valid_profiles[3].direction) {
+            } else if (std::abs(valid_profiles[2].t_sum.back() - valid_profiles[3].t_sum.back()) < 256 * std::numeric_limits<float>::epsilon() && valid_profiles[2].direction != valid_profiles[3].direction) {
                 remove_profile<N>(valid_profiles, valid_profile_counter, 3);
-            } else if (std::abs(valid_profiles[0].t_sum.back() - valid_profiles[3].t_sum.back()) < 256 * std::numeric_limits<double>::epsilon() && valid_profiles[0].direction != valid_profiles[3].direction) {
+            } else if (std::abs(valid_profiles[0].t_sum.back() - valid_profiles[3].t_sum.back()) < 256 * std::numeric_limits<float>::epsilon() && valid_profiles[0].direction != valid_profiles[3].direction) {
                 remove_profile<N>(valid_profiles, valid_profile_counter, 3);
             } else {
                 return false;
@@ -131,11 +131,11 @@ public:
         return false;
     }
 
-    inline bool is_blocked(double t) const {
+    inline bool is_blocked(float t) const {
         return (t < t_min) || (a && a->left < t && t < a->right) || (b && b->left < t && t < b->right);
     }
 
-    const Profile& get_profile(double t) const {
+    const Profile& get_profile(float t) const {
         if (b && t >= b->right) {
             return b->profile;
         }

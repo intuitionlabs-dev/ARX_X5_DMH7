@@ -4,7 +4,7 @@
 
 namespace ruckig {
 
-PositionFirstOrderStep1::PositionFirstOrderStep1(double p0, double pf, double vMax, double vMin): _vMax(vMax), _vMin(vMin) {
+PositionFirstOrderStep1::PositionFirstOrderStep1(float p0, float pf, float vMax, float vMin): _vMax(vMax), _vMin(vMin) {
     pd = pf - p0;
 }
 
@@ -12,7 +12,7 @@ bool PositionFirstOrderStep1::get_profile(const Profile& input, Block& block) {
     auto& p = block.p_min;
     p.set_boundary(input);
 
-    const double vf = (pd > 0) ? _vMax : _vMin;
+    const float vf = (pd > 0) ? _vMax : _vMin;
     p.t[0] = 0;
     p.t[1] = 0;
     p.t[2] = 0;

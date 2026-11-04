@@ -20,7 +20,8 @@ target_compile_features(ruckig_c PRIVATE cxx_std_17)
 target_include_directories(ruckig_c PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendor/include)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(ruckig_c PRIVATE -fno-exceptions -fno-rtti)
+    target_compile_options(ruckig_c PRIVATE -fno-exceptions -fno-rtti
+        -Werror=double-promotion -Werror=float-conversion)
 endif()
 
 option(RUCKIG_C_BUILD_TESTS "Build standalone C API tests and example" OFF)

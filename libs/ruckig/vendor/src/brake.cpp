@@ -3,65 +3,65 @@
 
 namespace ruckig {
 
-inline double v_at_t(double v0, double a0, double j, double t) {
+inline float v_at_t(float v0, float a0, float j, float t) {
     return v0 + t * (a0 + j * t / 2);
 }
 
-inline double v_at_a_zero(double v0, double a0, double j) {
+inline float v_at_a_zero(float v0, float a0, float j) {
     return v0 + (a0 * a0)/(2 * j);
 }
 
-void BrakeProfile::acceleration_brake(double v0, double a0, double vMax, double vMin, double aMax, double aMin, double jMax) {
+void BrakeProfile::acceleration_brake(float v0, float a0, float vMax, float vMin, float aMax, float aMin, float jMax) {
     j[0] = -jMax;
 
-    const double t_to_a_max = (a0 - aMax) / jMax;
-    const double t_to_a_zero = a0 / jMax;
+    const float t_to_a_max = (a0 - aMax) / jMax;
+    const float t_to_a_zero = a0 / jMax;
 
-    const double v_at_a_max = v_at_t(v0, a0, -jMax, t_to_a_max);
-    const double v_at_a_zero = v_at_t(v0, a0, -jMax, t_to_a_zero);
+    const float v_at_a_max = v_at_t(v0, a0, -jMax, t_to_a_max);
+    const float v_at_a_zero = v_at_t(v0, a0, -jMax, t_to_a_zero);
 
     if ((v_at_a_zero > vMax && jMax > 0) || (v_at_a_zero < vMax && jMax < 0)) {
         velocity_brake(v0, a0, vMax, vMin, aMax, aMin, jMax);
 
     } else if ((v_at_a_max < vMin && jMax > 0) || (v_at_a_max > vMin && jMax < 0)) {
-        const double t_to_v_min = -(v_at_a_max - vMin)/aMax;
-        const double t_to_v_max = -aMax/(2*jMax) - (v_at_a_max - vMax)/aMax;
+        const float t_to_v_min = -(v_at_a_max - vMin)/aMax;
+        const float t_to_v_max = -aMax/(2*jMax) - (v_at_a_max - vMax)/aMax;
 
         t[0] = t_to_a_max + eps;
-        t[1] = std::max(std::min(t_to_v_min, t_to_v_max - eps), 0.0);
+        t[1] = std::max(std::min(t_to_v_min, t_to_v_max - eps), 0.0f);
 
     } else {
         t[0] = t_to_a_max + eps;
     }
 }
 
-void BrakeProfile::velocity_brake(double v0, double a0, double vMax, double vMin, double, double aMin, double jMax) {
+void BrakeProfile::velocity_brake(float v0, float a0, float vMax, float vMin, float, float aMin, float jMax) {
     j[0] = -jMax;
-    const double t_to_a_min = (a0 - aMin)/jMax;
-    const double t_to_v_max = a0/jMax + std::sqrt(a0*a0 + 2 * jMax * (v0 - vMax)) / std::abs(jMax);
-    const double t_to_v_min = a0/jMax + std::sqrt(a0*a0 / 2 + jMax * (v0 - vMin)) / std::abs(jMax);
-    const double t_min_to_v_max = std::min(t_to_v_max, t_to_v_min);
+    const float t_to_a_min = (a0 - aMin)/jMax;
+    const float t_to_v_max = a0/jMax + std::sqrt(a0*a0 + 2 * jMax * (v0 - vMax)) / std::abs(jMax);
+    const float t_to_v_min = a0/jMax + std::sqrt(a0*a0 / 2 + jMax * (v0 - vMin)) / std::abs(jMax);
+    const float t_min_to_v_max = std::min(t_to_v_max, t_to_v_min);
 
     if (t_to_a_min < t_min_to_v_max) {
-        const double v_at_a_min = v_at_t(v0, a0, -jMax, t_to_a_min);
-        const double t_to_v_max_with_constant = -(v_at_a_min - vMax)/aMin;
-        const double t_to_v_min_with_constant = aMin/(2*jMax) - (v_at_a_min - vMin)/aMin;
+        const float v_at_a_min = v_at_t(v0, a0, -jMax, t_to_a_min);
+        const float t_to_v_max_with_constant = -(v_at_a_min - vMax)/aMin;
+        const float t_to_v_min_with_constant = aMin/(2*jMax) - (v_at_a_min - vMin)/aMin;
 
-        t[0] = std::max(t_to_a_min - eps, 0.0);
-        t[1] = std::max(std::min(t_to_v_max_with_constant, t_to_v_min_with_constant), 0.0);
+        t[0] = std::max(t_to_a_min - eps, 0.0f);
+        t[1] = std::max(std::min(t_to_v_max_with_constant, t_to_v_min_with_constant), 0.0f);
 
     } else {
-        t[0] = std::max(t_min_to_v_max - eps, 0.0);
+        t[0] = std::max(t_min_to_v_max - eps, 0.0f);
     }
 }
 
-void BrakeProfile::get_position_brake_trajectory(double v0, double a0, double vMax, double vMin, double aMax, double aMin, double jMax) {
-    t[0] = 0.0;
-    t[1] = 0.0;
-    j[0] = 0.0;
-    j[1] = 0.0;
+void BrakeProfile::get_position_brake_trajectory(float v0, float a0, float vMax, float vMin, float aMax, float aMin, float jMax) {
+    t[0] = 0.0f;
+    t[1] = 0.0f;
+    j[0] = 0.0f;
+    j[1] = 0.0f;
 
-    if (jMax == 0.0 || aMax == 0.0 || aMin == 0.0) {
+    if (jMax == 0.0f || aMax == 0.0f || aMin == 0.0f) {
         return; // Ignore braking for zero-limits
     }
 
@@ -79,15 +79,15 @@ void BrakeProfile::get_position_brake_trajectory(double v0, double a0, double vM
     }
 }
 
-void BrakeProfile::get_second_order_position_brake_trajectory(double v0, double vMax, double vMin, double aMax, double aMin) {
-    t[0] = 0.0;
-    t[1] = 0.0;
-    j[0] = 0.0;
-    j[1] = 0.0;
-    a[0] = 0.0;
-    a[1] = 0.0;
+void BrakeProfile::get_second_order_position_brake_trajectory(float v0, float vMax, float vMin, float aMax, float aMin) {
+    t[0] = 0.0f;
+    t[1] = 0.0f;
+    j[0] = 0.0f;
+    j[1] = 0.0f;
+    a[0] = 0.0f;
+    a[1] = 0.0f;
 
-    if (aMax == 0.0 || aMin == 0.0) {
+    if (aMax == 0.0f || aMin == 0.0f) {
         return; // Ignore braking for zero-limits
     }
 
@@ -101,13 +101,13 @@ void BrakeProfile::get_second_order_position_brake_trajectory(double v0, double 
     }
 }
 
-void BrakeProfile::get_velocity_brake_trajectory(double a0, double aMax, double aMin, double jMax) {
-    t[0] = 0.0;
-    t[1] = 0.0;
-    j[0] = 0.0;
-    j[1] = 0.0;
+void BrakeProfile::get_velocity_brake_trajectory(float a0, float aMax, float aMin, float jMax) {
+    t[0] = 0.0f;
+    t[1] = 0.0f;
+    j[0] = 0.0f;
+    j[1] = 0.0f;
 
-    if (jMax == 0.0) {
+    if (jMax == 0.0f) {
         return; // Ignore braking for zero-limits
     }
 
@@ -122,10 +122,10 @@ void BrakeProfile::get_velocity_brake_trajectory(double a0, double aMax, double 
 }
 
 void BrakeProfile::get_second_order_velocity_brake_trajectory() {
-    t[0] = 0.0;
-    t[1] = 0.0;
-    j[0] = 0.0;
-    j[1] = 0.0;
+    t[0] = 0.0f;
+    t[1] = 0.0f;
+    j[0] = 0.0f;
+    j[1] = 0.0f;
 }
 
 } // namespace ruckig

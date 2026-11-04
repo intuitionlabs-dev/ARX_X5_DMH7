@@ -6,12 +6,12 @@
 
 namespace ruckig {
 
-PositionFirstOrderStep2::PositionFirstOrderStep2(double tf, double p0, double pf, double vMax, double vMin): tf(tf), _vMax(vMax), _vMin(vMin) {
+PositionFirstOrderStep2::PositionFirstOrderStep2(float tf, float p0, float pf, float vMax, float vMin): tf(tf), _vMax(vMax), _vMin(vMin) {
     pd = pf - p0;
 }
 
 bool PositionFirstOrderStep2::get_profile(Profile& profile) {
-    const double vf = pd / tf;
+    const float vf = pd / tf;
 
     profile.t[0] = 0;
     profile.t[1] = 0;

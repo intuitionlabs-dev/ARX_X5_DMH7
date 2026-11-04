@@ -29,10 +29,10 @@ public:
     Trajectory<DOFs, CustomVector> trajectory;
 
     // Current kinematic state
-    Vector<double> new_position, new_velocity, new_acceleration, new_jerk;
+    Vector<float> new_position, new_velocity, new_acceleration, new_jerk;
 
     //! Current time on trajectory
-    double time {0.0};
+    float time {0.0f};
 
     //! Index of the current section between two (possibly filtered) intermediate positions (only relevant in Ruckig Pro)
     size_t new_section {0};
@@ -47,7 +47,7 @@ public:
     bool was_calculation_interrupted {false};
 
     //! Computational duration of the last update call
-    double calculation_duration; // [µs]
+    float calculation_duration; // [µs]
 
     template<size_t D = DOFs, typename std::enable_if<(D >= 1), int>::type = 0>
     OutputParameter(): degrees_of_freedom(DOFs) { }

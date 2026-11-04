@@ -27,15 +27,15 @@ private:
     template<class T> using Vector = CustomVector<T, DOFs>;
     template<class T> using StandardVectorIntervals = StandardSizeVector<T, DOFs, 3*DOFs+1>;
 
-    constexpr static double eps {std::numeric_limits<double>::epsilon()};
+    constexpr static float eps {std::numeric_limits<float>::epsilon()};
     constexpr static bool return_error_at_maximal_duration {true};
 
-    Vector<double> new_phase_control, pd; // For phase synchronization
-    StandardVectorIntervals<double> possible_t_syncs;
+    Vector<float> new_phase_control, pd; // For phase synchronization
+    StandardVectorIntervals<float> possible_t_syncs;
     StandardVectorIntervals<size_t> idx;
 
     StandardVector<Block, DOFs> blocks;
-    StandardVector<double, DOFs> inp_min_velocity, inp_min_acceleration;
+    StandardVector<float, DOFs> inp_min_velocity, inp_min_acceleration;
 
     StandardVector<ControlInterface, DOFs> inp_per_dof_control_interface;
     StandardVector<Synchronization, DOFs> inp_per_dof_synchronization;
@@ -47,7 +47,7 @@ private:
             pd[dof] = inp.target_position[dof] - inp.current_position[dof];
         }
 
-        const Vector<double>* scale_vector = nullptr;
+        const Vector<float>* scale_vector = nullptr;
         std::optional<size_t> scale_dof; // Need to find a scale DOF because limiting DOF might not be phase synchronized
         for (size_t dof = 0; dof < degrees_of_freedom; ++dof) {
             if (inp_per_dof_synchronization[dof] != Synchronization::Phase) {
@@ -85,15 +85,15 @@ private:
             return false; // Zero everywhere is in theory collinear, but that trivial case is better handled elsewhere
         }
 
-        const double scale = scale_vector->operator[](*scale_dof);
-        const double pd_scale = pd[*scale_dof] / scale;
-        const double v0_scale = inp.current_velocity[*scale_dof] / scale;
-        const double vf_scale = inp.target_velocity[*scale_dof] / scale;
-        const double a0_scale = inp.current_acceleration[*scale_dof] / scale;
-        const double af_scale = inp.target_acceleration[*scale_dof] / scale;
+        const float scale = scale_vector->operator[](*scale_dof);
+        const float pd_scale = pd[*scale_dof] / scale;
+        const float v0_scale = inp.current_velocity[*scale_dof] / scale;
+        const float vf_scale = inp.target_velocity[*scale_dof] / scale;
+        const float a0_scale = inp.current_acceleration[*scale_dof] / scale;
+        const float af_scale = inp.target_acceleration[*scale_dof] / scale;
 
-        const double scale_limiting = scale_vector->operator[](limiting_dof);
-        double control_limiting = (limiting_direction == Profile::Direction::UP) ? inp.max_jerk[limiting_dof] : -inp.max_jerk[limiting_dof];
+        const float scale_limiting = scale_vector->operator[](limiting_dof);
+        float control_limiting = (limiting_direction == Profile::Direction::UP) ? inp.max_jerk[limiting_dof] : -inp.max_jerk[limiting_dof];
         if (std::isinf(inp.max_jerk[limiting_dof])) {
             control_limiting = (limiting_direction == Profile::Direction::UP) ? inp.max_acceleration[limiting_dof] : inp_min_acceleration[limiting_dof];
         }
@@ -103,7 +103,7 @@ private:
                 continue;
             }
 
-            const double current_scale = scale_vector->operator[](dof);
+            const float current_scale = scale_vector->operator[](dof);
             if (
                 (inp_per_dof_control_interface[dof] == ControlInterface::Position && std::abs(pd[dof] - pd_scale * current_scale) > eps)
                 || std::abs(inp.current_velocity[dof] - v0_scale * current_scale) > eps
@@ -120,7 +120,7 @@ private:
         return true;
     }
 
-    bool synchronize(std::optional<double> t_min, double& t_sync, std::optional<size_t>& limiting_dof, Vector<Profile>& profiles, bool discrete_duration, double delta_time) {
+    bool synchronize(std::optional<float> t_min, float& t_sync, std::optional<size_t>& limiting_dof, Vector<Profile>& profiles, bool discrete_duration, float delta_time) {
         // Check for (degrees_of_freedom == 1 && !t_min && !discrete_duration) is now outside
 
         // Possible t_syncs are the start times of the intervals and optional t_min
@@ -128,18 +128,18 @@ private:
         for (size_t dof = 0; dof < degrees_of_freedom; ++dof) {
             // Ignore DoFs without synchronization here
             if (inp_per_dof_synchronization[dof] == Synchronization::None) {
-                possible_t_syncs[dof] = 0.0;
-                possible_t_syncs[degrees_of_freedom + dof] = std::numeric_limits<double>::infinity();
-                possible_t_syncs[2 * degrees_of_freedom + dof] = std::numeric_limits<double>::infinity();
+                possible_t_syncs[dof] = 0.0f;
+                possible_t_syncs[degrees_of_freedom + dof] = std::numeric_limits<float>::infinity();
+                possible_t_syncs[2 * degrees_of_freedom + dof] = std::numeric_limits<float>::infinity();
                 continue;
             }
 
             possible_t_syncs[dof] = blocks[dof].t_min;
-            possible_t_syncs[degrees_of_freedom + dof] = blocks[dof].a ? blocks[dof].a->right : std::numeric_limits<double>::infinity();
-            possible_t_syncs[2 * degrees_of_freedom + dof] = blocks[dof].b ? blocks[dof].b->right : std::numeric_limits<double>::infinity();
+            possible_t_syncs[degrees_of_freedom + dof] = blocks[dof].a ? blocks[dof].a->right : std::numeric_limits<float>::infinity();
+            possible_t_syncs[2 * degrees_of_freedom + dof] = blocks[dof].b ? blocks[dof].b->right : std::numeric_limits<float>::infinity();
             any_interval |= blocks[dof].a || blocks[dof].b;
         }
-        possible_t_syncs[3 * degrees_of_freedom] = t_min.value_or(std::numeric_limits<double>::infinity());
+        possible_t_syncs[3 * degrees_of_freedom] = t_min.value_or(std::numeric_limits<float>::infinity());
         any_interval |= t_min.has_value();
 
         if (discrete_duration) {
@@ -148,7 +148,7 @@ private:
                     continue;
                 }
 
-                const double remainder = std::fmod(possible_t_sync, delta_time); // in [0, delta_time)
+                const float remainder = std::fmod(possible_t_sync, delta_time); // in [0, delta_time)
                 if (remainder > eps) {
                     possible_t_sync += delta_time - remainder;
                 }
@@ -162,7 +162,7 @@ private:
 
         // Start at last tmin (or worse)
         for (auto i = idx.begin() + degrees_of_freedom - 1; i != idx_end; ++i) {
-            const double possible_t_sync = possible_t_syncs[*i];
+            const float possible_t_sync = possible_t_syncs[*i];
             bool is_blocked {false};
             for (size_t dof = 0; dof < degrees_of_freedom; ++dof) {
                 if (inp_per_dof_synchronization[dof] == Synchronization::None) {
@@ -173,7 +173,7 @@ private:
                     break; // inner dof loop
                 }
             }
-            if (is_blocked || possible_t_sync < t_min.value_or(0.0) || std::isinf(possible_t_sync)) {
+            if (is_blocked || possible_t_sync < t_min.value_or(0.0f) || std::isinf(possible_t_sync)) {
                 continue;
             }
 
@@ -223,7 +223,7 @@ public:
 
     //! Calculate the time-optimal waypoint-based trajectory
     template<bool throw_error>
-    Result calculate(const InputParameter<DOFs, CustomVector>& inp, Trajectory<DOFs, CustomVector>& traj, double delta_time, bool& was_interrupted) {
+    Result calculate(const InputParameter<DOFs, CustomVector>& inp, Trajectory<DOFs, CustomVector>& traj, float delta_time, bool& was_interrupted) {
         was_interrupted = false;
 #if defined WITH_CLOUD_CLIENT
         traj.resize(0);
@@ -241,8 +241,8 @@ public:
                 p.p.back() = inp.current_position[dof];
                 p.v.back() = inp.current_velocity[dof];
                 p.a.back() = inp.current_acceleration[dof];
-                p.t_sum.back() = 0.0;
-                blocks[dof].t_min = 0.0;
+                p.t_sum.back() = 0.0f;
+                blocks[dof].t_min = 0.0f;
                 blocks[dof].a = std::nullopt;
                 blocks[dof].b = std::nullopt;
                 continue;
@@ -307,7 +307,7 @@ public:
             }
 
             if (!found_profile) {
-                const bool has_zero_limits = (inp.max_acceleration[dof] == 0.0 || inp_min_acceleration[dof] == 0.0 || inp.max_jerk[dof] == 0.0);
+                const bool has_zero_limits = (inp.max_acceleration[dof] == 0.0f || inp_min_acceleration[dof] == 0.0f || inp.max_jerk[dof] == 0.0f);
                 if (has_zero_limits) {
                     if constexpr (throw_error) {
                         throw RuckigError("zero limits conflict in step 1, dof: " + std::to_string(dof) + " input: " + inp.to_string());
@@ -341,7 +341,7 @@ public:
         if (!found_synchronization) {
             bool has_zero_limits = false;
             for (size_t dof = 0; dof < degrees_of_freedom; ++dof) {
-                if (inp.max_acceleration[dof] == 0.0 || inp_min_acceleration[dof] == 0.0 || inp.max_jerk[dof] == 0.0) {
+                if (inp.max_acceleration[dof] == 0.0f || inp_min_acceleration[dof] == 0.0f || inp.max_jerk[dof] == 0.0f) {
                     has_zero_limits = true;
                     break;
                 }
@@ -376,12 +376,12 @@ public:
         traj.cumulative_times[0] = traj.duration;
 
         if constexpr (return_error_at_maximal_duration) {
-            if (traj.duration > 7.6e3) {
+            if (traj.duration > 7.6e3f) {
                 return Result::ErrorTrajectoryDuration;
             }
         }
 
-        if (traj.duration == 0.0) {
+        if (traj.duration == 0.0f) {
             // Copy all profiles for end state
             for (size_t dof = 0; dof < degrees_of_freedom; ++dof) {
                 traj.profiles[0][dof] = blocks[dof].p_min;
@@ -404,7 +404,7 @@ public:
                     }
 
                     Profile& p = traj.profiles[0][dof];
-                    const double t_profile = traj.duration - p.brake.duration - p.accel.duration;
+                    const float t_profile = traj.duration - p.brake.duration - p.accel.duration;
 
                     p.t = p_limiting.t; // Copy timing information from limiting DoF
                     p.control_signs = p_limiting.control_signs;
@@ -468,7 +468,7 @@ public:
             }
 
             Profile& p = traj.profiles[0][dof];
-            const double t_profile = traj.duration - p.brake.duration - p.accel.duration;
+            const float t_profile = traj.duration - p.brake.duration - p.accel.duration;
 
             if (inp_per_dof_synchronization[dof] == Synchronization::TimeIfNecessary && std::abs(inp.target_velocity[dof]) < eps && std::abs(inp.target_acceleration[dof]) < eps) {
                 p = blocks[dof].p_min;
@@ -527,7 +527,7 @@ public:
 
     //! Continue the trajectory calculation
     template<bool throw_error>
-    Result continue_calculation(const InputParameter<DOFs, CustomVector>&, Trajectory<DOFs, CustomVector>&, double, bool&) {
+    Result continue_calculation(const InputParameter<DOFs, CustomVector>&, Trajectory<DOFs, CustomVector>&, float, bool&) {
         return Result::Error;
     }
 };

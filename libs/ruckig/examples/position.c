@@ -2,12 +2,12 @@
 #include <stdio.h>
 
 int main(void) {
-    ruckig_c_context* planner = ruckig_c_create(0.002);
+    ruckig_c_context* planner = ruckig_c_create(0.002f);
     if (!planner) return 1;
     ruckig_c_input input = {
         .current = {0, 0, 0}, .target = {30, 0, 0},
         .max_velocity = 90, .max_acceleration = 360, .max_jerk = 3600,
-        .minimum_duration = 0.16
+        .minimum_duration = 0.16f
     };
     ruckig_c_output output;
     int status;

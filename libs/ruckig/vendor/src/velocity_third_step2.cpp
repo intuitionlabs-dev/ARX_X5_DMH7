@@ -6,15 +6,15 @@
 
 namespace ruckig {
 
-VelocityThirdOrderStep2::VelocityThirdOrderStep2(double tf, double v0, double a0, double vf, double af, double aMax, double aMin, double jMax): a0(a0), tf(tf), af(af), _aMax(aMax), _aMin(aMin), _jMax(jMax) {
+VelocityThirdOrderStep2::VelocityThirdOrderStep2(float tf, float v0, float a0, float vf, float af, float aMax, float aMin, float jMax): a0(a0), tf(tf), af(af), _aMax(aMax), _aMin(aMin), _jMax(jMax) {
     vd = vf - v0;
     ad = af - a0;
 }
 
-bool VelocityThirdOrderStep2::time_acc0(Profile& profile, double aMax, double aMin, double jMax) {
+bool VelocityThirdOrderStep2::time_acc0(Profile& profile, float aMax, float aMin, float jMax) {
     // UD Solution 1/2
     {
-        const double h1 = std::sqrt((-ad*ad + 2*jMax*((a0 + af)*tf - 2*vd))/(jMax*jMax) + tf*tf);
+        const float h1 = std::sqrt((-ad*ad + 2*jMax*((a0 + af)*tf - 2*vd))/(jMax*jMax) + tf*tf);
 
         profile.t[0] = ad/(2*jMax) + (tf - h1)/2;
         profile.t[1] = h1;
@@ -32,7 +32,7 @@ bool VelocityThirdOrderStep2::time_acc0(Profile& profile, double aMax, double aM
 
     // UU Solution
     {
-        const double h1 = (-ad + jMax*tf);
+        const float h1 = (-ad + jMax*tf);
 
         profile.t[0] = -ad*ad/(2*jMax*h1) + (vd - a0*tf)/h1;
         profile.t[1] = -ad/jMax + tf;
@@ -67,8 +67,8 @@ bool VelocityThirdOrderStep2::time_acc0(Profile& profile, double aMax, double aM
     return false;
 }
 
-bool VelocityThirdOrderStep2::time_none(Profile& profile, double aMax, double aMin, double jMax) {
-    if (std::abs(a0) < DBL_EPSILON && std::abs(af) < DBL_EPSILON && std::abs(vd) < DBL_EPSILON) {
+bool VelocityThirdOrderStep2::time_none(Profile& profile, float aMax, float aMin, float jMax) {
+    if (std::abs(a0) < FLT_EPSILON && std::abs(af) < FLT_EPSILON && std::abs(vd) < FLT_EPSILON) {
         profile.t[0] = 0;
         profile.t[1] = tf;
         profile.t[2] = 0;
@@ -85,7 +85,7 @@ bool VelocityThirdOrderStep2::time_none(Profile& profile, double aMax, double aM
 
     // UD Solution 1/2
     {
-        const double h1 = 2*(af*tf - vd);
+        const float h1 = 2*(af*tf - vd);
 
         profile.t[0] = h1/ad;
         profile.t[1] = tf - profile.t[0];
@@ -95,9 +95,9 @@ bool VelocityThirdOrderStep2::time_none(Profile& profile, double aMax, double aM
         profile.t[5] = 0;
         profile.t[6] = 0;
 
-        const double jf = ad*ad/h1;
+        const float jf = ad*ad/h1;
 
-        if (std::abs(jf) < std::abs(jMax) + 1e-12 && profile.check_for_velocity_with_timing<ControlSigns::UDDU, ReachedLimits::NONE>(tf, jf, aMax, aMin)) {
+        if (std::abs(jf) < std::abs(jMax) + 1e-12f && profile.check_for_velocity_with_timing<ControlSigns::UDDU, ReachedLimits::NONE>(tf, jf, aMax, aMin)) {
             profile.pf = profile.p.back();
             return true;
         }

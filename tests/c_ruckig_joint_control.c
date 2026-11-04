@@ -1,5 +1,6 @@
 /* Exercise the real firmware reference selection with the real C++ solver. */
 #include <assert.h>
+#include <float.h>
 #include <stdio.h>
 #include "../App/gimbal_cmd.c"
 
@@ -98,12 +99,17 @@ static void constrained_step(Fixture* f) {
         const ruckig_c_state next = f->cmd->joint_ruckig_ref[i].state;
         const Arm_joint_config* j = &f->joints[i];
         assert(f->cmd->joint_ruckig_ref[i].status >= 0);
-        assert(fabs(next.velocity) <= j->max_velocity_deg_s + 1e-7);
-        assert(fabs(next.acceleration) <= j->max_acceleration_deg_s2 + 1e-7);
-        assert(fabs(next.acceleration - previous[i].acceleration)
-            <= j->max_jerk_deg_s3*ARM_CONTROL_PERIOD_S + 1e-5);
-        assert(fabs(next.position - previous[i].position)
-            <= j->max_velocity_deg_s*ARM_CONTROL_PERIOD_S + 1e-6);
+        const float v_roundoff = 16*FLT_EPSILON*fmaxf(1, j->max_velocity_deg_s);
+        const float a_roundoff = 16*FLT_EPSILON*fmaxf(1, j->max_acceleration_deg_s2);
+        /* Sampling time is float; at most a few ulps at the trajectory duration. */
+        const float dt_roundoff = 4*FLT_EPSILON*10.0f;
+        assert(fabsf(next.velocity) <= j->max_velocity_deg_s + v_roundoff);
+        assert(fabsf(next.acceleration) <= j->max_acceleration_deg_s2 + a_roundoff);
+        assert(fabsf(next.acceleration - previous[i].acceleration)
+            <= j->max_jerk_deg_s3*(ARM_CONTROL_PERIOD_S + dt_roundoff) + a_roundoff);
+        assert(fabsf(next.position - previous[i].position)
+            <= j->max_velocity_deg_s*(ARM_CONTROL_PERIOD_S + dt_roundoff)
+                + 8*FLT_EPSILON*fmaxf(1, fabsf(previous[i].position)));
         assert(f->gimbal.arm_control_data.joint_angle[i] == (float)next.position);
         assert(f->gimbal.arm_control_data.joint_vel[i] == (float)next.velocity);
         assert(f->gimbal.arm_control_data.joint_acc[i] == (float)next.acceleration);

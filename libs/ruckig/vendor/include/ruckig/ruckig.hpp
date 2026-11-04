@@ -39,18 +39,18 @@ public:
     const size_t degrees_of_freedom;
 
     //! Time step between updates (cycle time) in [s]
-    double delta_time {0.0};
+    float delta_time {0.0f};
 
     template<size_t D = DOFs, typename std::enable_if<(D >= 1), int>::type = 0>
     explicit Ruckig():
         max_number_of_waypoints(0),
         degrees_of_freedom(DOFs),
-        delta_time(-1.0)
+        delta_time(-1.0f)
     {
     }
 
     template<size_t D = DOFs, typename std::enable_if<(D >= 1), int>::type = 0>
-    explicit Ruckig(double delta_time):
+    explicit Ruckig(float delta_time):
         max_number_of_waypoints(0),
         degrees_of_freedom(DOFs),
         delta_time(delta_time)
@@ -59,7 +59,7 @@ public:
 
 #if defined WITH_CLOUD_CLIENT
     template<size_t D = DOFs, typename std::enable_if<(D >= 1), int>::type = 0>
-    explicit Ruckig(double delta_time, size_t max_number_of_waypoints):
+    explicit Ruckig(float delta_time, size_t max_number_of_waypoints):
         current_input(InputParameter<DOFs, CustomVector>(max_number_of_waypoints)),
         calculator(Calculator<DOFs, CustomVector>(max_number_of_waypoints)),
         max_number_of_waypoints(max_number_of_waypoints),
@@ -75,12 +75,12 @@ public:
         calculator(Calculator<DOFs, CustomVector>(dofs)),
         max_number_of_waypoints(0),
         degrees_of_freedom(dofs),
-        delta_time(-1.0)
+        delta_time(-1.0f)
     {
     }
 
     template<size_t D = DOFs, typename std::enable_if<(D == 0), int>::type = 0>
-    explicit Ruckig(size_t dofs, double delta_time):
+    explicit Ruckig(size_t dofs, float delta_time):
         current_input(InputParameter<DOFs, CustomVector>(dofs)),
         calculator(Calculator<DOFs, CustomVector>(dofs)),
         max_number_of_waypoints(0),
@@ -91,7 +91,7 @@ public:
 
 #if defined WITH_CLOUD_CLIENT
     template<size_t D = DOFs, typename std::enable_if<(D == 0), int>::type = 0>
-    explicit Ruckig(size_t dofs, double delta_time, size_t max_number_of_waypoints):
+    explicit Ruckig(size_t dofs, float delta_time, size_t max_number_of_waypoints):
         current_input(InputParameter<DOFs, CustomVector>(dofs, max_number_of_waypoints)),
         calculator(Calculator<DOFs, CustomVector>(dofs, max_number_of_waypoints)),
         max_number_of_waypoints(max_number_of_waypoints),
@@ -108,7 +108,7 @@ public:
 
     //! Filter intermediate positions based on a threshold distance for each DoF
     template<class T> using Vector = CustomVector<T, DOFs>;
-    std::vector<Vector<double>> filter_intermediate_positions(const InputParameter<DOFs, CustomVector>& input, const Vector<double>& threshold_distance) const {
+    std::vector<Vector<float>> filter_intermediate_positions(const InputParameter<DOFs, CustomVector>& input, const Vector<float>& threshold_distance) const {
         if (input.intermediate_positions.empty()) {
             return input.intermediate_positions;
         }
@@ -132,12 +132,12 @@ public:
                 const auto pos_current = input.intermediate_positions[current - 1];
 
                 // Is there a point t on the line that holds the threshold?
-                double t_start_max = 0.0;
-                double t_end_min = 1.0;
+                float t_start_max = 0.0f;
+                float t_end_min = 1.0f;
                 for (size_t dof = 0; dof < degrees_of_freedom; ++dof) {
-                    const double h0 = (pos_current[dof] - pos_start[dof]) / (pos_end[dof] - pos_start[dof]);
-                    const double t_start = h0 - threshold_distance[dof] / std::abs(pos_end[dof] - pos_start[dof]);
-                    const double t_end = h0 + threshold_distance[dof] / std::abs(pos_end[dof] - pos_start[dof]);
+                    const float h0 = (pos_current[dof] - pos_start[dof]) / (pos_end[dof] - pos_start[dof]);
+                    const float t_start = h0 - threshold_distance[dof] / std::abs(pos_end[dof] - pos_start[dof]);
+                    const float t_end = h0 + threshold_distance[dof] / std::abs(pos_end[dof] - pos_start[dof]);
 
                     t_start_max = std::max(t_start, t_start_max);
                     t_end_min = std::min(t_end, t_end_min);
@@ -158,7 +158,7 @@ public:
             }
         }
 
-        std::vector<Vector<double>> filtered_positions;
+        std::vector<Vector<float>> filtered_positions;
         filtered_positions.reserve(n_waypoints);
         for (size_t i = 0; i < n_waypoints; ++i) {
             if (is_active[i]) {
@@ -185,7 +185,7 @@ public:
             }
         }
 
-        if (delta_time <= 0.0 && input.duration_discretization != DurationDiscretization::Continuous) {
+        if (delta_time <= 0.0f && input.duration_discretization != DurationDiscretization::Continuous) {
             if constexpr (throw_validation_error) {
                 throw RuckigError("delta time (control rate) parameter " + std::to_string(delta_time) + " should be larger than zero.");
             }
@@ -231,7 +231,7 @@ public:
 
             current_input = input;
             current_input_initialized = true;
-            output.time = 0.0;
+            output.time = 0.0f;
             output.new_calculation = true;
         }
 
@@ -241,7 +241,7 @@ public:
         output.did_section_change = (output.new_section > old_section);  // Report only forward section changes
 
         const auto stop = std::chrono::steady_clock::now();
-        output.calculation_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start).count() / 1000.0;
+        output.calculation_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start).count() / 1000.0f;
 
         output.pass_to_input(current_input);
 

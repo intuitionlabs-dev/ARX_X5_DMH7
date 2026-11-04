@@ -6,15 +6,15 @@
 
 namespace ruckig {
 
-PositionSecondOrderStep2::PositionSecondOrderStep2(double tf, double p0, double v0, double pf, double vf, double vMax, double vMin, double aMax, double aMin): v0(v0), tf(tf), vf(vf), _vMax(vMax), _vMin(vMin), _aMax(aMax), _aMin(aMin) {
+PositionSecondOrderStep2::PositionSecondOrderStep2(float tf, float p0, float v0, float pf, float vf, float vMax, float vMin, float aMax, float aMin): v0(v0), tf(tf), vf(vf), _vMax(vMax), _vMin(vMin), _aMax(aMax), _aMin(aMin) {
     pd = pf - p0;
     vd = vf - v0;
 }
 
-bool PositionSecondOrderStep2::time_acc0(Profile& profile, double vMax, double vMin, double aMax, double aMin) {
+bool PositionSecondOrderStep2::time_acc0(Profile& profile, float vMax, float vMin, float aMax, float aMin) {
     // UD Solution 1/2
     {
-        const double h1 = std::sqrt((2*aMax*(pd - tf*vf) - 2*aMin*(pd - tf*v0) + vd*vd)/(aMax*aMin) + tf*tf);
+        const float h1 = std::sqrt((2*aMax*(pd - tf*vf) - 2*aMin*(pd - tf*v0) + vd*vd)/(aMax*aMin) + tf*tf);
 
         profile.t[0] = (aMax*vd - aMax*aMin*(tf - h1))/(aMax*(aMax - aMin));
         profile.t[1] = h1;
@@ -32,7 +32,7 @@ bool PositionSecondOrderStep2::time_acc0(Profile& profile, double vMax, double v
 
     // UU Solution
     {
-        const double h1 = (-vd + aMax*tf);
+        const float h1 = (-vd + aMax*tf);
 
         profile.t[0] = -vd*vd/(2*aMax*h1) + (pd - v0*tf)/h1;
         profile.t[1] = -vd/aMax + tf;
@@ -67,8 +67,8 @@ bool PositionSecondOrderStep2::time_acc0(Profile& profile, double vMax, double v
     return false;
 }
 
-bool PositionSecondOrderStep2::time_none(Profile& profile, double vMax, double vMin, double aMax, double aMin) {
-    if (std::abs(v0) < DBL_EPSILON && std::abs(vf) < DBL_EPSILON && std::abs(pd) < DBL_EPSILON) {
+bool PositionSecondOrderStep2::time_none(Profile& profile, float vMax, float vMin, float aMax, float aMin) {
+    if (std::abs(v0) < FLT_EPSILON && std::abs(vf) < FLT_EPSILON && std::abs(pd) < FLT_EPSILON) {
         profile.t[0] = 0;
         profile.t[1] = tf;
         profile.t[2] = 0;
@@ -85,7 +85,7 @@ bool PositionSecondOrderStep2::time_none(Profile& profile, double vMax, double v
 
     // UD Solution 1/2
     {
-        const double h1 = 2*(vf*tf - pd);
+        const float h1 = 2*(vf*tf - pd);
 
         profile.t[0] = h1/vd;
         profile.t[1] = tf - profile.t[0];
@@ -95,9 +95,9 @@ bool PositionSecondOrderStep2::time_none(Profile& profile, double vMax, double v
         profile.t[5] = 0;
         profile.t[6] = 0;
 
-        const double af = vd*vd/h1;
+        const float af = vd*vd/h1;
 
-        if ((aMin - 1e-12 < af) && (af < aMax + 1e-12) && profile.check_for_second_order_with_timing<ControlSigns::UDDU, ReachedLimits::NONE>(tf, af, -af, vMax, vMin)) {
+        if ((aMin - 1e-12f < af) && (af < aMax + 1e-12f) && profile.check_for_second_order_with_timing<ControlSigns::UDDU, ReachedLimits::NONE>(tf, af, -af, vMax, vMin)) {
             profile.pf = profile.p.back();
             return true;
         }

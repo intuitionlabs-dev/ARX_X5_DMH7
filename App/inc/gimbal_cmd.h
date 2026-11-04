@@ -20,7 +20,7 @@ typedef struct {
     float joint_angle_solved[ARM_JOINT_NUM];
 } Arm_ctrl_data_src;
 
-/* 保存单关节连续位置参考；双精度状态避免每周期舍入触发重规划。 */
+/* 保存单关节连续位置参考；状态与单精度求解器一致，避免额外舍入触发重规划。 */
 typedef struct {
     ruckig_c_context* planner;
     ruckig_c_state state;

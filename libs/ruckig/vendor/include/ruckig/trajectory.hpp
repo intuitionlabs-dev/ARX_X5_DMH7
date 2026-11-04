@@ -31,10 +31,10 @@ class Trajectory {
 
     Container<Vector<Profile>> profiles;
 
-    double duration {0.0};
-    Container<double> cumulative_times;
+    float duration {0.0f};
+    Container<float> cumulative_times;
 
-    Vector<double> independent_min_durations;
+    Vector<float> independent_min_durations;
     Vector<Bound> position_extrema;
 
     size_t continue_calculation_counter {0};
@@ -58,29 +58,29 @@ class Trajectory {
 
     //! Calculates the base values to then integrate from
     template<typename Func>
-    void state_to_integrate_from(double time, size_t& new_section, Func&& set_integrate) const {
+    void state_to_integrate_from(float time, size_t& new_section, Func&& set_integrate) const {
         if (time >= duration) {
             // Keep constant acceleration
             new_section = profiles.size();
             const auto& profiles_dof = profiles.back();
             for (size_t dof = 0; dof < degrees_of_freedom; ++dof) {
-                const double t_pre = (profiles.size() > 1) ? cumulative_times[cumulative_times.size() - 2] : profiles_dof[dof].brake.duration;
-                const double t_diff = time - (t_pre + profiles_dof[dof].t_sum.back());
-                set_integrate(dof, t_diff, profiles_dof[dof].p.back(), profiles_dof[dof].v.back(), profiles_dof[dof].a.back(), 0.0);
+                const float t_pre = (profiles.size() > 1) ? cumulative_times[cumulative_times.size() - 2] : profiles_dof[dof].brake.duration;
+                const float t_diff = time - (t_pre + profiles_dof[dof].t_sum.back());
+                set_integrate(dof, t_diff, profiles_dof[dof].p.back(), profiles_dof[dof].v.back(), profiles_dof[dof].a.back(), 0.0f);
             }
             return;
         }
 
         const auto new_section_ptr = std::upper_bound(cumulative_times.begin(), cumulative_times.end(), time);
         new_section = std::distance(cumulative_times.begin(), new_section_ptr);
-        double t_diff = time;
+        float t_diff = time;
         if (new_section > 0) {
             t_diff -= cumulative_times[new_section - 1];
         }
 
         for (size_t dof = 0; dof < degrees_of_freedom; ++dof) {
             const Profile& p = profiles[new_section][dof];
-            double t_diff_dof = t_diff;
+            float t_diff_dof = t_diff;
 
             // Brake pre-trajectory
             if (new_section == 0 && p.brake.duration > 0) {
@@ -123,7 +123,7 @@ class Trajectory {
             // Non-time synchronization
             if (t_diff_dof >= p.t_sum.back()) {
                 // Keep constant acceleration
-                set_integrate(dof, t_diff_dof - p.t_sum.back(), p.p.back(), p.v.back(), p.a.back(), 0.0);
+                set_integrate(dof, t_diff_dof - p.t_sum.back(), p.p.back(), p.v.back(), p.a.back(), 0.0f);
                 continue;
             }
 
@@ -175,14 +175,14 @@ public:
 #endif
 
     //! Get the kinematic state, the jerk, and the section at a given time
-    void at_time(double time, Vector<double>& new_position, Vector<double>& new_velocity, Vector<double>& new_acceleration, Vector<double>& new_jerk, size_t& new_section) const {
+    void at_time(float time, Vector<float>& new_position, Vector<float>& new_velocity, Vector<float>& new_acceleration, Vector<float>& new_jerk, size_t& new_section) const {
         if constexpr (DOFs == 0) {
             if (degrees_of_freedom != new_position.size() || degrees_of_freedom != new_velocity.size() || degrees_of_freedom != new_acceleration.size() || degrees_of_freedom != new_jerk.size()) {
                 throw RuckigError("mismatch in degrees of freedom (vector size).");
             }
         }
 
-        state_to_integrate_from(time, new_section, [&](size_t dof, double t, double p, double v, double a, double j) {
+        state_to_integrate_from(time, new_section, [&](size_t dof, float t, float p, float v, float a, float j) {
             std::tie(new_position[dof], new_velocity[dof], new_acceleration[dof]) = integrate(t, p, v, a, j);
             new_jerk[dof] = j;
         });
@@ -190,7 +190,7 @@ public:
 
     //! Get the kinematic state at a given time
     //! The Python wrapper takes `time` as an argument, and returns `new_position`, `new_velocity`, and `new_acceleration` instead.
-    void at_time(double time, Vector<double>& new_position, Vector<double>& new_velocity, Vector<double>& new_acceleration) const {
+    void at_time(float time, Vector<float>& new_position, Vector<float>& new_velocity, Vector<float>& new_acceleration) const {
         if constexpr (DOFs == 0) {
             if (degrees_of_freedom != new_position.size() || degrees_of_freedom != new_velocity.size() || degrees_of_freedom != new_acceleration.size()) {
                 throw RuckigError("mismatch in degrees of freedom (vector size).");
@@ -198,13 +198,13 @@ public:
         }
 
         size_t new_section;
-        state_to_integrate_from(time, new_section, [&](size_t dof, double t, double p, double v, double a, double j) {
+        state_to_integrate_from(time, new_section, [&](size_t dof, float t, float p, float v, float a, float j) {
             std::tie(new_position[dof], new_velocity[dof], new_acceleration[dof]) = integrate(t, p, v, a, j);
         });
     }
 
     //! Get the position at a given time
-    void at_time(double time, Vector<double>& new_position) const {
+    void at_time(float time, Vector<float>& new_position) const {
         if constexpr (DOFs == 0) {
             if (degrees_of_freedom != new_position.size()) {
                 throw RuckigError("mismatch in degrees of freedom (vector size).");
@@ -212,15 +212,15 @@ public:
         }
 
         size_t new_section;
-        state_to_integrate_from(time, new_section, [&](size_t dof, double t, double p, double v, double a, double j) {
+        state_to_integrate_from(time, new_section, [&](size_t dof, float t, float p, float v, float a, float j) {
             std::tie(new_position[dof], std::ignore, std::ignore) = integrate(t, p, v, a, j);
         });
     }
 
     //! Get the kinematic state, the jerk, and the section at a given time without vectors for a single DoF
     template<size_t D = DOFs, typename std::enable_if<(D == 1), int>::type = 0>
-    void at_time(double time, double& new_position, double& new_velocity, double& new_acceleration, double& new_jerk, size_t& new_section) const {
-        state_to_integrate_from(time, new_section, [&](size_t, double t, double p, double v, double a, double j) {
+    void at_time(float time, float& new_position, float& new_velocity, float& new_acceleration, float& new_jerk, size_t& new_section) const {
+        state_to_integrate_from(time, new_section, [&](size_t, float t, float p, float v, float a, float j) {
             std::tie(new_position, new_velocity, new_acceleration) = integrate(t, p, v, a, j);
             new_jerk = j;
         });
@@ -228,18 +228,18 @@ public:
 
     //! Get the kinematic state at a given time without vectors for a single DoF
     template<size_t D = DOFs, typename std::enable_if<(D == 1), int>::type = 0>
-    void at_time(double time, double& new_position, double& new_velocity, double& new_acceleration) const {
+    void at_time(float time, float& new_position, float& new_velocity, float& new_acceleration) const {
         size_t new_section;
-        state_to_integrate_from(time, new_section, [&](size_t, double t, double p, double v, double a, double j) {
+        state_to_integrate_from(time, new_section, [&](size_t, float t, float p, float v, float a, float j) {
             std::tie(new_position, new_velocity, new_acceleration) = integrate(t, p, v, a, j);
         });
     }
 
     //! Get the position at a given time without vectors for a single DoF
     template<size_t D = DOFs, typename std::enable_if<(D == 1), int>::type = 0>
-    void at_time(double time, double& new_position) const {
+    void at_time(float time, float& new_position) const {
         size_t new_section;
-        state_to_integrate_from(time, new_section, [&](size_t, double t, double p, double v, double a, double j) {
+        state_to_integrate_from(time, new_section, [&](size_t, float t, float p, float v, float a, float j) {
             std::tie(new_position, std::ignore, std::ignore) = integrate(t, p, v, a, j);
         });
     }
@@ -251,17 +251,17 @@ public:
     }
 
     //! Get the duration of the (synchronized) trajectory
-    double get_duration() const {
+    float get_duration() const {
         return duration;
     }
 
     //! Get the durations when the intermediate waypoints are reached
-    Container<double> get_intermediate_durations() const {
+    Container<float> get_intermediate_durations() const {
         return cumulative_times;
     }
 
     //! Get the minimum duration of each independent DoF
-    Vector<double> get_independent_min_durations() const {
+    Vector<float> get_independent_min_durations() const {
         return independent_min_durations;
     }
 
@@ -289,15 +289,15 @@ public:
     }
 
     //! Get the time that this trajectory passes a specific position of a given DoF the first time
-    std::optional<double> get_first_time_at_position(size_t dof, double position, double time_after=0.0) const {
+    std::optional<float> get_first_time_at_position(size_t dof, float position, float time_after=0.0f) const {
         if (dof >= degrees_of_freedom) {
             return std::nullopt;
         }
 
-        double time;
+        float time;
         for (size_t i = 0; i < profiles.size(); ++i) {
             if (profiles[i][dof].get_first_state_at_position(position, time, time_after)) {
-                const double section_time = (i > 0) ? cumulative_times[i-1] : 0.0;
+                const float section_time = (i > 0) ? cumulative_times[i-1] : 0.0f;
                 return section_time + time;
             }
         }

@@ -11,21 +11,21 @@ class VelocityThirdOrderStep1 {
     using ReachedLimits = Profile::ReachedLimits;
     using ControlSigns = Profile::ControlSigns;
 
-    const double a0, af;
-    const double _aMax, _aMin, _jMax;
+    const float a0, af;
+    const float _aMax, _aMin, _jMax;
 
     // Pre-calculated expressions
-    double vd;
+    float vd;
 
     // Max 3 valid profiles
     using ProfileIter = std::array<Profile, 3>::iterator;
     std::array<Profile, 3> valid_profiles;
 
-    void time_acc0(ProfileIter& profile, double aMax, double aMin, double jMax, bool return_after_found) const;
-    void time_none(ProfileIter& profile, double aMax, double aMin, double jMax, bool return_after_found) const;
+    void time_acc0(ProfileIter& profile, float aMax, float aMin, float jMax, bool return_after_found) const;
+    void time_none(ProfileIter& profile, float aMax, float aMin, float jMax, bool return_after_found) const;
 
     // Only for zero-limits case
-    bool time_all_single_step(Profile* profile, double aMax, double aMin, double jMax) const;
+    bool time_all_single_step(Profile* profile, float aMax, float aMin, float jMax) const;
 
     inline void add_profile(ProfileIter& profile) const {
         const auto prev_profile = profile;
@@ -34,7 +34,7 @@ class VelocityThirdOrderStep1 {
     }
 
 public:
-    explicit VelocityThirdOrderStep1(double v0, double a0, double vf, double af, double aMax, double aMin, double jMax);
+    explicit VelocityThirdOrderStep1(float v0, float a0, float vf, float af, float aMax, float aMin, float jMax);
 
     bool get_profile(const Profile& input, Block& block);
 };
@@ -45,21 +45,21 @@ class VelocityThirdOrderStep2 {
     using ReachedLimits = Profile::ReachedLimits;
     using ControlSigns = Profile::ControlSigns;
 
-    const double a0, tf, af;
-    const double _aMax, _aMin, _jMax;
+    const float a0, tf, af;
+    const float _aMax, _aMin, _jMax;
 
     // Pre-calculated expressions
-    double vd, ad;
+    float vd, ad;
 
-    bool time_acc0(Profile& profile, double aMax, double aMin, double jMax);
-    bool time_none(Profile& profile, double aMax, double aMin, double jMax);
+    bool time_acc0(Profile& profile, float aMax, float aMin, float jMax);
+    bool time_none(Profile& profile, float aMax, float aMin, float jMax);
 
-    inline bool check_all(Profile& profile, double aMax, double aMin, double jMax) {
+    inline bool check_all(Profile& profile, float aMax, float aMin, float jMax) {
         return time_acc0(profile, aMax, aMin, jMax) || time_none(profile, aMax, aMin, jMax);
     }
 
 public:
-    explicit VelocityThirdOrderStep2(double tf, double v0, double a0, double vf, double af, double aMax, double aMin, double jMax);
+    explicit VelocityThirdOrderStep2(float tf, float v0, float a0, float vf, float af, float aMax, float aMin, float jMax);
 
     bool get_profile(Profile& profile);
 };
@@ -67,11 +67,11 @@ public:
 
 //! Mathematical equations for Step 1 in second-order velocity interface: Extremal profiles
 class VelocitySecondOrderStep1 {
-    const double _aMax, _aMin;
-    double vd; // Pre-calculated expressions
+    const float _aMax, _aMin;
+    float vd; // Pre-calculated expressions
 
 public:
-    explicit VelocitySecondOrderStep1(double v0, double vf, double aMax, double aMin);
+    explicit VelocitySecondOrderStep1(float v0, float vf, float aMax, float aMin);
 
     bool get_profile(const Profile& input, Block& block);
 };
@@ -79,11 +79,11 @@ public:
 
 //! Mathematical equations for Step 2 in second-order velocity interface: Time synchronization
 class VelocitySecondOrderStep2 {
-    const double tf, _aMax, _aMin;
-    double vd; // Pre-calculated expressions
+    const float tf, _aMax, _aMin;
+    float vd; // Pre-calculated expressions
 
 public:
-    explicit VelocitySecondOrderStep2(double tf, double v0, double vf, double aMax, double aMin);
+    explicit VelocitySecondOrderStep2(float tf, float v0, float vf, float aMax, float aMin);
 
     bool get_profile(Profile& profile);
 };
