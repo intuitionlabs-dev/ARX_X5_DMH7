@@ -10,7 +10,7 @@ extern "C" {
 /* Independent single-axis, position-control Ruckig instance. Not thread-safe;
  * use one instance per axis and do not copy the opaque object. Units are chosen
  * by the caller, with seconds as the time unit. All scalars are IEEE FP32.
- * ABI changed from the earlier double interface: rebuild all callers. */
+ * ABI changed from earlier double/minimum-duration interfaces: rebuild callers. */
 typedef struct ruckig_c_context ruckig_c_context;
 
 typedef struct {
@@ -20,8 +20,6 @@ typedef struct {
 typedef struct {
     ruckig_c_state current, target;
     float max_velocity, max_acceleration, max_jerk;
-    /* Zero selects the fastest feasible trajectory; otherwise a lower bound. */
-    float minimum_duration;
 } ruckig_c_input;
 
 typedef struct {
@@ -53,8 +51,8 @@ size_t ruckig_c_context_size(void);
 /* Advance one period and return WORKING / FINISHED or a negative error.
  * Feed output.state into input.current on the next call. Changed targets,
  * limits, or current state trigger replanning. All input values must be finite;
- * limits must be positive and minimum_duration nonnegative. An initially
- * out-of-limit current velocity/acceleration is allowed for braking recovery.
+ * limits must be positive. Always selects the fastest feasible trajectory.
+ * Initially out-of-limit current velocity/acceleration is allowed for braking recovery.
  * No allocation, OS clock, cloud calls, or exceptions during update.
  * On error, output is untouched and the cached trajectory is invalidated.
  * Time is clamped at the endpoint: FINISHED repeatedly returns the target state

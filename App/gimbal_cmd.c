@@ -321,7 +321,6 @@ static int Joint_Ruckig_Ref_Update(Gimbal_cmd* obj, int joint) { // NOLINT(reada
         .max_velocity = config->max_velocity_deg_s,
         .max_acceleration = config->max_acceleration_deg_s2,
         .max_jerk = config->max_jerk_deg_s3,
-        .minimum_duration = obj->gimbal->profile->position_min_duration_s,
     };
     ruckig_c_output output;
     ref->status = ruckig_c_update(ref->planner, &input, &output);

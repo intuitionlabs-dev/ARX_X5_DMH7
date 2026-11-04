@@ -366,9 +366,8 @@ const Arm_profile ARM_PROFILE_METAL = {
         .stall_windows=ARM_PROFILE_GRIPPER_STALL_WINDOWS,
         .seek_timeout_ms=ARM_PROFILE_GRIPPER_SEEK_TIMEOUT_MS,
         .backoff_timeout_ms=ARM_PROFILE_GRIPPER_BACKOFF_TIMEOUT_MS},
-    /* 配置动力学模型、基座重力和位置参考时长。 */
+    /* 配置动力学模型和基座重力。 */
     .dynamics=&dynamics, .gravity={0,0,ARM_PROFILE_BASE_GRAVITY_Z_M_S2},
-    .position_min_duration_s=ARM_PROFILE_POSITION_MIN_DURATION_S,
     /* 登记初始化取消和推进回调。 */
     .cancel_initialize=Arm_Initialization_Cancel,
     .initialize=Arm_Initialize_Hold,

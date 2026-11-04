@@ -59,7 +59,6 @@ static void init(Fixture* f) {
     f->arm.gimbal = &f->gimbal;
     f->gimbal.profile = &f->profile;
     f->profile.joints = f->joints;
-    f->profile.position_min_duration_s = .16f;
     f->profile.rc_joint[0] = 0;
     f->profile.rc_joint[1] = f->profile.rc_joint[2] = -1;
     f->profile.rc_speed_deg_s = 90;
@@ -147,6 +146,23 @@ static void position_replan_isolation(void) {
         assert(a.gimbal.arm_control_data.joint_angle[1] == -40);
     }
     destroy(&a); destroy(&b);
+}
+
+static void short_position_move(void) {
+    Fixture f; init(&f);
+    f.cmd->ctrl_src.joint_angle_solved[0] = .01f;
+    unsigned steps = 0;
+    do {
+        constrained_step(&f);
+        ++steps;
+    } while (steps < 80 && f.cmd->joint_ruckig_ref[0].status != RUCKIG_C_FINISHED);
+    /* A small position move must finish before the old 160 ms lower bound. */
+    assert(steps < 80);
+    assert(f.cmd->joint_ruckig_ref[0].status == RUCKIG_C_FINISHED);
+    assert(f.gimbal.arm_control_data.joint_angle[0] == .01f);
+    assert(f.gimbal.arm_control_data.joint_vel[0] == 0);
+    assert(f.gimbal.arm_control_data.joint_acc[0] == 0);
+    destroy(&f);
 }
 
 static void source_transitions(void) {
@@ -256,6 +272,7 @@ int main(void) {
     }
     allocation_budget = -1;
     position_replan_isolation();
+    short_position_move();
     source_transitions();
     errors_and_rc();
     assert(live_allocations == 0);

@@ -14,9 +14,8 @@
 #define ARM_PROFILE_DEFAULT_VELOCITY_SCALE 1.0f
 #define ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE 1.0f
 
-/* 基座重力、位置参考时长和遥控速度。 */
+/* 基座重力、普通位置运动约束和遥控速度。 */
 #define ARM_PROFILE_BASE_GRAVITY_Z_M_S2 (-9.81f)
-#define ARM_PROFILE_POSITION_MIN_DURATION_S 0.16f
 /* 普通位置控制的初始运动约束；各关节可在机型表中单独调整。 */
 #define ARM_PROFILE_MAX_VELOCITY_DEG_S 90.0f
 #define ARM_PROFILE_MAX_ACCELERATION_DEG_S2 360.0f

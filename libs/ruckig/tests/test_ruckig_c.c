@@ -11,7 +11,7 @@ static const float dt = 0.002f;
 static ruckig_c_input input_for(float target) {
     const ruckig_c_input input = {
         .target = {target, 0, 0}, .max_velocity = 90,
-        .max_acceleration = 360, .max_jerk = 3600, .minimum_duration = .16f
+        .max_acceleration = 360, .max_jerk = 3600
     };
     return input;
 }
@@ -88,7 +88,7 @@ static void invalid_and_recovery(void) {
     assert(ruckig_c_update(ctx, &in, NULL) < 0);
     float* values[] = {&in.current.position, &in.current.velocity, &in.current.acceleration,
         &in.target.position, &in.target.velocity, &in.target.acceleration,
-        &in.max_velocity, &in.max_acceleration, &in.max_jerk, &in.minimum_duration};
+        &in.max_velocity, &in.max_acceleration, &in.max_jerk};
     for (unsigned i = 0; i < sizeof(values)/sizeof(values[0]); ++i) {
         float saved = *values[i];
         *values[i] = NAN;
@@ -107,9 +107,6 @@ static void invalid_and_recovery(void) {
         assert(ruckig_c_update(ctx, &in, &out) < 0);
         *limits[i] = saved;
     }
-    in.minimum_duration = -1;
-    assert(ruckig_c_update(ctx, &in, &out) < 0);
-    in.minimum_duration = .16f;
     in.target.velocity = in.max_velocity * 2;
     assert(ruckig_c_update(ctx, &in, &out) < 0);
     in.target.velocity = 0;
@@ -124,7 +121,9 @@ static void durations_and_isolation(void) {
     ruckig_c_context* b = ruckig_c_create(dt);
     assert(a && b);
     ruckig_c_input ia = input_for(.01f), ib = input_for(-100);
-    ia.minimum_duration = 1;
+    /* Four equal jerk phases: distance = 2*J*tj^3, duration = 4*tj.
+     * This small move reaches neither the acceleration nor velocity limit. */
+    const float fastest = 4.0f*cbrtf(.01f/(2.0f*ia.max_jerk));
     ruckig_c_output oa, ob;
     for (int i = 0; i < 5000; ++i) {
         assert(ruckig_c_update(a, &ia, &oa) >= 0);
@@ -135,15 +134,22 @@ static void durations_and_isolation(void) {
         ia.current = oa.state;
         ib.current = ob.state;
     }
-    assert(oa.duration >= 1 && oa.state.position == .01f);
+    assert(fabsf(oa.duration - fastest) < 1e-6f);
+    assert(oa.duration > 0 && oa.duration < .16f && oa.state.position == .01f);
     assert(ob.duration > .16f && ob.state.position == -100);
     ruckig_c_reset(a);
     ia = input_for(0);
-    ia.minimum_duration = 0;
     assert(ruckig_c_update(a, &ia, &oa) == RUCKIG_C_FINISHED);
     assert(oa.duration == 0 && oa.state.position == 0);
+    /* A trajectory shorter than one control period completes on its first call. */
+    ia = input_for(1e-8f);
+    assert(ruckig_c_update(a, &ia, &oa) == RUCKIG_C_FINISHED);
+    assert(oa.new_calculation && oa.duration > 0 && oa.duration < dt);
+    assert(oa.time == oa.duration && oa.state.position == ia.target.position);
+    assert(oa.state.velocity == 0 && oa.state.acceleration == 0);
     /* Initially excessive speed can be recovered without discarding continuity. */
     ruckig_c_reset(a);
+    ia = input_for(0);
     ia.current.velocity = 100;
     assert(ruckig_c_update(a, &ia, &oa) == RUCKIG_C_WORKING);
     assert(fabs(oa.state.velocity - 100) <= ia.max_acceleration*dt);

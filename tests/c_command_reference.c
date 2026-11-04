@@ -29,7 +29,6 @@ void reference_command_init(const float* feedback) { // NOLINT(readability-ident
     gimbal_cmd.gimbal = &gimbal;
     gimbal.profile = &profile;
     profile.joints = joints;
-    profile.position_min_duration_s = .16f;
     for (int i=0; i<ARM_JOINT_NUM; ++i) {
         joints[i].plan_velocity_scale = 1;
         joints[i].max_velocity_deg_s = 90;

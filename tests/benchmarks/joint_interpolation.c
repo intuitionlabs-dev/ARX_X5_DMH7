@@ -33,7 +33,10 @@ static void init(Fixture* f) {
     f->gimbal.profile = &f->profile;
     f->profile.joints = f->joints;
 #if BENCH_RUCKIG
+#ifdef ARM_PROFILE_POSITION_MIN_DURATION_S
+    /* Preserve the configuration when benchmarking historical Ruckig commits. */
     f->profile.position_min_duration_s = ARM_PROFILE_POSITION_MIN_DURATION_S;
+#endif
 #else
     f->profile.quintic_duration_s = ARM_PROFILE_QUINTIC_DURATION_S;
 #endif

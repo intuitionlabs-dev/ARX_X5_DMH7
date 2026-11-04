@@ -32,7 +32,7 @@ static bool same_state(const ruckig_c_state& a, const ruckig_c_state& b) {
 static bool same_input(const ruckig_c_input& a, const ruckig_c_input& b) {
     return same_state(a.current, b.current) && same_state(a.target, b.target)
         && a.max_velocity == b.max_velocity && a.max_acceleration == b.max_acceleration
-        && a.max_jerk == b.max_jerk && a.minimum_duration == b.minimum_duration;
+        && a.max_jerk == b.max_jerk;
 }
 
 extern "C" ruckig_c_context* ruckig_c_create(float period_s) {
@@ -59,8 +59,7 @@ extern "C" int ruckig_c_update(ruckig_c_context* context,
     if (!input || !output || !finite_state(input->current) || !finite_state(input->target)
         || !std::isfinite(input->max_velocity) || input->max_velocity <= 0.0f
         || !std::isfinite(input->max_acceleration) || input->max_acceleration <= 0.0f
-        || !std::isfinite(input->max_jerk) || input->max_jerk <= 0.0f
-        || !std::isfinite(input->minimum_duration) || input->minimum_duration < 0.0f) {
+        || !std::isfinite(input->max_jerk) || input->max_jerk <= 0.0f) {
         context->valid = false;
         return RUCKIG_C_INVALID_INPUT;
     }
@@ -78,8 +77,7 @@ extern "C" int ruckig_c_update(ruckig_c_context* context,
         in.max_velocity[0] = input->max_velocity;
         in.max_acceleration[0] = input->max_acceleration;
         in.max_jerk[0] = input->max_jerk;
-        in.minimum_duration = input->minimum_duration > 0.0f
-            ? std::optional<float>(input->minimum_duration) : std::nullopt;
+        // Single-axis continuous timing uses Step 1's fastest feasible profile.
         const auto result = context->planner.calculate(in, context->trajectory);
         if (result < 0) return static_cast<int>(result);
         context->time = 0.0f;

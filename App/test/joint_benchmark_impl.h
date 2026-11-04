@@ -65,7 +65,6 @@ int JointBenchmark_Init(unsigned arms, unsigned algorithm) {
                 .max_velocity = ARM_PROFILE_MAX_VELOCITY_DEG_S,
                 .max_acceleration = ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
                 .max_jerk = ARM_PROFILE_MAX_JERK_DEG_S3,
-                .minimum_duration = ARM_PROFILE_POSITION_MIN_DURATION_S,
             };
             axis->output = (ruckig_c_state){0};
             memset(&axis->quintic, 0, sizeof(axis->quintic));

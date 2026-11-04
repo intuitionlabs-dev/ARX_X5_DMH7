@@ -17,9 +17,8 @@ int Arm_Profile_Validate(const Arm_profile* profile) {
     if (!profile || !profile->motors || !profile->joints || !profile->initialize
         || profile->joint_count != ARM_JOINT_NUM || profile->motor_count != ARM_MOTOR_NUM
         || !ARM_JOINT_NUM || ARM_MOTOR_NUM > 255) return 0;
-    /* 检查轨迹时长、设零超时和重力参数。 */
-    if (!isfinite(profile->position_min_duration_s) || profile->position_min_duration_s < 0
-        || !isfinite(profile->init.reset_time_s) || profile->init.reset_time_s <= 0
+    /* 检查复位时长、设零超时和重力参数。 */
+    if (!isfinite(profile->init.reset_time_s) || profile->init.reset_time_s <= 0
         || !isfinite(profile->init.pose_tolerance_deg) || profile->init.pose_tolerance_deg < 0
         || !profile->init.zero_motor_ms || !profile->init.zero_total_ms
         || !profile->init.zero_disable_timeout_ms || !profile->init.zero_disable_retry_ms

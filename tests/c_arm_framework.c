@@ -69,7 +69,7 @@ int main(void) {
             .zero_motor_ms=100, .zero_disable_timeout_ms=1500, .zero_disable_retry_ms=100, .gripper_home_torque=.5f, .gripper_speed_deg_s=100,
             .gripper_backoff_deg=1, .gripper_follow_error_deg=20, .gripper_backoff_tolerance_deg=4, .gripper_settle_ms=400, .stall_tolerance_deg=.5f, .stall_window_ms=2,
             .stall_windows=2, .seek_timeout_ms=100, .backoff_timeout_ms=100},
-        .position_min_duration_s=.16f, .stop_on_motor_lost=1, .initialize=Arm_Initialize_Hold,
+        .stop_on_motor_lost=1, .initialize=Arm_Initialize_Hold,
         .rc_joint={-1,-1,-1}};
     CHECK(Arm_Profile_Validate(&profile));
     float* motion_limits[] = {&joints[0].max_velocity_deg_s,
@@ -83,13 +83,6 @@ int main(void) {
         }
         *motion_limits[i] = saved;
     }
-    profile.position_min_duration_s = 0;
-    CHECK(Arm_Profile_Validate(&profile));
-    profile.position_min_duration_s = -1;
-    CHECK(!Arm_Profile_Validate(&profile));
-    profile.position_min_duration_s = NAN;
-    CHECK(!Arm_Profile_Validate(&profile));
-    profile.position_min_duration_s = .16f;
     Arm_profile invalid = profile;
     invalid.joint_count++;
     CHECK(!Arm_Profile_Validate(&invalid));
