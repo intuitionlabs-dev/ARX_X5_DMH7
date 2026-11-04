@@ -150,117 +150,14 @@ H7 Release 和混合机型 Debug 构建通过；ARM 库没有双精度数学符�
 
 ## H7 实机测量
 
-板上测试入口为 [h7_joint_benchmark.c](../../App/test/h7_joint_benchmark.c)，
-公共工作负载和统计在 [joint_benchmark.c](../../App/test/joint_benchmark.c)。
-默认关闭，通过独立构建目录启用：
-
-```bash
-cmake -S . -B build/H7-joint-benchmark -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake \
-  -DCMAKE_BUILD_TYPE=Release -DH7_JOINT_BENCHMARK=ON
-cmake --build build/H7-joint-benchmark -j4
-```
-
-需要完整 ARM GCC C/C++17 工具链、CMake、Ninja，以及本项目构建所需的 Python。
-生成 `build/H7-joint-benchmark/CtrBoard-H7_ALL.elf`，用现有 SWD 下载工具烧录。
-若需要二进制文件：
-
-```bash
-arm-none-eabi-objcopy -O binary \
-  build/H7-joint-benchmark/CtrBoard-H7_ALL.elf \
-  build/H7-joint-benchmark/CtrBoard-H7_ALL.bin
-```
-
-这是专用测试固件。启动后在 `SystemClock_Config()` 后进入独立的 16 KiB 栈测试任务，
-初始化 GPIO、DMA 和 USART1，跳过正常 BSP、FDCAN、机器人协议、遥控和电机任务初始化。
-测试使用内存中的模拟机械臂，不发送电机控制指令。完成后保留结果并退出测试任务，
-不会继续进入机器人程序。恢复控制功能时烧录 `H7_JOINT_BENCHMARK=OFF` 的正常固件。
-
-### 连接及运行
-
-1. 板上 **USART1 TX（PA9）→ USB-TTL RX**，并连接 GND；使用 3.3 V TTL。
-   本测试只输出，PA10 不需要连接。该接口不是 USB CDC 或 USART3 RS485。
-2. 串口设为 **921600 baud、8N1、无流控**，打开日志保存，再复位板子。
-3. 等待 `meta,...`、表头及各行 `case,...`，最后收到 `done,...`。
-   默认测试单臂 6 轴、双臂 12 轴，各 5 个场景，两种算法、3 轮，共 **60 行结果**。
-4. `done` 中 `failed=0`、`uart_errors=0` 且所有行 `error=0` 才表示本轮有效。
-   若有求解失败或样本不完整，不要把部分轨迹或失败回退的耗时当作正常性能。
-
-也可以不接串口，用 SWD 调试器查看全局变量 `h7_joint_benchmark`。
-测试固件保留调试信息，Release 仍按 `-Os` 优化。让 MCU 连续运行，待 `state=2`
-后再暂停查看 `results`；测量中不要单步、设断点或频繁读内存。复位可重新测试。
-
-| 观测字段 | 含义 |
-| --- | --- |
-| `state` | 0 未开始，1 运行中，2 已结束；负值是启动失败 |
-| `active_result` / `active_tick` | 当前结果索引／周期，含预热周期 |
-| `completed` / `failed_cases` | 已完成／失败的用例数 |
-| `core_hz` / `irq_masked` | 实际 `SystemCoreClock`／是否在计时区间屏蔽中断 |
-| `icache_enabled` / `dcache_enabled` | 进入测试时的缓存状态；测试不主动修改缓存配置 |
-| `counter_overhead_cycles` | 64 次空测量中的最小开销；原始结果不扣除该值 |
-| `stack_free_bytes` | 测试任务栈历史最小剩余空间，单位字节 |
-| `results[i].stats` | 总周期数、样本数、最小／最大周期、平均／峰值时间与 CPU 占比 |
-
-启动错误：`-10` 时钟无效，`-11` DWT 计数器不可用，`-12` 任务创建失败，`-13` 内核启动失败。
-用例错误：`-20` 上下文分配失败，`-21` 计数为零或单次测量超过一秒；其他负值表示
-规划／输出校验失败，其中 Ruckig 求解错误沿用 C 接口返回码。`error_tick` 是失败周期，
-从 0 起且包含预热；成功时为 `UINT32_MAX`。
-
-### 测量范围
-
-Ruckig 路径通过测试专用入口调用生产代码 `Arm_Ref_Set()`。
-五次插值对照来自 `rebuild` 的 `3317d9b`，保存在
-[joint_quintic_baseline.inc](../../App/test/joint_quintic_baseline.inc)：保留参考选择、
-重规划和样条计算逻辑，仅适配状态存储及原先的 0.16 s 配置值。
-两个算法在同一固件、同一时钟、同一场景中轮换运行，重置到相同初态和随机种子。
-本测试比较 **五次插值和当前单精度 Ruckig**，不包含双精度 Ruckig。
-
-每次计时包含该周期内所有臂的目标复制、参考选择、插值及结果写入，不含目标生成、
-创建／释放、校验、串口输出、动力学和通信。五种场景含义与主机测试一致，板上目标
-生成采用 `sinf` 和单精度常量，因此不能要求它与主机原先双精度生成的输入逐位一致；
-板上两种算法的输入完全相同。
-
-每个用例默认预热 1,000 周期，再测 10,000 周期。模拟控制时间每次推进 2 ms，
-程序连续计算、每 128 次在计时区间外让出一次 CPU，**并不每周期等待 2 ms**。
-这里的 CPU 占比表示这段参考计算在 500 Hz 调用频率下占用的预算，不是测试任务在
-连续跑分期间的 RTOS 使用率，更不是整机总 CPU 占用率。
-
-DWT `CYCCNT` 每次采样用无符号 32 位差值处理回绕，再用 64 位累计总周期数。
-每次计时应小于一次完整计数器回绕，代码另外拒绝超过一秒的单次样本。
-测量前后使用屏障，保留读计数器和循环／调用开销，不扣除空测量值。
-`SystemCoreClockUpdate()` 后的内核时钟用于转换；不要在测试中途修改时钟。
+这里的主机结果不能直接换算为 STM32H723 的 CPU 占用，不能只按主频比例缩放。
+在 H7 上需分别构建两个版本，在普通位置参考计算前后读取 DWT `CYCCNT`，
+累计相同目标序列下的周期数。对同一 2 ms 周期内所有臂的计算求和：
 
 ```text
-total_cycles = (total_hi << 32) | total_lo
-mean_us = total_cycles / samples / core_hz × 1,000,000
-cpu_percent = mean_us / 2000 × 100
-max_us = max_cycles / core_hz × 1,000,000
-新增占用（百分点） = Ruckig cpu_percent − quintic cpu_percent
+占比 = 累计计算 cycles / (样本数 × SystemCoreClock × 0.002) × 100%
 ```
 
-CSV 的 `total_hi`、`total_lo` 是总周期数高／低 32 位十进制整数，避免依赖 nano printf
-的 64 位格式支持。`mean_us`、`cpu_percent`、`max_us` 已在板上计算并输出，
-`over_budget` 为单次参考计算 **超过 2 ms** 的次数，`checksum_bits` 为最终输出
-校验和的 FP32 位模式（十六进制）。同算法、同臂数、同场景的多轮校验和应一致。
-单周期观测峰值不等于所有输入和完整系统条件下的最坏执行时间保证。
-
-### 可选配置
-
-以下参数在 CMake 配置时指定，默认值如下：
-
-```bash
--DH7_JOINT_BENCHMARK_SAMPLES=10000
--DH7_JOINT_BENCHMARK_WARMUP=1000
--DH7_JOINT_BENCHMARK_ROUNDS=3
--DH7_JOINT_BENCHMARK_MASK_IRQ=ON
-```
-
-样本数和预热数范围为 1～1,000,000，轮数为 1～10。默认仅在单次测量时用 PRIMASK
-屏蔽可屏蔽中断，采样后恢复原状态，用于测算法自身开销；串口、目标生成和校验时不屏蔽。
-设为 `OFF` 可观测包含中断抢占的耗时，但此时仍是专用测试固件，没有正常电机和通信任务负载。
-对比两次结果时保持优化等级、时钟、缓存及中断设置一致。`meta` 行会记录实际参数。
-
-当前验证：专用 Release（屏蔽／允许中断）和普通 Release 构建通过，166 项回归测试通过。
-原生测试覆盖相同输入、重复性、失败检测、计数回绕、64 位累计及 CPU 占比公式。
-链接符号检查确认专用固件没有正常 CAN 初始化／电机任务入口，普通固件没有测试入口。
-**当前环境未连接 H7，实机耗时需烧录后读取。**
+周期计数包含中断抢占时表示这段代码的实际经过时间；需要区分算法自身开销时，
+应在独立的非电机测试任务中测量并明确中断条件。同时记录单周期峰值、任务栈余量
+和整机其他任务负载，才能判断 2 ms 控制周期是否有足够余量。

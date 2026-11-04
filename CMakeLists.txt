@@ -8,11 +8,6 @@ endif()
 set(CMAKE_PROJECT_NAME CtrBoard-H7_ALL)
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 project(${CMAKE_PROJECT_NAME})
-option(H7_JOINT_BENCHMARK "Boot isolated DWT joint benchmark instead of robot control" OFF)
-option(H7_JOINT_BENCHMARK_MASK_IRQ "Mask interrupts during each benchmark sample" ON)
-set(H7_JOINT_BENCHMARK_SAMPLES 10000 CACHE STRING "Measured periods per scenario/round")
-set(H7_JOINT_BENCHMARK_WARMUP 1000 CACHE STRING "Warmup periods per scenario/round")
-set(H7_JOINT_BENCHMARK_ROUNDS 3 CACHE STRING "Rounds per scenario")
 message("Build type: " ${CMAKE_BUILD_TYPE})
 enable_language(C CXX ASM)
 add_executable(${CMAKE_PROJECT_NAME})
@@ -112,27 +107,3 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 )
 
 add_subdirectory(App/profiles)
-
-if(H7_JOINT_BENCHMARK)
-    foreach(setting SAMPLES WARMUP ROUNDS)
-        if(NOT "${H7_JOINT_BENCHMARK_${setting}}" MATCHES "^[1-9][0-9]*$"
-           OR H7_JOINT_BENCHMARK_${setting} GREATER 1000000)
-            message(FATAL_ERROR "H7_JOINT_BENCHMARK_${setting} must be 1..1000000")
-        endif()
-    endforeach()
-    if(H7_JOINT_BENCHMARK_ROUNDS GREATER 10)
-        message(FATAL_ERROR "H7_JOINT_BENCHMARK_ROUNDS must be 1..10")
-    endif()
-    target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-        App/test/joint_benchmark.c App/test/h7_joint_benchmark.c)
-    target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE App/profiles)
-    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-        H7_JOINT_BENCHMARK=1
-        H7_JOINT_BENCHMARK_MASK_IRQ=$<BOOL:${H7_JOINT_BENCHMARK_MASK_IRQ}>
-        H7_JOINT_BENCHMARK_SAMPLES=${H7_JOINT_BENCHMARK_SAMPLES}
-        H7_JOINT_BENCHMARK_WARMUP=${H7_JOINT_BENCHMARK_WARMUP}
-        H7_JOINT_BENCHMARK_ROUNDS=${H7_JOINT_BENCHMARK_ROUNDS})
-    # Retain debugger types/variables while keeping the selected optimization.
-    target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE -g3)
-    message(STATUS "H7 benchmark firmware: normal robot startup is bypassed")
-endif()

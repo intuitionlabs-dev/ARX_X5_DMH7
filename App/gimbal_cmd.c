@@ -411,12 +411,6 @@ static void Arm_Ref_Set(Gimbal_cmd* obj) {
     }
 }
 
-#if defined(H7_JOINT_BENCHMARK) && H7_JOINT_BENCHMARK
-void Gimbal_Cmd_Benchmark_Reference(Gimbal_cmd* obj) {
-    Arm_Ref_Set(obj);
-}
-#endif
-
 /* 使输入关节目标跟随反馈位置。 */
 static void joint_src_follow(Gimbal_cmd* obj) {
 

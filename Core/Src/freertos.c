@@ -27,6 +27,10 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "test_config.h"
+#if TEST_JOINT_BENCHMARK_ENABLE
+#include "h7_joint_benchmark.h"
+#include <string.h>
+#endif
 #include "bsp_can.h"
 #include "bsp_supervise.h"
 #include "monitor.h"
@@ -99,6 +103,19 @@ const osThreadAttr_t UartLoopbackTask_attributes = {
   .priority = (osPriority_t) osPriorityLow,
 };
 #endif
+#if TEST_JOINT_BENCHMARK_ENABLE
+osThreadId_t JointBenchmarkTaskHandle;
+static uint64_t JointBenchmarkTaskBuffer[2048] __attribute__((section(".RAM_D1"), aligned(8)));
+static osStaticThreadDef_t JointBenchmarkTaskControlBlock;
+static const osThreadAttr_t JointBenchmarkTask_attributes = {
+  .name = "JointBenchmarkTask",
+  .cb_mem = &JointBenchmarkTaskControlBlock,
+  .cb_size = sizeof(JointBenchmarkTaskControlBlock),
+  .stack_mem = JointBenchmarkTaskBuffer,
+  .stack_size = sizeof(JointBenchmarkTaskBuffer),
+  .priority = (osPriority_t) osPriorityLow,
+};
+#endif
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -151,6 +168,9 @@ void StartCanLoopbackTask(void *argument);
 #endif
 #if TEST_UART_LOOPBACK_ENABLE
 void StartUartLoopbackTask(void *argument);
+#endif
+#if TEST_JOINT_BENCHMARK_ENABLE
+void StartJointBenchmarkTask(void *argument);
 #endif
 /* USER CODE END FunctionPrototypes */
 
@@ -213,6 +233,11 @@ void MX_FREERTOS_Init(void) {
   UartLoopbackTaskHandle = osThreadNew(StartUartLoopbackTask, NULL, &UartLoopbackTask_attributes);
 #endif
   HAL_Moveplan_Thread_Create();
+#if TEST_JOINT_BENCHMARK_ENABLE
+  memset((void*)&h7_joint_benchmark, 0, sizeof(h7_joint_benchmark));
+  JointBenchmarkTaskHandle = osThreadNew(StartJointBenchmarkTask, NULL, &JointBenchmarkTask_attributes);
+  if (JointBenchmarkTaskHandle == NULL) h7_joint_benchmark.state = -12;
+#endif
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -347,6 +372,17 @@ void StartCmdTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+#if TEST_JOINT_BENCHMARK_ENABLE
+/* Test-only implementation stays in App/test; no CMake source-list changes. */
+#include "h7_joint_benchmark.inc"
+void StartJointBenchmarkTask(void *argument)
+{
+    (void)argument;
+    osDelay(2000);
+    H7_Joint_Benchmark_Run();
+    osThreadExit();
+}
+#endif
 #if TEST_CAN_LOOPBACK_ENABLE
 
 /* CanLoopbackTest_Init() 在 main.c 的 USER CODE BEGIN 2 里调用，在调度器启动前。 */

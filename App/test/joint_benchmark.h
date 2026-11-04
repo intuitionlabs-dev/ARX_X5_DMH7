@@ -12,9 +12,9 @@ typedef struct {
     float mean_cycles, mean_us, max_us, cpu_percent, peak_cpu_percent;
 } JointBenchmarkStats;
 
-/* Isolated synthetic arms. Init/target generation/checks are outside timing.
- * Init temporarily sets the global RC monitor offline; destroy restores it.
- * Never use these fixtures concurrently with normal robot tasks. */
+/* Private contexts, no shared robot/RC state. Allocate once before the cases;
+ * Init resets the private state without allocating. */
+int JointBenchmark_Create(void);
 int JointBenchmark_Init(unsigned arms, unsigned algorithm);
 void JointBenchmark_Destroy(void);
 void JointBenchmark_Target(unsigned scenario, unsigned tick);

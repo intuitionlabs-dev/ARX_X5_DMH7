@@ -71,8 +71,3 @@ Gimbal_cmd* Gimbal_Cmd_Create(Arm* arm);
 
 /* 推进输入、轨迹、限位和参考值发布。 */
 void Gimbal_Cmd_Update(Gimbal_cmd* obj);
-
-#if defined(H7_JOINT_BENCHMARK) && H7_JOINT_BENCHMARK
-/* Test-only access to the production reference path; no motor IO. */
-void Gimbal_Cmd_Benchmark_Reference(Gimbal_cmd* obj);
-#endif

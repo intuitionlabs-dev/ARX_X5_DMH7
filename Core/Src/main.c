@@ -48,9 +48,6 @@
 #include "cmd.h"
 #include "rc.h"
 #include "robot_state.h" /* 机器人总模式状态机(App/robot_state.c) */
-#if defined(H7_JOINT_BENCHMARK) && H7_JOINT_BENCHMARK
-#include "h7_joint_benchmark.h"
-#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -234,9 +231,6 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-#if defined(H7_JOINT_BENCHMARK) && H7_JOINT_BENCHMARK
-  H7_Joint_Benchmark_Start(); /* Does not return or start robot tasks. */
-#endif
 
   /* USER CODE END SysInit */
 
