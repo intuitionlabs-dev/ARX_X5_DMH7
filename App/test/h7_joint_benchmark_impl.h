@@ -1,3 +1,5 @@
+#pragma once
+
 /* Included only by the optional thread in Core/Src/freertos.c. */
 #include "h7_joint_benchmark.h"
 #include "main.h"
@@ -7,7 +9,7 @@
 #include <string.h>
 
 #define JOINT_BENCHMARK_STORAGE __attribute__((section(".RAM_D1"), aligned(8)))
-#include "joint_benchmark.inc"
+#include "joint_benchmark_impl.h"
 #undef JOINT_BENCHMARK_STORAGE
 
 _Static_assert(TEST_JOINT_BENCHMARK_SAMPLES > 0 && TEST_JOINT_BENCHMARK_SAMPLES <= 1000000, "invalid sample count");

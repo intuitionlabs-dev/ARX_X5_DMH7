@@ -1,3 +1,7 @@
+#pragma once
+#include "robot_def.h"
+#include "quintic_spline.h"
+
 /* Ordinary position interpolation from rebuild 3317d9b, with private state.
  * Same 0.16 s quintic equations, derivative continuity and target-change rule.
  * The control-source selection and real robot objects are not part of this test. */

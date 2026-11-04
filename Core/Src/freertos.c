@@ -374,7 +374,7 @@ void StartCmdTask(void *argument)
 /* USER CODE BEGIN Application */
 #if TEST_JOINT_BENCHMARK_ENABLE
 /* Test-only implementation stays in App/test; no CMake source-list changes. */
-#include "h7_joint_benchmark.inc"
+#include "h7_joint_benchmark_impl.h"
 void StartJointBenchmarkTask(void *argument)
 {
     (void)argument;

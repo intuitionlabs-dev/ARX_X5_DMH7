@@ -1,4 +1,6 @@
-/* Included by h7_joint_benchmark.inc; no project build changes required. */
+#pragma once
+
+/* Included by h7_joint_benchmark_impl.h; no project build changes required. */
 #include "joint_benchmark.h"
 #include "robot_def.h"
 #include "ruckig_c.h"
@@ -10,7 +12,7 @@
 #ifndef JOINT_BENCHMARK_STORAGE
 #define JOINT_BENCHMARK_STORAGE
 #endif
-#include "joint_quintic_baseline.inc"
+#include "joint_quintic_baseline.h"
 
 typedef struct {
     ruckig_c_context* planner;
