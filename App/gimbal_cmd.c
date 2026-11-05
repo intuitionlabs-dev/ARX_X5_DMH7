@@ -10,6 +10,12 @@
 
 #define GIMBAL_CMD_PERIOD_S ARM_CONTROL_PERIOD_S
 
+/* 调试器观测 A 臂 JOINT1 的 Ruckig 输入输出。 */
+volatile ruckig_c_input g_ruckig_input;
+volatile ruckig_c_output g_ruckig_output;
+volatile int g_ruckig_status;
+volatile uint8_t g_ruckig_active;
+
 /* 读取遥控器在线状态。 */
 static uint8_t Rc_Online(void) { return (uint8_t)(!is_Offline(rc.monitor)); } // NOLINT(readability-identifier-naming)
 
@@ -165,13 +171,18 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
 
         const float channels[] = {rc.rx, rc.ry, rc.lx};
         /* 按机型映射将摇杆输入分配给关节。 */
-        for (int channel = 0; channel < 3; ++channel) {
-            const int joint = obj->gimbal->profile->rc_joint[channel];
-            /* 有效通道超出死区时累加关节目标。 */
-            if (joint >= 0 && joint < ARM_JOINT_NUM && fabsf(channels[channel]) > 0.1f)
-                obj->ctrl_src.joint_src.joint_angle[joint] += fsgn(channels[channel])
-                    * obj->gimbal->profile->rc_speed_deg_s*GIMBAL_CMD_PERIOD_S;
-        }
+        // for (int channel = 0; channel < 3; ++channel) {
+        //     const int joint = obj->gimbal->profile->rc_joint[channel];
+        //     /* 有效通道超出死区时累加关节目标。 */
+        //     if (joint >= 0 && joint < ARM_JOINT_NUM && fabsf(channels[channel]) > 0.1f)
+        //         obj->ctrl_src.joint_src.joint_angle[joint] += fsgn(channels[channel])
+        //             * obj->gimbal->profile->rc_speed_deg_s*GIMBAL_CMD_PERIOD_S;
+        // }
+
+        if (Etc_Get(rc.trig.rx_left))
+            obj->ctrl_src.joint_src.joint_angle[JOINT1] += 45;
+        if (Etc_Get(rc.trig.rx_right))
+            obj->ctrl_src.joint_src.joint_angle[JOINT1] -= 45;
         return;
     }
 
@@ -263,6 +274,8 @@ static void Motor_Angle_Limit(Gimbal_cmd* obj) {
 
 /* 更新关节轨迹并处理控制源衔接和故障。 */
 static void Ctrl_Post_Process(Gimbal_cmd* obj) {
+    const uint8_t debug_arm = obj->arm->id == ARM_A;
+    if (debug_arm) g_ruckig_active = 0;
     const uint8_t running = obj->mode == arm_run;
     const uint8_t use_ruckig = running && !obj->plan_running;
     const Robot_ctrl_cmd* cmd = Robot_State_Ctrl(obj->arm);
@@ -300,7 +313,14 @@ static void Ctrl_Post_Process(Gimbal_cmd* obj) {
                 .max_jerk = config->max_jerk_deg_s3,
             };
             ruckig_c_output output;
+            const uint8_t debug_joint = debug_arm && i == JOINT1;
+            if (debug_joint) g_ruckig_input = input;
             ref->status = ruckig_c_update(ref->planner, &input, &output);
+            if (debug_joint) {
+                g_ruckig_status = ref->status;
+                if (ref->status >= 0) g_ruckig_output = output;
+                g_ruckig_active = 1;
+            }
             if (ref->status < 0) goto reference_failed;
             ref->state = output.state;
             if (use_external_velocity) ref->external_velocity = cmd->joint_vel[i];
