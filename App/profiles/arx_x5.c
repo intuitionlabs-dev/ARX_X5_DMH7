@@ -140,7 +140,7 @@ static Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
             .outputMax=10.0f,
             .Irange=0.0f,
         },
-        .kp=15, .kd=1.2, .damping_kd=3},
+        .kp=15, .kd=1.0, .damping_kd=3},
     /* 关节 5 电机的驱动、总线标识、编码量程和模式增益。 */
     {.driver=&ARM_DRIVER_DM, .model="DM MIT",
         .tx_id=6, .rx_id=0, .tx_group=CAN_TX_250HZ_G2,
@@ -259,7 +259,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
         .max_velocity_deg_s=400,
         .max_acceleration_deg_s2=3500,
-        .max_jerk_deg_s3=15000,
+        .max_jerk_deg_s3=10000,
         .absolute_encoder=true},
     /* 关节 3 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -272,7 +272,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
         .max_velocity_deg_s=400,
         .max_acceleration_deg_s2=3500,
-        .max_jerk_deg_s3=15000,
+        .max_jerk_deg_s3=10000,
         .absolute_encoder=true},
     /* 关节 4 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -297,8 +297,8 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
         .max_velocity_deg_s=1000,
-        .max_acceleration_deg_s2=3500,
-        .max_jerk_deg_s3=10000.0f,
+        .max_acceleration_deg_s2=5000,
+        .max_jerk_deg_s3=20000.0f,
         .absolute_encoder=true},
     /* 关节 6 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -310,8 +310,8 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
         .max_velocity_deg_s=1000,
-        .max_acceleration_deg_s2=3500,
-        .max_jerk_deg_s3=10000.0f,
+        .max_acceleration_deg_s2=5000,
+        .max_jerk_deg_s3=20000.0f,
         .absolute_encoder=true},
 };
 
