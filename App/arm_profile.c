@@ -14,7 +14,8 @@ static uint8_t finite_values(const float* values, size_t count) {
 /* 校验机型尺寸、参数、驱动和发送预算。 */
 int Arm_Profile_Validate(const Arm_profile* profile) {
     /* 检查必要配置指针及枚举派生尺寸。 */
-    if (!profile || !profile->motors || !profile->joints || !profile->initialize
+    if (!profile || !profile->version_string || !profile->version_string[0]
+        || !profile->motors || !profile->joints || !profile->initialize
         || profile->joint_count != ARM_JOINT_NUM || profile->motor_count != ARM_MOTOR_NUM
         || !ARM_JOINT_NUM || ARM_MOTOR_NUM > 255) return 0;
     /* 检查复位时长、设零超时和重力参数。 */

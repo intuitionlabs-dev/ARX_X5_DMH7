@@ -128,6 +128,50 @@ EXPORT void init_reset(unsigned bus, float gripper) { // NOLINT(readability-iden
     HandleArmReset(arm);
 }
 
+/* 使用两种机型验证各臂的版本上报和握手。 */
+EXPORT void version_fixture(unsigned arx_bus) {
+    for (unsigned bus=0; bus<ARM_NUM; ++bus) {
+        Arm* arm = &g_arm[bus];
+        arm->gimbal->profile = bus == arx_bus ? &ARM_PROFILE_ARX_X5 : &ARM_PROFILE_METAL;
+        arm->state = robot_state_wait_handshake;
+        arm->handshake_ok = 0;
+        arm->handshake_cnt = 0;
+        arm->handshake_reject_cnt = 0;
+        arm->hs_last_ms = clock_ms - ROBOT_HANDSHAKE_PERIOD_MS;
+    }
+    s_tx_head = s_tx_tail = 0;
+}
+
+EXPORT void version_poll(void) {
+    for (unsigned bus=0; bus<ARM_NUM; ++bus) Handshake_Step(&g_arm[bus]);
+}
+
+EXPORT void version_receive(unsigned bus, uint32_t code) {
+    const Robot_rx_payload payload = {.version={.code=code}};
+    HandleVersion(&g_arm[bus], &payload, sizeof(FramePktVersion));
+}
+
+EXPORT void version_observe(unsigned bus, unsigned* out) {
+    const Arm* arm = &g_arm[bus];
+    const unsigned state[] = {arm->handshake_ok, arm->handshake_cnt,
+        arm->handshake_reject_cnt, arm->state};
+    memcpy(out, state, sizeof(state));
+}
+
+EXPORT int version_pop(unsigned* out) {
+    if (s_tx_head == s_tx_tail) return 0;
+    const Robot_tx_slot* slot = &s_tx_q[s_tx_tail];
+    FrameParser parser = {0};
+    FrameStatus status = FRAME_INCOMPLETE;
+    for (unsigned i=0; i<slot->len; ++i) status = FrameParserFeed(&parser, slot->buf[i]);
+    s_tx_tail = (s_tx_tail + 1U) % ROBOT_TX_Q_NUM;
+    if (status != FRAME_OK || parser.data_len != sizeof(FramePktVersion)) return -1;
+    out[0] = parser.arm_id;
+    out[1] = parser.type_id;
+    out[2] = parser.buf.f.payload.version.code;
+    return 1;
+}
+
 void FrameRateStatistics(FPS_t* fps) { fps->now = clock_ms; fps->count++; }
 void BSP_CAN_RegisterRxCallback(uint8_t bus, can_rx_callback fn) { (void)bus; (void)fn; }
 void BSP_CAN_AddFilter(uint8_t bus, uint16_t id) { (void)bus; (void)id; }

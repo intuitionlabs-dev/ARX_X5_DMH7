@@ -38,6 +38,8 @@ typedef struct {
 /* 集中提供机型参数、模型及初始化回调。 */
 typedef struct Arm_profile { // NOLINT(readability-identifier-naming)
     const char* name;
+    /* 握手版本码为版本串的 FNV-1a 32 位哈希。 */
+    const char* version_string;
     size_t joint_count, motor_count;
     Arm_motor_config* motors; //不要使用常量指针，便于运行时修改。
     const Arm_joint_config* joints;

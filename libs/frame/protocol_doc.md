@@ -2,8 +2,10 @@
 
 本文说明 `libs/frame` 这一层的线协议。读者是上位机和对端的开发者。
 
-本文的每个字节都以代码为准。帧格式见 `frame.h`，码表和 payload 见 `type_id.h`，版本串见
-`frame_config.h`，校验多项式见 `libs/soft_crc/soft_crc.c`。
+帧格式见 `frame.h`。
+码表和载荷见 `type_id.h`。
+版本串见 `App/profiles/` 中各机型的 `version_string`。
+校验多项式见 `libs/soft_crc/soft_crc.c`。
 
 这一层只做三件事：切帧、校验、把 `type_id` 和 payload 交出去。它不认识任何码值的含义。
 本工程 App 侧的上层是 **`App/robot_state.c`（机器人总模式状态机）**，运行在**板载 USB CDC** 上。
@@ -15,14 +17,19 @@
 
 | 项 | 值 |
 | --- | --- |
-| 协议版本串 | `Intuition-Metal-Arm-v0.4` |
-| 版本码 | `0xD8D044AE` |
+| metalarm 协议版本串 | `Intuition-Metal-Arm-v0.4` |
+| metalarm 版本码 | `0xD8D044AE` |
+| ARX-X5 协议版本串 | `Intuition-ARX-X5-2023-v0.3` |
+| ARX-X5 版本码 | `0xF81DD236` |
 | 版本码算法 | FNV-1a 32 |
 | 帧格式版本 | 见第 2 节（帧头带 `arm_id`） |
 
-版本串是**协议版本的身份**，也是版本码的唯一源头。它定义在 `libs/frame/frame_config.h` 的
-`FRAME_VERSION_STRING`。板上取当前值用 `FrameVersionCode()`。
-**不要在两端硬写 `0xD8D044AE` 这个数字** —— 修改版本串后版本码随之改变。
+`Arm_profile.version_string` 定义各机型的协议版本串。
+版本码为 `FrameVersionHash(profile->version_string)`。
+板子按 `arm_id` 选择机型配置。
+版本上报和握手校验使用该机型的版本码。
+上位机使用对应机型的版本串计算版本码。
+修改字段布局、单位或码值时，必须同步更新版本串。
 
 上位机要计算同一个值。任何语言三行即可实现，不需要移植本工程的实现：
 
@@ -522,7 +529,7 @@ if (FrameParserFeed(&parser, byte) == FRAME_OK) {
 
 ```
 1. 握手   上位机 ──0x01 VERSION(code=自己的版本码)──→ 板子
-          板子   ──0x01 VERSION(code=FrameVersionCode())──→ 上位机   (①→②)
+          板子   ──0x01 VERSION(code=该臂机型的版本码)──→ 上位机   (①→②)
           板子**未握手期间一直**每 100 ms 主动发一帧 0x01，上面那行只是其中一帧
           两边比对 code；不相等就不要继续发送指令 —— 见下面的警告。
 

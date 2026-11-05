@@ -123,10 +123,10 @@ static void Link_DrainTx(void) { // NOLINT(readability-identifier-naming)
     }
 }
 
-/* 将本机版本码加入发送队列。 */
+/* 将该臂机型的版本码加入发送队列。 */
 static void SendVersionRaw(Arm* arm) { // NOLINT(readability-identifier-naming)
     FramePktVersion pkt;
-    pkt.code = FrameVersionCode();
+    pkt.code = FrameVersionHash(arm->gimbal->profile->version_string);
     TxEnqueue(arm, FRAME_TYPE_ID_VERSION, (const uint8_t*)&pkt, (uint8_t)sizeof(pkt));
 }
 
@@ -298,7 +298,7 @@ static void HandleVersion(Arm* arm, const Robot_rx_payload* pl, uint8_t len) { /
     if (len != (uint8_t)sizeof(FramePktVersion)) return;
 
     /* 版本码不匹配时累计握手拒绝次数。 */
-    if (pl->version.code != FrameVersionCode()) {
+    if (pl->version.code != FrameVersionHash(arm->gimbal->profile->version_string)) {
 
         arm->handshake_reject_cnt++;
         return;

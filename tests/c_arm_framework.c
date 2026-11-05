@@ -62,7 +62,8 @@ int main(void) {
             .minimum_deg=-90, .maximum_deg=90, .reset_deg=5+i, .torque_scale=2,
             .velocity_scale=1, .plan_velocity_scale=1, .absolute_encoder=1,
             .max_velocity_deg_s=90, .max_acceleration_deg_s2=360, .max_jerk_deg_s3=3600};
-    Arm_profile profile = {.name="test", .joint_count=ARM_JOINT_NUM, .motor_count=ARM_MOTOR_NUM,
+    Arm_profile profile = {.name="test", .version_string="test-v1",
+        .joint_count=ARM_JOINT_NUM, .motor_count=ARM_MOTOR_NUM,
         .motors=motors, .joints=joints, .gripper={.cmd={0,100}, .motor_deg={80,-120},
             .torque_scale=-2, .minimum=0, .maximum=100},
         .init={.reset_time_s=.02f, .pose_tolerance_deg=20, .zero_total_ms=1000,
@@ -84,6 +85,11 @@ int main(void) {
         *motion_limits[i] = saved;
     }
     Arm_profile invalid = profile;
+    invalid.version_string = NULL;
+    CHECK(!Arm_Profile_Validate(&invalid));
+    invalid.version_string = "";
+    CHECK(!Arm_Profile_Validate(&invalid));
+    invalid = profile;
     invalid.joint_count++;
     CHECK(!Arm_Profile_Validate(&invalid));
     invalid = profile;

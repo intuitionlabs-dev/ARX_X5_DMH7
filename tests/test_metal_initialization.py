@@ -9,6 +9,7 @@ import unittest
 from ruckig_test_support import ruckig_library
 
 from sdk.board_defs import metal_arm as profile
+from sdk.board_defs import arx_x5
 
 ROOT = Path(__file__).resolve().parents[1]
 Float7, Float13, Float20 = (C.c_float*n for n in (7,13,20))
@@ -30,6 +31,7 @@ class MetalInitializationTests(unittest.TestCase):
         includes += [str(p.relative_to(ROOT)) for p in (ROOT/'libs').iterdir() if p.is_dir()]
         sources = ['tests/c_metal_initialization.c','libs/common/common.c',
                    'libs/cvector/cvector.c','libs/monitor/monitor.c','libs/controller/adrc.c',
+                   'libs/frame/frame.c','libs/soft_crc/soft_crc.c',
                    'libs/move_plan/move_plan/move_plan.c','libs/move_plan/move_plan/plan_group.c']
         sources += [f'libs/move_plan/curves/{kind}_spline.c' for kind in ('linear','cubic','quintic')]
         models = str(Path(cls.tmp.name)/'models')
@@ -58,6 +60,12 @@ class MetalInitializationTests(unittest.TestCase):
             init_limits=[fp,C.c_uint,fp], init_reset=[C.c_uint,C.c_float]).items():
             getattr(cls.lib,name).argtypes = args
             getattr(cls.lib,name).restype = None
+        for name,args in dict(version_fixture=[C.c_uint], version_poll=[],
+            version_receive=[C.c_uint,C.c_uint], version_observe=[C.c_uint,up]).items():
+            getattr(cls.lib,name).argtypes = args
+            getattr(cls.lib,name).restype = None
+        cls.lib.version_pop.argtypes = [up]
+        cls.lib.version_pop.restype = C.c_int
 
     def setUp(self):
         self.lib.init_fixture()
@@ -72,6 +80,35 @@ class MetalInitializationTests(unittest.TestCase):
 
     def start(self, bus=0, state=WAIT_INIT, mode=STOP, lost=0, rc=0):
         self.lib.init_entry(bus,state,mode,lost,rc)
+
+    def test_version_advertisements_follow_each_arm_profile(self):
+        out = (C.c_uint*3)()
+        for arx_bus in (0,1):
+            with self.subTest(arx_bus=arx_bus):
+                self.lib.version_fixture(arx_bus)
+                self.lib.version_poll()
+                for bus in range(2):
+                    expected = arx_x5 if bus == arx_bus else profile
+                    self.assertEqual(self.lib.version_pop(out),1)
+                    self.assertEqual(list(out),[bus,1,expected.VERSION_CODE])
+                self.assertEqual(self.lib.version_pop(out),0)
+
+    def test_handshake_accepts_only_the_addressed_arm_profile_version(self):
+        self.lib.version_fixture(1)
+        out, state = (C.c_uint*3)(), (C.c_uint*4)()
+        for bus, expected, other in ((0,profile,arx_x5),(1,arx_x5,profile)):
+            with self.subTest(bus=bus):
+                self.lib.version_receive(bus,other.VERSION_CODE)
+                self.lib.version_observe(bus,state)
+                self.assertEqual(list(state),[0,0,1,0])
+                self.assertEqual(self.lib.version_pop(out),0)
+                for _ in range(2):
+                    self.lib.version_receive(bus,expected.VERSION_CODE)
+                    self.lib.version_observe(bus,state)
+                    self.assertEqual(list(state),[1,1,1,1])
+                    self.assertEqual(self.lib.version_pop(out),1)
+                    self.assertEqual(list(out),[bus,1,expected.VERSION_CODE])
+                    self.assertEqual(self.lib.version_pop(out),0)
 
     def test_limits_match_h7_profile_at_boundaries_and_random_targets(self):
         rng = random.Random(1438)
