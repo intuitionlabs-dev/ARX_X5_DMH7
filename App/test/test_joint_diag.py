@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from joint_diag_data import (Benchmark, Clock, Info, Motor, Sample, analyze,
@@ -15,6 +16,17 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_measurement_budget_is_at_most_30_seconds(self):
+        from joint_diag_run import Budget, BENCH_BUDGET_S, MOTION_BUDGET_S
+        self.assertLessEqual(BENCH_BUDGET_S+MOTION_BUDGET_S, 30)
+        with patch("joint_diag_run.time.monotonic", return_value=10) as clock:
+            budget = Budget(8)
+            clock.return_value = 17
+            self.assertEqual(budget.remaining(), 1)
+            clock.return_value = 18
+            with self.assertRaises(TimeoutError):
+                budget.check()
+
     def test_abi_matches_c_header_every_field(self):
         structures = (("H7_Diag_Info", Info), ("H7_Diag_Motor", Motor),
                       ("H7_Diag_Sample", Sample), ("H7_Diag_Clock", Clock),
@@ -30,6 +42,31 @@ class DiagnosticTests(unittest.TestCase):
                 input=code, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_firmware_callback_and_latched_guard(self):
+        library = ROOT/"build/joint-diag-native/libruckig_c.a"
+        if not library.exists():
+            self.skipTest("build native Ruckig library per handoff")
+        includes = ["App/test", "App/inc", "Core/Inc", "Bsp/inc", "Drivers/CMSIS/Include",
+            "Drivers/CMSIS/Device/ST/STM32H7xx/Include", "Drivers/STM32H7xx_HAL_Driver/Inc",
+            "Drivers/CMSIS/RTOS2/Include",
+            "libs/gravity_compensation/c", "libs/move_plan/move_plan", "libs/move_plan/curves",
+            "Middlewares/Third_Party/FreeRTOS/Source/include",
+            "Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2",
+            "Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F"]
+        includes += [str(p.relative_to(ROOT)) for p in (ROOT/"libs").iterdir() if p.is_dir()]
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)/"test"
+            result = subprocess.run(["cc", "-std=gnu11", "-O1", "-g", "-fsanitize=address,undefined",
+                "-fno-omit-frame-pointer", "-ffunction-sections", "-fdata-sections", "-DSTM32H723xx",
+                "-DUSE_HAL_DRIVER", "-DTEST_JOINT_DIAGNOSTICS_ENABLE=1",
+                "-Wno-pointer-to-int-cast", "-Wno-int-to-pointer-cast",
+                *["-I"+str(ROOT/p) for p in includes], str(ROOT/"App/test/native_joint_diag.c"),
+                str(library), "-Wl,--gc-sections", "-lstdc++", "-lm", "-o", str(output)],
+                text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run([str(output)], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+
     def test_trajectory_bounds_and_smooth_endpoints(self):
         for center, request in ((0, 20), (60, 45), (-90, 45)):
             amplitude = choose_amplitude(center, request, -115, 90)
@@ -44,7 +81,7 @@ class DiagnosticTests(unittest.TestCase):
                 choose_amplitude(0, bad, -115, 90)
         with self.assertRaises(ValueError):
             choose_amplitude(80, 20, -115, 90)
-        for t in (.25, .95, 1.85, 2.65):
+        for t in (.15, .80, 1.55, 2.25):
             dt = 1e-4
             values = [trajectory("smooth", t+x*dt, 0, 20) for x in (-1, 0, 1)]
             self.assertLess(abs((values[2]-values[0])/(2*dt)), .01)

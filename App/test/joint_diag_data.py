@@ -24,7 +24,7 @@ class Sample(C.LittleEndianStructure):
 
 class Info(C.LittleEndianStructure):
     _fields_ = fields("magic abi record_bytes capacity request state count generation error "
-                     "guard_enable guard_fault") + fields("guard_margin_deg guard_error_deg", F) + fields(
+                     "guard_enable guard_fault guard_cycle_hz guard_timeout_ms") + fields("guard_margin_deg guard_error_deg", F) + fields(
         "core_hz hclk_hz pclk1_hz pclk2_hz hse_hz tick_hz systick_load tim23_psc tim23_arr "
         "rcc_cfgr rcc_d1cfgr rcc_d2cfgr rcc_pllckselr rcc_pll1divr cpuid ccr "
         "rc_online robot_state arm_mode tx_group control_type control_depth td_status pid_mode d_ahead") + fields(
@@ -76,15 +76,15 @@ def choose_amplitude(center, requested, low, high, margin=15.0):
 
 
 def trajectory(kind, t, center, amplitude):
-    """Three-second test, held start/end. Smooth segments have zero end v/a."""
+    """2.4-second test, held start/end. Smooth segments have zero end v/a."""
     if kind == "hold":
         return center
     if kind == "steps":
-        return center + (amplitude if .25 <= t < .95 else
-                         -amplitude if .95 <= t < 1.85 else 0)
+        return center + (amplitude if .15 <= t < .90 else
+                         -amplitude if .90 <= t < 1.65 else 0)
     if kind != "smooth":
         raise ValueError(kind)
-    knots = ((0., 0.), (.25, 0.), (.95, amplitude), (1.85, -amplitude), (2.65, 0.), (3., 0.))
+    knots = ((0., 0.), (.15, 0.), (.80, amplitude), (1.55, -amplitude), (2.25, 0.), (2.4, 0.))
     for (ta, qa), (tb, qb) in zip(knots, knots[1:]):
         if ta <= t < tb:
             u = (t-ta)/(tb-ta)
@@ -253,6 +253,7 @@ def analyze(rows, info, cycles_hz):
                          maximum=float(np.max(col("wall_cycles"))/cycles_hz*1e6)),
         motor_unique_samples=len(motors), motor_sequence_gaps=int(np.sum(np.diff(mc("seq")) != 1)),
         motor_period_ms=float(np.mean(np.diff(mt))*1000),
+        motor_average_period_ms_from_counter=float((mt[-1]-mt[0])*1000/(int(mc("seq")[-1])-int(mc("seq")[0]))),
         reference_integral=integration_fit(t, q, v),
         reference_integral_nominal_2ms=integration_fit((seq-seq[0])*info["period_s"], q, v),
         motor_reference_integral=integration_fit(mt, (mc("ref_pos")-info["zero_deg"])*to_joint,
@@ -277,6 +278,9 @@ def analyze(rows, info, cycles_hz):
         matched = ages[(mf & (1 << 16)) != 0]
         result[field+"_age_ms"] = None if not len(matched) else dict(
             mean=float(np.mean(matched)), maximum=int(np.max(matched)))
-    result["valid_for_phase_conclusion"] = bool(valid.all() and result["contiguous_cmd_sequences"])
+    motor_valid = ((mf & (1 << 18)) != 0) & ((mf & (3 << 8)) == (3 << 8)) & ((mf >> 24) == 0)
+    result["motor_enabled_valid_fraction"] = float(np.mean(motor_valid))
+    result["valid_for_phase_conclusion"] = bool(valid.all() and motor_valid.all()
+                                               and result["contiguous_cmd_sequences"])
     result["phase_sign"] = "positive = feedback lags; negative = feedback leads"
     return result

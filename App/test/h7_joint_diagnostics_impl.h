@@ -34,6 +34,8 @@ static ENCOS_motor* diag_motor;
 static control_encos_func diag_original_control;
 static H7_Diag_Motor diag_latest_motor;
 static uint32_t diag_begin_cycles, diag_cmd_seq, diag_in_cmd, diag_ready;
+static uint32_t diag_guard_active, diag_guard_last_cycles;
+static uint64_t diag_guard_elapsed_cycles;
 
 /* A latched guard acts only when explicitly enabled by the test runner.
  * Use the existing damping behavior, including all axes on A. No startup move. */
@@ -56,7 +58,18 @@ static void diag_damping(void) {
 }
 
 static void diag_guard(void) {
-    if (!h7_diag.guard_enable) { h7_diag.guard_fault = 0; return; }
+    if (!h7_diag.guard_enable) {
+        h7_diag.guard_fault = diag_guard_active = 0;
+        return;
+    }
+    const uint32_t now_cycles = DWT->CYCCNT;
+    if (!diag_guard_active) {
+        diag_guard_elapsed_cycles = 0;
+        diag_guard_active = 1;
+    } else diag_guard_elapsed_cycles += (uint32_t)(now_cycles - diag_guard_last_cycles);
+    diag_guard_last_cycles = now_cycles;
+    const uint32_t cycle_hz = h7_diag.guard_cycle_hz ? h7_diag.guard_cycle_hz : SystemCoreClock;
+    const uint32_t timeout_ms = h7_diag.guard_timeout_ms ? h7_diag.guard_timeout_ms : 18000U;
     Gimbal* g = g_arm[ARM_A].gimbal;
     const Arm_joint_config* j = &g->profile->joints[JOINT1];
     const controller* c = diag_motor->motor_controller;
@@ -65,7 +78,9 @@ static void diag_guard(void) {
     const float ref = (c->ref_position - g->motor_pos_init[JOINT1])
         * j->direction / j->reduction;
     if (!h7_diag.guard_fault) {
-        if (!isfinite(q) || !isfinite(ref) || !isfinite(c->speed_comp)
+        if (diag_guard_elapsed_cycles >= (uint64_t)cycle_hz * timeout_ms / 1000U)
+            h7_diag.guard_fault = 5;
+        else if (!isfinite(q) || !isfinite(ref) || !isfinite(c->speed_comp)
             || !(diag_motor->feedback_valid & ENCOS_HAS_POSITION)
             || !(diag_motor->feedback_valid & ENCOS_HAS_SPEED)
             || !isfinite(diag_motor->fdb_speed)
@@ -261,7 +276,10 @@ static int diag_all_stopped(void) {
 /* Mathematical baseline only: no motor reference is bypassed. */
 __attribute__((noinline)) static float diag_baseline(float target) { return target; }
 __attribute__((noinline)) static float diag_quintic(float t) {
-    return 20.0f * t*t*t * (10.0f + t*(-15.0f + 6.0f*t));
+    const float q = 45.0f * t*t*t * (10.0f + t*(-15.0f + 6.0f*t));
+    const float v = 45.0f * t*t * (30.0f + t*(-60.0f + 30.0f*t));
+    const float a = 45.0f * t * (60.0f + t*(-180.0f + 120.0f*t));
+    return q + v + a; /* Consume all three results, not just position. */
 }
 
 static void diag_benchmark(void) {
@@ -275,7 +293,7 @@ static void diag_benchmark(void) {
     h7_diag_bench.counter_overhead_cycles = DWT->CYCCNT - start;
     Arm_Motors_Unlock(mask);
     for (unsigned kind = 0; kind < 4 && !h7_diag.error; ++kind) {
-        ruckig_c_input in = {.target = {.position = 20.0f},
+        ruckig_c_input in = {.target = {.position = 45.0f},
             .max_velocity = h7_diag.max_velocity,
             .max_acceleration = h7_diag.max_acceleration, .max_jerk = h7_diag.max_jerk};
         ruckig_c_output out;
@@ -287,7 +305,8 @@ static void diag_benchmark(void) {
         }
         uint64_t total = 0;
         H7_Diag_Cost cost = {.min_cycles = UINT32_MAX};
-        for (unsigned n = 0; n < 1000; ++n) {
+        for (unsigned n = 0; n < 128; ++n) {
+            if (h7_diag.request == 2) { h7_diag.request = 0; h7_diag.error = 6; break; }
             if (!diag_all_stopped()) { h7_diag.error = 2; break; }
             if (kind == 2) {
                 in.current = out.state;
@@ -300,7 +319,7 @@ static void diag_benchmark(void) {
                 }
             } else if (kind == 3) {
                 in.current = (ruckig_c_state){0};
-                in.target.position = (n & 1U) ? 20.0f : -20.0f;
+                in.target.position = (n & 1U) ? 45.0f : -45.0f;
                 ruckig_c_reset(ctx);
             }
             /* The only IRQ-off solver measurement. Both arms MUST be stopped.
@@ -311,7 +330,7 @@ static void diag_benchmark(void) {
             int result = 0;
             float value;
             if (kind == 0) value = diag_baseline((float)n);
-            else if (kind == 1) value = diag_quintic((float)n / 1000.0f);
+            else if (kind == 1) value = diag_quintic((float)n / 128.0f);
             else { result = ruckig_c_update(ctx, &in, &out); value = result < 0 ? 0 : out.state.position; }
             const uint32_t elapsed = DWT->CYCCNT - start;
             Arm_Motors_Unlock(mask);
@@ -357,6 +376,8 @@ void H7_Diag_Task(void* argument) {
     h7_diag.capacity = H7_DIAG_CAPACITY;
     h7_diag.guard_margin_deg = 5.0f;
     h7_diag.guard_error_deg = 20.0f;
+    h7_diag.guard_timeout_ms = 18000U;
+    h7_diag.guard_cycle_hz = SystemCoreClock;
     if (g->profile != &ARM_PROFILE_ARX_X5
         || g->motors[JOINT1].config->driver != &ARM_DRIVER_ENCOS) {
         h7_diag.error = 1;
@@ -384,7 +405,14 @@ void H7_Diag_Task(void* argument) {
                 h7_diag.state = 2;
                 Arm_Motors_Unlock(lock);
             } else if (request == 2 && h7_diag.state == 2) diag_freeze();
-            else if (request == 3 && h7_diag.state != 2) { h7_diag.error = 0; diag_config(); diag_benchmark(); }
+            else if (request == 3 && h7_diag.state != 2) {
+                h7_diag.error = 0;
+                h7_diag.state = 4;
+                ++h7_diag.generation;
+                diag_config();
+                diag_benchmark();
+                h7_diag.state = 5; /* Includes rejected/failed requests. */
+            }
         }
         if (h7_diag.state == 2 && h7_diag.count == H7_DIAG_CAPACITY) diag_freeze();
         osDelay(5);

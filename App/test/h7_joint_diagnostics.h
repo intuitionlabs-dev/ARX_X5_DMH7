@@ -6,7 +6,7 @@
 #if TEST_JOINT_DIAGNOSTICS_ENABLE
 /* ABI 1: all fields are 32-bit words, little endian. Units: deg, deg/s,
  * deg/s^2 unless the field explicitly ends in _rad or _rad_s. */
-#define H7_DIAG_CAPACITY 1536U
+#define H7_DIAG_CAPACITY 1280U
 #define H7_DIAG_MAGIC 0x4a314447U
 
 typedef struct {
@@ -26,14 +26,19 @@ typedef struct {
 /* request: 1 capture, 2 freeze, 3 isolated CPU benchmark. state:
  * 0 starting, 1 ready, 2 recording, 3 frozen, 4 benchmark, 5 benchmark done.
  * error: 1 incompatible profile, 2 benchmark needs both arms stopped,
- * 3 allocation/solver error, 4 excessive benchmark IRQ-off time.
+ * 3 allocation/solver error, 4 excessive benchmark IRQ-off time,
+ * 5 thread creation failed, 6 benchmark cancelled.
  * guard_fault: 1 invalid/stale feedback, 2 soft-limit margin, 3 reference
- * outside soft limits, 4 tracking error. Faults latch until guard_enable=0.
- * Config/requests are written ONLY while state != 2/4. */
+ * outside soft limits, 4 tracking error, 5 test time limit.
+ * Faults latch until guard_enable=0.
+ * guard_cycle_hz is updated from PC clock calibration before recording.
+ * request=2 may cancel an active recording/benchmark. */
 typedef struct {
     uint32_t magic, abi, record_bytes, capacity;
     volatile uint32_t request, state, count, generation, error;
     volatile uint32_t guard_enable, guard_fault;
+    volatile uint32_t guard_cycle_hz;
+    uint32_t guard_timeout_ms;
     float guard_margin_deg, guard_error_deg;
     uint32_t core_hz, hclk_hz, pclk1_hz, pclk2_hz, hse_hz, tick_hz;
     uint32_t systick_load, tim23_psc, tim23_arr;

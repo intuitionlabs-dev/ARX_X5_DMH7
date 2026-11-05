@@ -20,6 +20,22 @@ from joint_diag_data import (Benchmark, Clock, Info, Sample, analyze, as_dict,
                              preflight, trajectory)
 
 ROOT = Path(__file__).resolve().parents[2]
+BENCH_BUDGET_S = 8.0
+MOTION_BUDGET_S = 22.0
+
+
+class Budget:
+    def __init__(self, seconds):
+        self.start = time.monotonic()
+        self.end = self.start + seconds
+
+    def check(self):
+        if time.monotonic() >= self.end:
+            raise TimeoutError("measurement budget exhausted; test incomplete")
+
+    def remaining(self):
+        self.check()
+        return self.end-time.monotonic()
 
 
 def save_json(path, data):
@@ -54,7 +70,7 @@ class Probe:
             info = self.info()
             if info["magic"] != 0x4a314447 or info["abi"] != 1 or info["record_bytes"] != C.sizeof(Sample):
                 raise RuntimeError("diagnostic thread not ready or wrong firmware; wait 3 s after boot")
-            if info["error"] or info["state"] == 0:
+            if info["error"] in (1, 5) or info["state"] == 0:
                 raise RuntimeError(f"diagnostic startup error/state: {info['error']}/{info['state']}")
             # Flash comparison proves that RAM addresses/configuration are from
             # the actual ELF, not a stale Ozone project. Read-only, no halt.
@@ -82,7 +98,7 @@ class Probe:
         return as_dict(self.object("h7_diag", Info))
 
     def write(self, field, value):
-        allowed = {"request", "guard_enable"}
+        allowed = {"request", "guard_enable", "guard_cycle_hz"}
         if field not in allowed:
             raise ValueError("only diagnostic requests/guard enable are writable")
         self.jlink.memory_write32(self.symbols["h7_diag"][0]+getattr(Info, field).offset, [value])
@@ -124,9 +140,11 @@ class Probe:
         return rows, info
 
 
-def calibrate(probe, directory, service=lambda: None, seconds=10):
+def calibrate(probe, directory, service=lambda: None, seconds=5.3, budget=None):
     rows, start = [], time.perf_counter()
     while time.perf_counter()-start < seconds:
+        if budget:
+            budget.check()
         service()
         rows.append(probe.clock())
         time.sleep(.1)
@@ -160,7 +178,8 @@ def check_snapshot(arm, low, high, running=True):
     return s
 
 
-def run_motion(probe, args, directory):
+def run_motion(probe, args, directory, budget):
+    __import__("numpy")  # Warm numerical imports before commanding motion.
     sys.path.insert(0, str(ROOT))
     import sdk
     info = probe.info()
@@ -174,8 +193,11 @@ def run_motion(probe, args, directory):
     commands = []
     plots = []
     began = False
+    measurements_complete = False
+    damping_confirmed = False
     try:
         arm.connect()
+        budget.check()
         # Do not silently invoke reset, homing or force=True. The local agent
         # prepares STATE_NORMAL using the existing initialization procedure.
         snapshot = check_snapshot(arm, info["minimum_deg"], info["maximum_deg"], running=False)
@@ -185,19 +207,28 @@ def run_motion(probe, args, directory):
         grip = snapshot.gripper_raw_deg
         # A read-only capture refreshes runtime offsets/limits/RC status.
         probe.write("request", 1)
-        wait_until(lambda: probe.info()["state"] == 2, arm.keepalive)
+        wait_until(lambda: probe.info()["state"] == 2, arm.keepalive, timeout=min(1, budget.remaining()))
         probe.write("request", 2)
-        wait_until(lambda: probe.info()["state"] == 3, arm.keepalive)
+        wait_until(lambda: probe.info()["state"] == 3, arm.keepalive, timeout=min(1, budget.remaining()))
         info = probe.info()
         if info["rc_online"]:
             raise RuntimeError("RC is online; position commands would be ignored")
         low, high = info["minimum_deg"], info["maximum_deg"]
-        check_snapshot(arm, low, high, running=False)
+        snapshot = check_snapshot(arm, low, high, running=False)
+        # Feedback can quantize a few hundredths of a degree past a limit.
+        # Hold the nearest legal target, as the firmware normally does.
+        base = [min(high[i], max(low[i], q)) for i, q in enumerate(snapshot.joint_angles_deg)]
+        grip = snapshot.gripper_raw_deg
         amplitude = choose_amplitude(base[0], args.amplitude, low[0], high[0])
         save_json(directory/"preflight.json", dict(center_deg=base[0], amplitude_deg=amplitude,
+            held_joint_targets_deg=base, gripper_target_deg=grip,
             ruckig_library_sha256=hashlib.sha256(Path(args.ruckig_lib).read_bytes()).hexdigest(),
             trajectories=preflight(Path(args.ruckig_lib).resolve(), info, base[0], amplitude)))
         arm.keepalive()
+        fresh = check_snapshot(arm, low, high, running=False)
+        if max(abs(v) for v in fresh.joint_velocities_deg_s) > 2 or any(
+                abs(q-base[i]) > .5 for i, q in enumerate(fresh.joint_angles_deg)):
+            raise RuntimeError("arm moved during preflight; prepare a stationary pose and retry")
         probe.write("guard_enable", 1)
         # From here cleanup must send damping even if the start wait fails.
         began = True
@@ -205,6 +236,7 @@ def run_motion(probe, args, directory):
         wait_until(lambda: arm.mode == arm.board_defs.MODE_RUN, arm.keepalive, timeout=2)
 
         def send(q=base[0]):
+            budget.check()
             current = check_snapshot(arm, low, high)
             if not low[0]+5 < current.joint_angles_deg[0] < high[0]-5:
                 raise RuntimeError("JOINT1 entered soft-limit reserve")
@@ -218,23 +250,27 @@ def run_motion(probe, args, directory):
                                  feedback_time=current.taken_at, feedback_q=current.joint_angles_deg[0],
                                  feedback_v=current.joint_velocities_deg_s[0]))
 
-        end = time.monotonic()+1
+        end = time.monotonic()+.25
         while time.monotonic() < end:
             send()
             time.sleep(.01)
-        calibration = calibrate(probe, directory, send)
+        calibration = calibrate(probe, directory, send, budget=budget)
         cycle_hz = calibration["cycles_per_s"]
+        # Correct the independent firmware guard for the externally measured
+        # clock, including the hypothesized HSE/SystemCoreClock discrepancy.
+        probe.write("guard_cycle_hz", round(cycle_hz))
         save_json(directory/"initial_runtime.json", info)
         for kind in ("hold", "steps", "smooth"):
             for repeat in range(args.repeats):
                 if probe.info()["guard_fault"]:
                     raise RuntimeError("firmware guard latched")
                 probe.write("request", 1)
-                wait_until(lambda: probe.info()["state"] == 2, send)
+                wait_until(lambda: probe.info()["state"] == 2, send, timeout=min(1, budget.remaining()))
                 start = time.perf_counter()
                 next_send = start
                 # Real PC monotonic time controls stimulus. No catch-up burst.
-                while time.perf_counter()-start < 3.1:
+                duration = .5 if kind == "hold" else 2.45
+                while time.perf_counter()-start < duration:
                     now = time.perf_counter()
                     if now < next_send:
                         time.sleep(next_send-now)
@@ -242,7 +278,9 @@ def run_motion(probe, args, directory):
                     send(trajectory(kind, now-start, base[0], amplitude))
                     next_send = max(next_send+.01, time.perf_counter())
                 send()
-                wait_until(lambda: probe.info()["state"] == 3, send, timeout=8)
+                if probe.info()["state"] == 2:
+                    probe.write("request", 2)
+                wait_until(lambda: probe.info()["state"] == 3, send, timeout=min(1, budget.remaining()))
                 case_dir = directory/f"{kind}-{repeat+1}"
                 rows, metadata = probe.capture(case_dir, send)
                 save_json(case_dir/"stimulus.json", dict(kind=kind, pc_start=start,
@@ -253,22 +291,29 @@ def run_motion(probe, args, directory):
                 print(kind, repeat+1, json.dumps(result, ensure_ascii=False), flush=True)
                 if not result["valid_for_phase_conclusion"] or probe.info()["guard_fault"]:
                     raise RuntimeError("invalid control source/guard event; raw capture saved, test stopped")
-                end = time.monotonic()+.5
+                end = time.monotonic()+.1
                 while time.monotonic() < end:
                     send()
                     time.sleep(.01)
+        budget.check()
+        measurements_complete = True
     finally:
         try:
             if began:
-                # The standard damping mode supports the arm; STOP removes torque.
+                # Use the existing damping exit; this is not a static position hold.
                 arm.damping()
                 wait_until(lambda: arm.mode == arm.board_defs.MODE_DAMPING, arm.keepalive, timeout=2)
+                damping_confirmed = True
                 probe.write("guard_enable", 0)
         finally:
             try:
                 link.close()
             finally:
                 save_json(directory/"commands.json", commands)
+                save_json(directory/"timing.json", dict(budget_s=MOTION_BUDGET_S,
+                    measurement_and_cleanup_s=time.monotonic()-budget.start,
+                    measurements_complete=measurements_complete, damping_confirmed=damping_confirmed,
+                    excludes="connection/ELF verification, prior initialization, final plotting"))
     # Matplotlib startup can take seconds: render only after confirmed damping.
     for plot_args in plots:
         plot(*plot_args)
@@ -315,8 +360,9 @@ def main():
     parser.add_argument("--port", help="H7 USB CDC/UART SDK port, e.g. COM8 or /dev/ttyACM0")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--ruckig-lib", type=Path, help="native shared library built from this checkout")
-    parser.add_argument("--amplitude", type=float, default=20)
-    parser.add_argument("--repeats", type=int, default=2)
+    parser.add_argument("--amplitude", type=float, default=45)
+    parser.add_argument("--repeats", type=int, choices=(1,), default=1,
+                        help="one pass keeps the complete measurement campaign within 30 s")
     args = parser.parse_args()
     if args.action == "analyze":
         clock = json.loads((args.out/"clock_summary.json").read_text())
@@ -331,12 +377,11 @@ def main():
         return
     if not args.elf or (args.action == "run" and (not args.port or not args.ruckig_lib)):
         parser.error("--elf required; run also requires --port and --ruckig-lib")
-    if not 1 <= args.repeats <= 10:
-        parser.error("repeats must be 1..10")
     # Never mix two experiments or silently overwrite previous evidence.
     args.out.mkdir(parents=True, exist_ok=False)
-    probe = Probe(args.elf, args.serial, args.device)
+    probe = None
     try:
+        probe = Probe(args.elf, args.serial, args.device)
         save_json(args.out/"firmware.json", dict(probe.info(), elf=str(args.elf.resolve()),
             elf_sha256=probe.elf_sha256, flash_verified=True))
         if args.action == "inspect":
@@ -344,12 +389,17 @@ def main():
         elif args.action == "clock":
             print(json.dumps(calibrate(probe, args.out), indent=2))
         elif args.action == "bench":
-            clock = calibrate(probe, args.out)
+            budget = Budget(BENCH_BUDGET_S)
+            clock = calibrate(probe, args.out, budget=budget)
+            previous_generation = probe.info()["generation"]
             probe.write("request", 3)
-            wait_until(lambda: probe.info()["request"] == 0 and
-                       (probe.info()["state"] == 5 or probe.info()["error"] != 0), timeout=30)
+            wait_until(lambda: probe.info()["generation"] != previous_generation and
+                       probe.info()["request"] == 0 and
+                       (probe.info()["state"] == 5 or probe.info()["error"] != 0), timeout=budget.remaining())
             bench = as_dict(probe.object("h7_diag_bench", Benchmark))
             bench["request_error"] = probe.info()["error"]
+            bench["budget_s"] = BENCH_BUDGET_S
+            bench["measurement_s"] = time.monotonic()-budget.start
             for cost in bench["cost"]:
                 cost["mean_us"] = cost["mean_cycles"]/clock["cycles_per_s"]*1e6
                 cost["max_us"] = cost["max_cycles"]/clock["cycles_per_s"]*1e6
@@ -360,12 +410,15 @@ def main():
             if bench["request_error"] or bench["status"] or not bench["completed"]:
                 raise RuntimeError("benchmark rejected/incomplete; see benchmark.json")
         else:
-            run_motion(probe, args, args.out)
+            run_motion(probe, args, args.out, Budget(MOTION_BUDGET_S-4))
     except BaseException as exc:
         save_json(args.out/"failure.json", dict(error=repr(exc)))
+        if probe is not None and args.action == "bench":
+            probe.write("request", 2)  # Cancel at the next benchmark iteration.
         raise
     finally:
-        probe.close()
+        if probe is not None:
+            probe.close()
 
 
 if __name__ == "__main__":
