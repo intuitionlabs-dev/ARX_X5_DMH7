@@ -10,6 +10,7 @@
 #include "arm_zero.h"
 #include "gimbal_arm.h"
 #include "gimbal_cmd.h"
+#include "h7_joint_diagnostics.h"
 #include "rc.h"
 #include "frame.h"
 
@@ -454,6 +455,13 @@ static void HandleFrame(Arm* arm, uint8_t type_id, const Robot_rx_payload* pl, u
         robot_gated_cnt++;
         return;
     }
+
+#if TEST_JOINT_DIAGNOSTICS_ENABLE
+    if (type_id == H7_DIAG_COMMAND_TID) {
+        H7_Diag_Link_Command(arm->id, pl->raw, len);
+        return;
+    }
+#endif
 
     arm->last_rx_ms = HAL_GetTick();
 

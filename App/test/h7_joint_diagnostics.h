@@ -8,6 +8,10 @@
  * deg/s^2 unless the field explicitly ends in _rad or _rad_s. */
 #define H7_DIAG_CAPACITY 1280U
 #define H7_DIAG_MAGIC 0x4a314447U
+#define H7_DIAG_COMMAND_TID 0x70U
+#define H7_DIAG_OP_CAPTURE 1U
+#define H7_DIAG_OP_GUARD 2U
+#define H7_DIAG_OP_CLOCK_HZ 3U
 
 typedef struct {
     uint32_t seq, cycles, hal_ms, pos_ms, speed_ms, rx_ms, flags, cmd_seq;
@@ -83,6 +87,7 @@ void H7_Diag_Cmd_Begin(void);
 void H7_Diag_Cmd_End(void);
 void H7_Diag_Deadline_Miss(void);
 void H7_Diag_Task(void* argument);
+void H7_Diag_Link_Command(uint8_t arm_id, const uint8_t* payload, uint8_t len);
 #else
 #define H7_Diag_Cmd_Begin() ((void)0)
 #define H7_Diag_Cmd_End() ((void)0)

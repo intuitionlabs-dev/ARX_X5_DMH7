@@ -37,6 +37,43 @@ static uint32_t diag_begin_cycles, diag_cmd_seq, diag_in_cmd, diag_ready;
 static uint32_t diag_guard_active, diag_guard_last_cycles;
 static uint64_t diag_guard_elapsed_cycles;
 
+void H7_Diag_Link_Command(uint8_t arm_id, const uint8_t* payload, uint8_t len) {
+    if (!diag_ready || arm_id != ARM_A || len != 5U) return;
+    Arm* arm = &g_arm[ARM_A];
+    const uint32_t value = (uint32_t)payload[1] | ((uint32_t)payload[2] << 8)
+        | ((uint32_t)payload[3] << 16) | ((uint32_t)payload[4] << 24);
+    if (payload[0] == H7_DIAG_OP_CAPTURE && value == 2U && h7_diag.state == 2U && !h7_diag.request) {
+        h7_diag.request = 2U;
+        return;
+    }
+    if (arm->state != robot_state_normal) return;
+    switch (payload[0]) {
+    case H7_DIAG_OP_CAPTURE:
+        if (value == 1U && !h7_diag.request && h7_diag.state != 2U && h7_diag.state != 4U
+            && is_Offline(rc.monitor)) h7_diag.request = 1U;
+        break;
+    case H7_DIAG_OP_GUARD:
+        if (arm->arm_mode != arm_damping) break;
+        if (value == 0U) {
+            h7_diag.guard_enable = 0;
+            break;
+        }
+        if (value != 1U || h7_diag.guard_enable || !is_Offline(rc.monitor)) break;
+        for (unsigned i = 0; i < ARM_MOTOR_NUM; ++i) {
+            const Arm_feedback_data* feedback = &arm->gimbal->arm_feedback_data;
+            if (feedback->is_motor_lost[i] || !feedback->motor_inited[i]) return;
+        }
+        h7_diag.guard_enable = 1;
+        break;
+    case H7_DIAG_OP_CLOCK_HZ:
+        if (h7_diag.guard_enable && value > 50000000U && value < 1000000000U)
+            h7_diag.guard_cycle_hz = value;
+        break;
+    default:
+        break;
+    }
+}
+
 /* A latched guard acts only when explicitly enabled by the test runner.
  * Use the existing damping behavior, including all axes on A. No startup move. */
 static void diag_damping(void) {

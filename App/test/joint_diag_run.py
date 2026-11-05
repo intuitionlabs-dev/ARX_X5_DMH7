@@ -22,6 +22,10 @@ from joint_diag_data import (Benchmark, Clock, Info, Sample, analyze, as_dict,
 ROOT = Path(__file__).resolve().parents[2]
 BENCH_BUDGET_S = 8.0
 MOTION_BUDGET_S = 22.0
+DIAG_COMMAND_TID = 0x70
+DIAG_OP_CAPTURE = 1
+DIAG_OP_GUARD = 2
+DIAG_OP_CLOCK_HZ = 3
 
 
 class Budget:
@@ -67,9 +71,15 @@ class Probe:
             self.jlink.connect(device, speed=4000)
             if self.jlink.halted():
                 raise RuntimeError("target is halted; this script never resumes/resets a target")
-            info = self.info()
-            if info["magic"] != 0x4a314447 or info["abi"] != 1 or info["record_bytes"] != C.sizeof(Sample):
-                raise RuntimeError("diagnostic thread not ready or wrong firmware; wait 3 s after boot")
+            ready_by = time.monotonic()+5
+            while True:
+                info = self.info()
+                if (info["magic"] == 0x4a314447 and info["abi"] == 1 and info["record_bytes"] == C.sizeof(Sample)
+                        and (info["state"] or info["error"])):
+                    break
+                if time.monotonic() >= ready_by:
+                    raise RuntimeError("diagnostic thread not ready or wrong firmware")
+                time.sleep(.05)
             if info["error"] in (1, 5) or info["state"] == 0:
                 raise RuntimeError(f"diagnostic startup error/state: {info['error']}/{info['state']}")
             # Flash comparison proves that RAM addresses/configuration are from
@@ -97,11 +107,10 @@ class Probe:
     def info(self):
         return as_dict(self.object("h7_diag", Info))
 
-    def write(self, field, value):
-        allowed = {"request", "guard_enable", "guard_cycle_hz"}
-        if field not in allowed:
-            raise ValueError("only diagnostic requests/guard enable are writable")
-        self.jlink.memory_write32(self.symbols["h7_diag"][0]+getattr(Info, field).offset, [value])
+    def benchmark_request(self, request):
+        if request not in (2, 3):
+            raise ValueError("invalid benchmark request")
+        self.jlink.memory_write32(self.symbols["h7_diag"][0]+Info.request.offset, [request])
 
     def clock(self):
         addr = self.symbols["h7_diag_clock"][0]
@@ -182,6 +191,8 @@ def run_motion(probe, args, directory, budget):
     __import__("numpy")  # Warm numerical imports before commanding motion.
     sys.path.insert(0, str(ROOT))
     import sdk
+    if "H7_Diag_Link_Command" not in probe.symbols:
+        raise RuntimeError("firmware lacks SDK diagnostic commands; load a matching diagnostic ELF")
     info = probe.info()
     if info["profile"] != "ARX-X5" or info["rc_online"]:
         raise RuntimeError("A must be ARX-X5 with the RC offline")
@@ -195,20 +206,26 @@ def run_motion(probe, args, directory, budget):
     began = False
     measurements_complete = False
     damping_confirmed = False
+
+    def command(op, value):
+        link.send(DIAG_COMMAND_TID, struct.pack("<BI", op, value), arm_id=0)
+
     try:
         arm.connect()
         budget.check()
         # Do not silently invoke reset, homing or force=True. The local agent
         # prepares STATE_NORMAL using the existing initialization procedure.
         snapshot = check_snapshot(arm, info["minimum_deg"], info["maximum_deg"], running=False)
+        if snapshot.mode != arm.board_defs.MODE_DAMPING:
+            raise RuntimeError("A arm must be in damping before arming the diagnostic guard")
         if max(abs(v) for v in snapshot.joint_velocities_deg_s) > 2:
             raise RuntimeError("arm must be stationary before test")
         base = list(snapshot.joint_angles_deg)
         grip = snapshot.gripper_raw_deg
         # A read-only capture refreshes runtime offsets/limits/RC status.
-        probe.write("request", 1)
+        command(DIAG_OP_CAPTURE, 1)
         wait_until(lambda: probe.info()["state"] == 2, arm.keepalive, timeout=min(1, budget.remaining()))
-        probe.write("request", 2)
+        command(DIAG_OP_CAPTURE, 2)
         wait_until(lambda: probe.info()["state"] == 3, arm.keepalive, timeout=min(1, budget.remaining()))
         info = probe.info()
         if info["rc_online"]:
@@ -229,9 +246,13 @@ def run_motion(probe, args, directory, budget):
         if max(abs(v) for v in fresh.joint_velocities_deg_s) > 2 or any(
                 abs(q-base[i]) > .5 for i, q in enumerate(fresh.joint_angles_deg)):
             raise RuntimeError("arm moved during preflight; prepare a stationary pose and retry")
-        probe.write("guard_enable", 1)
         # From here cleanup must send damping even if the start wait fails.
         began = True
+        command(DIAG_OP_GUARD, 1)
+        wait_until(lambda: probe.info()["guard_enable"] == 1, arm.keepalive,
+                   timeout=min(1, budget.remaining()))
+        if probe.info()["guard_fault"]:
+            raise RuntimeError("firmware guard latched before motion")
         arm.start()
         wait_until(lambda: arm.mode == arm.board_defs.MODE_RUN, arm.keepalive, timeout=2)
 
@@ -258,13 +279,15 @@ def run_motion(probe, args, directory, budget):
         cycle_hz = calibration["cycles_per_s"]
         # Correct the independent firmware guard for the externally measured
         # clock, including the hypothesized HSE/SystemCoreClock discrepancy.
-        probe.write("guard_cycle_hz", round(cycle_hz))
+        command(DIAG_OP_CLOCK_HZ, round(cycle_hz))
+        wait_until(lambda: probe.info()["guard_cycle_hz"] == round(cycle_hz), send,
+                   timeout=min(1, budget.remaining()))
         save_json(directory/"initial_runtime.json", info)
         for kind in ("hold", "steps", "smooth"):
             for repeat in range(args.repeats):
                 if probe.info()["guard_fault"]:
                     raise RuntimeError("firmware guard latched")
-                probe.write("request", 1)
+                command(DIAG_OP_CAPTURE, 1)
                 wait_until(lambda: probe.info()["state"] == 2, send, timeout=min(1, budget.remaining()))
                 start = time.perf_counter()
                 next_send = start
@@ -279,7 +302,7 @@ def run_motion(probe, args, directory, budget):
                     next_send = max(next_send+.01, time.perf_counter())
                 send()
                 if probe.info()["state"] == 2:
-                    probe.write("request", 2)
+                    command(DIAG_OP_CAPTURE, 2)
                 wait_until(lambda: probe.info()["state"] == 3, send, timeout=min(1, budget.remaining()))
                 case_dir = directory/f"{kind}-{repeat+1}"
                 rows, metadata = probe.capture(case_dir, send)
@@ -304,7 +327,8 @@ def run_motion(probe, args, directory, budget):
                 arm.damping()
                 wait_until(lambda: arm.mode == arm.board_defs.MODE_DAMPING, arm.keepalive, timeout=2)
                 damping_confirmed = True
-                probe.write("guard_enable", 0)
+                command(DIAG_OP_GUARD, 0)
+                wait_until(lambda: probe.info()["guard_enable"] == 0, arm.keepalive, timeout=1)
         finally:
             try:
                 link.close()
@@ -392,7 +416,7 @@ def main():
             budget = Budget(BENCH_BUDGET_S)
             clock = calibrate(probe, args.out, budget=budget)
             previous_generation = probe.info()["generation"]
-            probe.write("request", 3)
+            probe.benchmark_request(3)
             wait_until(lambda: probe.info()["generation"] != previous_generation and
                        probe.info()["request"] == 0 and
                        (probe.info()["state"] == 5 or probe.info()["error"] != 0), timeout=budget.remaining())
@@ -414,7 +438,7 @@ def main():
     except BaseException as exc:
         save_json(args.out/"failure.json", dict(error=repr(exc)))
         if probe is not None and args.action == "bench":
-            probe.write("request", 2)  # Cancel at the next benchmark iteration.
+            probe.benchmark_request(2)  # Cancel at the next benchmark iteration.
         raise
     finally:
         if probe is not None:

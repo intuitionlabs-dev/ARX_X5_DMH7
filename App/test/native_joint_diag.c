@@ -45,6 +45,7 @@ const Arm_motor_driver ARM_DRIVER_ENCOS = {0};
 
 static uint32_t test_ms = 100, test_lock;
 static unsigned called, damping_calls;
+static uint8_t rc_offline = 1;
 uint32_t HAL_GetTick(void) { return test_ms; }
 TickType_t xTaskGetTickCount(void) { return test_ms; }
 uint32_t HAL_RCC_GetHCLKFreq(void) { return 240000000; }
@@ -52,7 +53,7 @@ uint32_t HAL_RCC_GetPCLK1Freq(void) { return 120000000; }
 uint32_t HAL_RCC_GetPCLK2Freq(void) { return 120000000; }
 osStatus_t osDelay(uint32_t ticks) { test_ms += ticks; return osOK; }
 void osThreadExit(void) { abort(); }
-uint8_t is_Offline(monitor_item* monitor) { (void)monitor; return 1; }
+uint8_t is_Offline(monitor_item* monitor) { (void)monitor; return rc_offline; }
 uint32_t Arm_Motors_Lock(void) { return test_lock++; }
 void Arm_Motors_Unlock(uint32_t mask) { assert(test_lock == mask+1); test_lock = mask; }
 
@@ -183,6 +184,40 @@ int main(void) {
     h7_diag.request = 2;
     diag_benchmark();
     assert(h7_diag.error == 6 && h7_diag_bench.status == 6 && !h7_diag.request);
+
+    uint8_t guard[] = {H7_DIAG_OP_GUARD, 1, 0, 0, 0};
+    const uint8_t capture[] = {H7_DIAG_OP_CAPTURE, 1, 0, 0, 0};
+    const uint8_t freeze[] = {H7_DIAG_OP_CAPTURE, 2, 0, 0, 0};
+    const uint8_t clock_hz[] = {H7_DIAG_OP_CLOCK_HZ, 0x00, 0x38, 0x9c, 0x1c};
+    g_arm[0].arm_mode = arm_damping;
+    H7_Diag_Link_Command(ARM_A, guard, sizeof guard);
+    assert(!h7_diag.guard_enable);
+    memset(gimbal.arm_feedback_data.motor_inited, 1, ARM_MOTOR_NUM);
+    H7_Diag_Link_Command(ARM_B, guard, sizeof guard);
+    H7_Diag_Link_Command(ARM_A, guard, sizeof guard - 1);
+    rc_offline = 0;
+    H7_Diag_Link_Command(ARM_A, guard, sizeof guard);
+    assert(!h7_diag.guard_enable);
+    rc_offline = 1;
+    H7_Diag_Link_Command(ARM_A, guard, sizeof guard);
+    assert(h7_diag.guard_enable);
+    h7_diag.guard_cycle_hz = 0;
+    H7_Diag_Link_Command(ARM_A, clock_hz, sizeof clock_hz);
+    assert(h7_diag.guard_cycle_hz == 480000000);
+    guard[1] = 0;
+    g_arm[0].arm_mode = arm_run;
+    H7_Diag_Link_Command(ARM_A, guard, sizeof guard);
+    assert(h7_diag.guard_enable);
+    g_arm[0].arm_mode = arm_damping;
+    H7_Diag_Link_Command(ARM_A, guard, sizeof guard);
+    assert(!h7_diag.guard_enable);
+    h7_diag.state = 3;
+    H7_Diag_Link_Command(ARM_A, capture, sizeof capture);
+    assert(h7_diag.request == 1);
+    h7_diag.state = 2;
+    h7_diag.request = 0;
+    H7_Diag_Link_Command(ARM_A, freeze, sizeof freeze);
+    assert(h7_diag.request == 2);
     assert(!test_lock);
     puts("diagnostic callback, timestamp, freeze and guard checks passed");
     return 0;

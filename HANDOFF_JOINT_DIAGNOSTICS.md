@@ -155,6 +155,8 @@ python App/test/joint_diag_run.py run \
   路径，Ruckig 自身 dt 保持 2 ms。每个参考采样必须离软限位至少 10°。
 - 测试中心取 JOINT1 当前反馈。其他关节及夹爪保持开始时目标；通过 SDK 的
   `send_ctrl_pos()` 以约 100 Hz 发送 **`0x16`**，H7 仍按原 500 Hz 控制。
+- 采样开始、冻结和保护控制通过 SDK 链路下发。运动测试通过 J-Link 后台读回诊断状态和
+  已冻结的样本。开始运动前，脚本核对 A 臂处于阻尼模式、各电机已初始化且固件保护已启用。
 - 先保持 0.25 秒并做 5.3 秒 PC/DWT/HAL/RTOS/Cmd 时钟校准，然后依次做 hold 0.5 秒、
   steps 2.45 秒、smooth 2.45 秒，各一次。steps 在 0.15/0.90/1.65 秒变为 +A/−A/0；
   smooth 在 0.15/0.80/1.55/2.25 秒以零端点速度、加速度连接 0/+A/−A/0。
@@ -258,5 +260,5 @@ raw/controller 匹配标志 bit16 为零时，可能在驱动复制反馈后又�
 核实 push 成功；不要擅自修改控制参数来使结果“通过”。
 
 探针接口依据：[PyLink 官方 API](https://pylink.readthedocs.io/en/latest/pylink.html)。
-使用其 SWD 连接与后台 memory_read32/memory_write32；运行中是否能稳定访问应以实际
-探针/目标表现为准，读取失败时中止测试，不自动暂停目标重试。
+运动测试使用 SWD 后台 `memory_read32`。CPU 基准通过 `memory_write32` 提交请求。
+读取失败时中止测试，保持 MCU 运行。
