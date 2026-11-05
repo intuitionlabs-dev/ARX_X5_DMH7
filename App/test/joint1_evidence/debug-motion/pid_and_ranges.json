@@ -1,0 +1,94 @@
+{
+  "hold-1": {
+    "samples": 266,
+    "ff_active_threshold_deg_s": 10,
+    "ff_active_samples": 0,
+    "reference_range_deg": [
+      -0.8196351528167725,
+      -0.8196351528167725
+    ],
+    "feedback_range_deg": [
+      -0.8196351528167725,
+      -0.8196351528167725
+    ],
+    "maximum_position_error_deg": 0.0,
+    "maximum_ff_deg_s": 0.0,
+    "maximum_feedback_speed_deg_s": 2.266646146774292,
+    "kp_term_rms_deg_s": 0.0,
+    "kd_term_rms_deg_s": 0.0,
+    "pid_rms_deg_s": 0.0,
+    "pid_model_residual_max_deg_s": 0.0,
+    "cmd_wall_p99_us": 1023.1744832651483,
+    "same_hal_position_and_speed_ms": 266,
+    "mit_kp_values": [
+      0.0
+    ],
+    "mit_kd_values": [
+      35.0
+    ]
+  },
+  "smooth-1": {
+    "samples": 1238,
+    "ff_active_threshold_deg_s": 10,
+    "ff_active_samples": 984,
+    "reference_range_deg": [
+      -45.598323822021484,
+      44.09748840332031
+    ],
+    "feedback_range_deg": [
+      -45.82307052612305,
+      43.96522903442383
+    ],
+    "maximum_position_error_deg": 1.0631608963012695,
+    "maximum_ff_deg_s": 195.64462280273438,
+    "maximum_feedback_speed_deg_s": 213.82028198242188,
+    "kp_term_rms_deg_s": 3.5965301446806857,
+    "kd_term_rms_deg_s": 2.0665208307721143,
+    "pid_rms_deg_s": 4.209619048344748,
+    "pid_model_residual_max_deg_s": 4.76837158203125e-07,
+    "cmd_wall_p99_us": 1275.1734491314012,
+    "same_hal_position_and_speed_ms": 1238,
+    "mit_kp_values": [
+      0.0
+    ],
+    "mit_kd_values": [
+      35.0
+    ],
+    "pid_opposite_sign_fraction": 0.08130081300813008,
+    "pid_projection_on_ff": 0.03616305135061597,
+    "kp_projection_on_ff": 0.036701001329454135,
+    "kd_projection_on_ff": -0.000537949947045545
+  },
+  "steps-1": {
+    "samples": 1240,
+    "ff_active_threshold_deg_s": 10,
+    "ff_active_samples": 719,
+    "reference_range_deg": [
+      -45.81963348388672,
+      44.18036651611328
+    ],
+    "feedback_range_deg": [
+      -45.997928619384766,
+      44.096370697021484
+    ],
+    "maximum_position_error_deg": 1.6511850357055664,
+    "maximum_ff_deg_s": 272.5679016113281,
+    "maximum_feedback_speed_deg_s": 286.8566589355469,
+    "kp_term_rms_deg_s": 4.149189832951597,
+    "kd_term_rms_deg_s": 2.582828386360914,
+    "pid_rms_deg_s": 4.965722376368702,
+    "pid_model_residual_max_deg_s": 4.76837158203125e-07,
+    "cmd_wall_p99_us": 1043.93850587817,
+    "same_hal_position_and_speed_ms": 1240,
+    "mit_kp_values": [
+      0.0
+    ],
+    "mit_kd_values": [
+      35.0
+    ],
+    "pid_opposite_sign_fraction": 0.16550764951321278,
+    "pid_projection_on_ff": 0.03516556412028922,
+    "kp_projection_on_ff": 0.03586968462990086,
+    "kd_projection_on_ff": -0.000704120520352915
+  }
+}

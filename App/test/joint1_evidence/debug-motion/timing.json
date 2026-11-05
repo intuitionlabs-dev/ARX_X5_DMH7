@@ -1,0 +1,8 @@
+{
+  "budget_s": 22.0,
+  "measurement_and_cleanup_s": 14.259840306000115,
+  "measurements_complete": true,
+  "damping_confirmed": true,
+  "guard_fault_before_disarm": 0,
+  "excludes": "connection/ELF verification, prior initialization, final plotting"
+}

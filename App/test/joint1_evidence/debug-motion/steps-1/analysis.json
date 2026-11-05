@@ -1,0 +1,90 @@
+{
+  "samples": 1240,
+  "normal_position_samples": 1240,
+  "contiguous_cmd_sequences": true,
+  "cmd_period_ms": {
+    "mean": 1.999940000582571,
+    "p99": 2.56002255861822,
+    "maximum": 2.561864141003678
+  },
+  "cmd_wall_us": {
+    "mean": 828.6218882085747,
+    "maximum": 1325.8530831750315
+  },
+  "motor_unique_samples": 1240,
+  "motor_sequence_gaps": 0,
+  "motor_period_ms": 1.999815631847597,
+  "motor_average_period_ms_from_counter": 1.999815631847597,
+  "reference_integral": {
+    "informative": true,
+    "scale": 1.000185773156248,
+    "rms_deg": 0.021181190917383377,
+    "position_span_deg": 90.0
+  },
+  "reference_integral_nominal_2ms": {
+    "informative": true,
+    "scale": 1.0000045096411456,
+    "rms_deg": 0.00018681366754096478,
+    "position_span_deg": 90.0
+  },
+  "motor_reference_integral": {
+    "informative": true,
+    "scale": 1.000184984776887,
+    "rms_deg": 0.012491152620649726,
+    "position_span_deg": 90.0
+  },
+  "feedback_integral": {
+    "informative": true,
+    "scale": 0.9962997949668696,
+    "rms_deg": 0.2713278285003811,
+    "position_span_deg": 90.09429931640625
+  },
+  "position_feedback_lag": {
+    "informative": true,
+    "lag_ms": 8.000000000000146,
+    "gain": 1.0027563421350576,
+    "rms": 0.15517714396336033,
+    "at_search_edge": false
+  },
+  "speed_feedback_lag_vs_ff": {
+    "informative": true,
+    "lag_ms": 7.000000000000145,
+    "gain": 1.0068445562730934,
+    "rms": 4.93855066863371,
+    "at_search_edge": false
+  },
+  "speed_feedback_lag_vs_command": {
+    "informative": true,
+    "lag_ms": 9.000000000000147,
+    "gain": 0.9728359791434067,
+    "rms": 4.951732612388906,
+    "at_search_edge": false
+  },
+  "speed_sum_identity_max_error": 1.52587890625e-05,
+  "position_error_identity_max_error": 5.960464477539063e-08,
+  "post_vs_ruckig_q_max": 0.0,
+  "post_vs_ruckig_v_max": 0.0,
+  "ruckig_state_continuity_q_max": 0.0,
+  "ruckig_state_continuity_v_max": 0.0,
+  "tx_speed_conversion_error": 1.548196343037489e-05,
+  "rx_types": [
+    1
+  ],
+  "raw_controller_matching_fraction": 1.0,
+  "new_calculation_fraction": 0.0024193548387096775,
+  "pos_ms_age_ms": {
+    "mean": 1.5,
+    "maximum": 3
+  },
+  "speed_ms_age_ms": {
+    "mean": 1.5,
+    "maximum": 3
+  },
+  "rx_ms_age_ms": {
+    "mean": 1.5,
+    "maximum": 3
+  },
+  "motor_enabled_valid_fraction": 1.0,
+  "valid_for_phase_conclusion": true,
+  "phase_sign": "positive = feedback lags; negative = feedback leads"
+}

@@ -173,14 +173,15 @@ def wait_until(predicate, service=lambda: None, timeout=10):
     raise TimeoutError("timed out waiting for hardware state")
 
 
-def check_snapshot(arm, low, high, running=True):
+def check_snapshot(arm, low, high, running=True, lower_recovery_axes=()):
     s = arm.snapshot()
     if s.age is None or s.age > .05 or s.motor_lost_mask or s.motor_inited_mask != 0x7f:
         raise RuntimeError("feedback stale, motor offline or not initialized")
     if s.robot_state != arm.board_defs.STATE_NORMAL or (running and s.mode != arm.board_defs.MODE_RUN):
         raise RuntimeError(f"unexpected state/mode: {s.robot_state}/{s.mode}")
     for i, q in enumerate(s.joint_angles_deg):
-        if not math.isfinite(q) or q < low[i]-.2 or q > high[i]+.2:
+        lower_margin = 1.0 if i in lower_recovery_axes else .2
+        if not math.isfinite(q) or q < low[i]-lower_margin or q > high[i]+.2:
             raise RuntimeError(f"joint {i+1} feedback outside soft limits: {q}")
     if any(not math.isfinite(v) for v in s.joint_velocities_deg_s):
         raise RuntimeError("nonfinite velocity")
@@ -199,13 +200,15 @@ def run_motion(probe, args, directory, budget):
     # Configuration snapshot will be refreshed by a capture before motion.
     if info["state"] in (2, 4):
         raise RuntimeError("another test is active")
-    link = sdk.Link(args.port, robot_type="arx_x5", auto_reconnect=False)
+    link = sdk.Link(args.port, robot_type="arx_x5", timeout=.01, auto_reconnect=False)
     arm = sdk.Arm(0, link)
     commands = []
     plots = []
     began = False
     measurements_complete = False
     damping_confirmed = False
+    guard_fault = None
+    lower_recovery_axes = (1, 2) if args.allow_j23_lower_limit_recovery else ()
 
     def command(op, value):
         link.send(DIAG_COMMAND_TID, struct.pack("<BI", op, value), arm_id=0)
@@ -215,7 +218,8 @@ def run_motion(probe, args, directory, budget):
         budget.check()
         # Do not silently invoke reset, homing or force=True. The local agent
         # prepares STATE_NORMAL using the existing initialization procedure.
-        snapshot = check_snapshot(arm, info["minimum_deg"], info["maximum_deg"], running=False)
+        snapshot = check_snapshot(arm, info["minimum_deg"], info["maximum_deg"], running=False,
+                                  lower_recovery_axes=lower_recovery_axes)
         if snapshot.mode != arm.board_defs.MODE_DAMPING:
             raise RuntimeError("A arm must be in damping before arming the diagnostic guard")
         if max(abs(v) for v in snapshot.joint_velocities_deg_s) > 2:
@@ -231,7 +235,7 @@ def run_motion(probe, args, directory, budget):
         if info["rc_online"]:
             raise RuntimeError("RC is online; position commands would be ignored")
         low, high = info["minimum_deg"], info["maximum_deg"]
-        snapshot = check_snapshot(arm, low, high, running=False)
+        snapshot = check_snapshot(arm, low, high, running=False, lower_recovery_axes=lower_recovery_axes)
         # Feedback can quantize a few hundredths of a degree past a limit.
         # Hold the nearest legal target, as the firmware normally does.
         base = [min(high[i], max(low[i], q)) for i, q in enumerate(snapshot.joint_angles_deg)]
@@ -239,12 +243,14 @@ def run_motion(probe, args, directory, budget):
         amplitude = choose_amplitude(base[0], args.amplitude, low[0], high[0])
         save_json(directory/"preflight.json", dict(center_deg=base[0], amplitude_deg=amplitude,
             held_joint_targets_deg=base, gripper_target_deg=grip,
+            entry_feedback_deg=snapshot.joint_angles_deg,
+            lower_limit_recovery_joints=[i+1 for i in lower_recovery_axes],
             ruckig_library_sha256=hashlib.sha256(Path(args.ruckig_lib).read_bytes()).hexdigest(),
             trajectories=preflight(Path(args.ruckig_lib).resolve(), info, base[0], amplitude)))
         arm.keepalive()
-        fresh = check_snapshot(arm, low, high, running=False)
+        fresh = check_snapshot(arm, low, high, running=False, lower_recovery_axes=lower_recovery_axes)
         if max(abs(v) for v in fresh.joint_velocities_deg_s) > 2 or any(
-                abs(q-base[i]) > .5 for i, q in enumerate(fresh.joint_angles_deg)):
+                abs(q-snapshot.joint_angles_deg[i]) > .5 for i, q in enumerate(fresh.joint_angles_deg)):
             raise RuntimeError("arm moved during preflight; prepare a stationary pose and retry")
         # From here cleanup must send damping even if the start wait fails.
         began = True
@@ -258,7 +264,7 @@ def run_motion(probe, args, directory, budget):
 
         def send(q=base[0]):
             budget.check()
-            current = check_snapshot(arm, low, high)
+            current = check_snapshot(arm, low, high, lower_recovery_axes=lower_recovery_axes)
             if not low[0]+5 < current.joint_angles_deg[0] < high[0]-5:
                 raise RuntimeError("JOINT1 entered soft-limit reserve")
             target = list(base)
@@ -327,6 +333,7 @@ def run_motion(probe, args, directory, budget):
                 arm.damping()
                 wait_until(lambda: arm.mode == arm.board_defs.MODE_DAMPING, arm.keepalive, timeout=2)
                 damping_confirmed = True
+                guard_fault = probe.info()["guard_fault"]
                 command(DIAG_OP_GUARD, 0)
                 wait_until(lambda: probe.info()["guard_enable"] == 0, arm.keepalive, timeout=1)
         finally:
@@ -337,6 +344,7 @@ def run_motion(probe, args, directory, budget):
                 save_json(directory/"timing.json", dict(budget_s=MOTION_BUDGET_S,
                     measurement_and_cleanup_s=time.monotonic()-budget.start,
                     measurements_complete=measurements_complete, damping_confirmed=damping_confirmed,
+                    guard_fault_before_disarm=guard_fault,
                     excludes="connection/ELF verification, prior initialization, final plotting"))
     # Matplotlib startup can take seconds: render only after confirmed damping.
     for plot_args in plots:
@@ -385,6 +393,8 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--ruckig-lib", type=Path, help="native shared library built from this checkout")
     parser.add_argument("--amplitude", type=float, default=45)
+    parser.add_argument("--allow-j23-lower-limit-recovery", action="store_true",
+                        help="allow J2/J3 feedback up to 1 degree below their lower limit while clamping targets")
     parser.add_argument("--repeats", type=int, choices=(1,), default=1,
                         help="one pass keeps the complete measurement campaign within 30 s")
     args = parser.parse_args()

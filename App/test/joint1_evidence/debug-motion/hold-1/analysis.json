@@ -1,0 +1,66 @@
+{
+  "samples": 266,
+  "normal_position_samples": 266,
+  "contiguous_cmd_sequences": true,
+  "cmd_period_ms": {
+    "mean": 1.9982218455734868,
+    "p99": 2.4418057671496456,
+    "maximum": 2.561305908999917
+  },
+  "cmd_wall_us": {
+    "mean": 820.9172164318969,
+    "maximum": 1030.1109325048187
+  },
+  "motor_unique_samples": 266,
+  "motor_sequence_gaps": 0,
+  "motor_period_ms": 1.9988033123535696,
+  "motor_average_period_ms_from_counter": 1.9988033123535698,
+  "reference_integral": {
+    "informative": false
+  },
+  "reference_integral_nominal_2ms": {
+    "informative": false
+  },
+  "motor_reference_integral": {
+    "informative": false
+  },
+  "feedback_integral": {
+    "informative": false
+  },
+  "position_feedback_lag": {
+    "informative": false
+  },
+  "speed_feedback_lag_vs_ff": {
+    "informative": false
+  },
+  "speed_feedback_lag_vs_command": {
+    "informative": false
+  },
+  "speed_sum_identity_max_error": 0.0,
+  "position_error_identity_max_error": 0.0,
+  "post_vs_ruckig_q_max": 0.0,
+  "post_vs_ruckig_v_max": 0.0,
+  "ruckig_state_continuity_q_max": 0.0,
+  "ruckig_state_continuity_v_max": 0.0,
+  "tx_speed_conversion_error": 0.0,
+  "rx_types": [
+    1
+  ],
+  "raw_controller_matching_fraction": 1.0,
+  "new_calculation_fraction": 0.0,
+  "pos_ms_age_ms": {
+    "mean": 1.4962406015037595,
+    "maximum": 3
+  },
+  "speed_ms_age_ms": {
+    "mean": 1.4962406015037595,
+    "maximum": 3
+  },
+  "rx_ms_age_ms": {
+    "mean": 1.4962406015037595,
+    "maximum": 3
+  },
+  "motor_enabled_valid_fraction": 1.0,
+  "valid_for_phase_conclusion": true,
+  "phase_sign": "positive = feedback lags; negative = feedback leads"
+}
