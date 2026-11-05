@@ -45,7 +45,7 @@ typedef struct {
     float pos_kp, pos_ki, pos_kd, pos_output_max, speed_kp, speed_ki, speed_kd;
     float mit_kp, mit_kd, position_max, speed_max, feedback_offset_rad;
     float minimum_deg[6], maximum_deg[6];
-    char profile[32], version[64];
+    char profile[32], version[64], build[96];
 } H7_Diag_Info;
 
 /* Read with seqlock: lock must be the same even value before/after the read.

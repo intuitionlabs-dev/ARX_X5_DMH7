@@ -67,7 +67,10 @@ static void diag_guard(void) {
     if (!h7_diag.guard_fault) {
         if (!isfinite(q) || !isfinite(ref) || !isfinite(c->speed_comp)
             || !(diag_motor->feedback_valid & ENCOS_HAS_POSITION)
-            || (uint32_t)(HAL_GetTick() - diag_motor->last_position_ms) > 50U)
+            || !(diag_motor->feedback_valid & ENCOS_HAS_SPEED)
+            || !isfinite(diag_motor->fdb_speed)
+            || (uint32_t)(HAL_GetTick() - diag_motor->last_position_ms) > 50U
+            || (uint32_t)(HAL_GetTick() - diag_motor->last_speed_ms) > 50U)
             h7_diag.guard_fault = 1;
         else if (q < j->minimum_deg + h7_diag.guard_margin_deg
                  || q > j->maximum_deg - h7_diag.guard_margin_deg)
@@ -244,6 +247,7 @@ static void diag_config(void) {
     }
     snprintf((char*)h7_diag.profile, sizeof(h7_diag.profile), "%s", g->profile->name);
     snprintf((char*)h7_diag.version, sizeof(h7_diag.version), "%s", g->profile->version_string);
+    snprintf((char*)h7_diag.build, sizeof(h7_diag.build), "%s", h7_diag_build);
 }
 
 static int diag_all_stopped(void) {
@@ -261,11 +265,11 @@ __attribute__((noinline)) static float diag_quintic(float t) {
 }
 
 static void diag_benchmark(void) {
+    memset((void*)&h7_diag_bench, 0, sizeof(h7_diag_bench));
     if (!diag_all_stopped()) { h7_diag.error = 2; return; }
     ruckig_c_context* ctx = ruckig_c_create(ARM_CONTROL_PERIOD_S);
     if (!ctx) { h7_diag.error = 3; return; }
     h7_diag.state = 4;
-    memset((void*)&h7_diag_bench, 0, sizeof(h7_diag_bench));
     uint32_t mask = Arm_Motors_Lock();
     uint32_t start = DWT->CYCCNT;
     h7_diag_bench.counter_overhead_cycles = DWT->CYCCNT - start;
@@ -302,6 +306,7 @@ static void diag_benchmark(void) {
             /* The only IRQ-off solver measurement. Both arms MUST be stopped.
              * Yield after every call; never mask a full batch. */
             mask = Arm_Motors_Lock();
+            if (!diag_all_stopped()) { Arm_Motors_Unlock(mask); h7_diag.error = 2; break; }
             start = DWT->CYCCNT;
             int result = 0;
             float value;
