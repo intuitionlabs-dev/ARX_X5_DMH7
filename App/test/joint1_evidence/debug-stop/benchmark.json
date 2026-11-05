@@ -1,0 +1,51 @@
+{
+  "completed": 1,
+  "status": 0,
+  "counter_overhead_cycles": 23,
+  "cost": [
+    {
+      "count": 128,
+      "min_cycles": 126,
+      "max_cycles": 126,
+      "mean_cycles": 126.0,
+      "mean_us": 0.26250980091743586,
+      "max_us": 0.26250980091743586,
+      "one_axis_500hz_percent": 0.013125490045871794,
+      "six_axes_500hz_percent_estimate": 0.07875294027523076
+    },
+    {
+      "count": 128,
+      "min_cycles": 370,
+      "max_cycles": 378,
+      "mean_cycles": 370.0625,
+      "mean_us": 0.7709923270000684,
+      "max_us": 0.7875294027523075,
+      "one_axis_500hz_percent": 0.038549616350003424,
+      "six_axes_500hz_percent_estimate": 0.23129769810002054
+    },
+    {
+      "count": 128,
+      "min_cycles": 13518,
+      "max_cycles": 13610,
+      "mean_cycles": 13581.515625,
+      "mean_us": 28.2958806577444,
+      "max_us": 28.35522532131986,
+      "one_axis_500hz_percent": 1.4147940328872202,
+      "six_axes_500hz_percent_estimate": 8.48876419732332
+    },
+    {
+      "count": 128,
+      "min_cycles": 194986,
+      "max_cycles": 195224,
+      "mean_cycles": 195073.65625,
+      "mean_us": 406.418624336697,
+      "max_us": 406.7318521770278,
+      "one_axis_500hz_percent": 20.32093121683485,
+      "six_axes_500hz_percent_estimate": 121.9255873010091
+    }
+  ],
+  "sink": 1.3333334209164605e-05,
+  "request_error": 0,
+  "budget_s": 8.0,
+  "measurement_s": 5.992691763000039
+}

@@ -1,0 +1,14 @@
+{
+  "duration_s": 5.279031803001999,
+  "max_read_bracket_ms": 0.8188860010704957,
+  "timestamp_uncertainty_note": "read bracket plus up to one Cmd period (clock published at Cmd end)",
+  "cycles_per_s": 479982078.9915166,
+  "cycles_fit_rms": 291336.8839400404,
+  "hal_ms_per_s": 999.981662416218,
+  "hal_ms_fit_rms": 0.7603014840590078,
+  "rtos_tick_per_s": 999.9554972431073,
+  "rtos_tick_fit_rms": 0.5677679776492868,
+  "cmd_count_per_s": 499.97774862155364,
+  "cmd_count_fit_rms": 0.2838839888246434,
+  "deadline_misses": 0
+}

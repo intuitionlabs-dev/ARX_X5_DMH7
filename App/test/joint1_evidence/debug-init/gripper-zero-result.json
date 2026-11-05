@@ -1,0 +1,41 @@
+{
+  "init_abort": 2,
+  "init_reject": 0,
+  "robot_state": 5,
+  "init_stage": 3,
+  "home_active": 0,
+  "zero_request": 0,
+  "zero_state": 6,
+  "zero_results": [
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    4
+  ],
+  "elapsed_ms": 1501,
+  "selection_valid": 0,
+  "selection": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "participating": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1
+  ],
+  "index": 7,
+  "disable_confirmed": 1,
+  "raw": "000605050505050504000000dd0500000000000000000000000000000000010033fb090010010a0027fd090007010000"
+}
