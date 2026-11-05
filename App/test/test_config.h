@@ -9,3 +9,8 @@
 /* USART1 原样回显测试开关。 */
 #define TEST_UART_ECHO_ENABLE 0
 
+/* Opt-in diagnostics: no extra CMake source/target and no automatic motion. */
+#ifndef TEST_JOINT_DIAGNOSTICS_ENABLE
+#define TEST_JOINT_DIAGNOSTICS_ENABLE 0
+#endif
+

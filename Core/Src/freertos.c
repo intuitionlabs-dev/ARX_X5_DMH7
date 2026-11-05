@@ -27,10 +27,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "test_config.h"
-#if TEST_JOINT_BENCHMARK_ENABLE
-#include "h7_joint_benchmark.h"
-#include <string.h>
-#endif
+#include "h7_joint_diagnostics.h"
 #include "bsp_can.h"
 #include "bsp_supervise.h"
 #include "monitor.h"
@@ -103,16 +100,16 @@ const osThreadAttr_t UartLoopbackTask_attributes = {
   .priority = (osPriority_t) osPriorityLow,
 };
 #endif
-#if TEST_JOINT_BENCHMARK_ENABLE
-osThreadId_t JointBenchmarkTaskHandle;
-static uint64_t JointBenchmarkTaskBuffer[2048] __attribute__((section(".RAM_D1"), aligned(8)));
-static osStaticThreadDef_t JointBenchmarkTaskControlBlock;
-static const osThreadAttr_t JointBenchmarkTask_attributes = {
-  .name = "JointBenchmarkTask",
-  .cb_mem = &JointBenchmarkTaskControlBlock,
-  .cb_size = sizeof(JointBenchmarkTaskControlBlock),
-  .stack_mem = JointBenchmarkTaskBuffer,
-  .stack_size = sizeof(JointBenchmarkTaskBuffer),
+#if TEST_JOINT_DIAGNOSTICS_ENABLE
+osThreadId_t JointDiagnosticsTaskHandle;
+static uint64_t JointDiagnosticsTaskBuffer[2048] __attribute__((section(".RAM_D1"), aligned(8)));
+static osStaticThreadDef_t JointDiagnosticsTaskControlBlock;
+static const osThreadAttr_t JointDiagnosticsTask_attributes = {
+  .name = "JointDiagnosticsTask",
+  .cb_mem = &JointDiagnosticsTaskControlBlock,
+  .cb_size = sizeof(JointDiagnosticsTaskControlBlock),
+  .stack_mem = JointDiagnosticsTaskBuffer,
+  .stack_size = sizeof(JointDiagnosticsTaskBuffer),
   .priority = (osPriority_t) osPriorityLow,
 };
 #endif
@@ -169,8 +166,8 @@ void StartCanLoopbackTask(void *argument);
 #if TEST_UART_LOOPBACK_ENABLE
 void StartUartLoopbackTask(void *argument);
 #endif
-#if TEST_JOINT_BENCHMARK_ENABLE
-void StartJointBenchmarkTask(void *argument);
+#if TEST_JOINT_DIAGNOSTICS_ENABLE
+void StartJointDiagnosticsTask(void *argument);
 #endif
 /* USER CODE END FunctionPrototypes */
 
@@ -233,10 +230,9 @@ void MX_FREERTOS_Init(void) {
   UartLoopbackTaskHandle = osThreadNew(StartUartLoopbackTask, NULL, &UartLoopbackTask_attributes);
 #endif
   HAL_Moveplan_Thread_Create();
-#if TEST_JOINT_BENCHMARK_ENABLE
-  memset((void*)&h7_joint_benchmark, 0, sizeof(h7_joint_benchmark));
-  JointBenchmarkTaskHandle = osThreadNew(StartJointBenchmarkTask, NULL, &JointBenchmarkTask_attributes);
-  if (JointBenchmarkTaskHandle == NULL) h7_joint_benchmark.state = -12;
+#if TEST_JOINT_DIAGNOSTICS_ENABLE
+  JointDiagnosticsTaskHandle = osThreadNew(StartJointDiagnosticsTask, NULL, &JointDiagnosticsTask_attributes);
+  if (JointDiagnosticsTaskHandle == NULL) h7_diag.error = 5;
 #endif
   /* USER CODE END RTOS_THREADS */
 
@@ -360,9 +356,12 @@ void StartCmdTask(void *argument)
     currentTimeCmd = xTaskGetTickCount();
     for (;;) {
         FrameRateStatistics(&freertos_fps.cmd);
+        H7_Diag_Cmd_Begin();
         Cmd_Loop();
+        H7_Diag_Cmd_End();
 
         if (xTaskDelayUntil(&currentTimeCmd, 2) == pdFALSE) {
+            H7_Diag_Deadline_Miss();
             currentTimeCmd = xTaskGetTickCount();
         }
     }
@@ -372,15 +371,12 @@ void StartCmdTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
-#if TEST_JOINT_BENCHMARK_ENABLE
+#if TEST_JOINT_DIAGNOSTICS_ENABLE
 /* Test-only implementation stays in App/test; no CMake source-list changes. */
-#include "h7_joint_benchmark_impl.h"
-void StartJointBenchmarkTask(void *argument)
+#include "h7_joint_diagnostics_impl.h"
+void StartJointDiagnosticsTask(void *argument)
 {
-    (void)argument;
-    osDelay(2000);
-    H7_Joint_Benchmark_Run();
-    osThreadExit();
+    H7_Diag_Task(argument);
 }
 #endif
 #if TEST_CAN_LOOPBACK_ENABLE
