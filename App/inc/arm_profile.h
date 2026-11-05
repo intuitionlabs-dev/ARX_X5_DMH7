@@ -39,7 +39,7 @@ typedef struct {
 typedef struct Arm_profile { // NOLINT(readability-identifier-naming)
     const char* name;
     size_t joint_count, motor_count;
-    const Arm_motor_config* motors;
+    Arm_motor_config* motors; //不要使用常量指针，便于运行时修改。
     const Arm_joint_config* joints;
     Arm_gripper_mapping gripper;
     Arm_init_policy init;

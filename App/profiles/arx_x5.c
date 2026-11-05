@@ -19,7 +19,8 @@
 #define ARX_X5_GRIPPER_LIMIT_DEG 142.0f
 
 /* 按枚举顺序配置 ARX-X5 的六个关节和夹爪电机。 */
-static const Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
+// 不作为常量指针，便于运行时修改。
+static Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming) 
     /* 关节 1 电机的驱动、总线标识、编码量程和模式增益。 */
     {.driver=&ARM_DRIVER_ENCOS, .model="ENCOS Type4",
         .tx_id=1, .rx_id=1, .tx_group=CAN_TX_500HZ_G0,
@@ -139,7 +140,7 @@ static const Arm_motor_config motors[] = { // NOLINT(readability-identifier-nami
             .outputMax=10.0f,
             .Irange=0.0f,
         },
-        .kp=50.0f, .kd=0.8f, .damping_kd=0.8f},
+        .kp=15, .kd=1.2, .damping_kd=3},
     /* 关节 5 电机的驱动、总线标识、编码量程和模式增益。 */
     {.driver=&ARM_DRIVER_DM, .model="DM MIT",
         .tx_id=6, .rx_id=0, .tx_group=CAN_TX_250HZ_G2,
@@ -169,7 +170,7 @@ static const Arm_motor_config motors[] = { // NOLINT(readability-identifier-nami
             .outputMax=10.0f,
             .Irange=0.0f,
         },
-        .kp=25.0f, .kd=0.8f, .damping_kd=0.8f},
+        .kp=10, .kd=1, .damping_kd=3},
     /* 关节 6 电机的驱动、总线标识、编码量程和模式增益。 */
     {.driver=&ARM_DRIVER_DM, .model="DM MIT",
         .tx_id=7, .rx_id=0, .tx_group=CAN_TX_250HZ_G3,
@@ -199,7 +200,7 @@ static const Arm_motor_config motors[] = { // NOLINT(readability-identifier-nami
             .outputMax=10.0f,
             .Irange=0.0f,
         },
-        .kp=10.0f, .kd=1.0f, .damping_kd=1.0f},
+        .kp=10.0f, .kd=1.0f, .damping_kd=3},
     /* 夹爪电机的驱动、总线标识、编码量程和模式增益。 */
     {.driver=&ARM_DRIVER_DM, .model="DM MIT",
         .tx_id=8, .rx_id=0, .tx_group=CAN_TX_250HZ_G3,
@@ -243,9 +244,9 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
-        .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
-        .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
-        .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
+        .max_velocity_deg_s=300.0f,
+        .max_acceleration_deg_s2=240.0f,
+        .max_jerk_deg_s3=1500,
         .absolute_encoder=true},
     /* 关节 2 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -256,9 +257,9 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
-        .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
-        .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
-        .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
+        .max_velocity_deg_s=400,
+        .max_acceleration_deg_s2=800,
+        .max_jerk_deg_s3=3500,
         .absolute_encoder=true},
     /* 关节 3 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -269,9 +270,9 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
-        .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
-        .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
-        .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
+        .max_velocity_deg_s=400,
+        .max_acceleration_deg_s2=800,
+        .max_jerk_deg_s3=3500,
         .absolute_encoder=true},
     /* 关节 4 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -282,9 +283,9 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
-        .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
-        .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
-        .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
+        .max_velocity_deg_s=1000,
+        .max_acceleration_deg_s2=3500,
+        .max_jerk_deg_s3=4500.0f,
         .absolute_encoder=true},
     /* 关节 5 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -295,9 +296,9 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
-        .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
-        .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
-        .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
+        .max_velocity_deg_s=1000,
+        .max_acceleration_deg_s2=3500,
+        .max_jerk_deg_s3=5000.0f,
         .absolute_encoder=true},
     /* 关节 6 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -308,9 +309,9 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .velocity_scale=ARM_PROFILE_DEFAULT_VELOCITY_SCALE,
         .plan_velocity_scale=ARM_PROFILE_DEFAULT_PLAN_VELOCITY_SCALE,
-        .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
-        .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
-        .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
+        .max_velocity_deg_s=1000,
+        .max_acceleration_deg_s2=3500,
+        .max_jerk_deg_s3=6000.0f,
         .absolute_encoder=true},
 };
 

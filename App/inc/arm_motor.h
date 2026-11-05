@@ -37,7 +37,7 @@ struct Arm_motor_config {
 
 /* 保存驱动实例、控制器、监控和设零进度。 */
 struct Arm_motor {
-    const Arm_motor_config* config;
+    Arm_motor_config* config;//不要使用常量指针，便于运行时修改。
     void* context;
     controller* control;
     monitor_item* monitor;
