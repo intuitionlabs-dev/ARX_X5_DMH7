@@ -140,7 +140,7 @@ static Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
             .outputMax=10.0f,
             .Irange=0.0f,
         },
-        .kp=15, .kd=1.0, .damping_kd=1.5},
+        .kp=15, .kd=1.5, .damping_kd=1.5},
     /* 关节 5 电机的驱动、总线标识、编码量程和模式增益。 */
     {.driver=&ARM_DRIVER_DM, .model="DM MIT",
         .tx_id=6, .rx_id=0, .tx_group=CAN_TX_250HZ_G2,
