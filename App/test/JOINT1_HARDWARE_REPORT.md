@@ -85,4 +85,4 @@ JOINT1 软限位为 −115° 至 +90°，方向和减速比均为 1，零点为 
 
 - 仓库中的 STOP 证据包括[时钟原始读数](joint1_evidence/debug-stop/clock_raw.json)、[时钟拟合结果](joint1_evidence/debug-stop/clock_summary.json)和[基准原始汇总](joint1_evidence/debug-stop/benchmark.json)。
 - 本机归档 `build/joint1-hardware-evidence.tar.gz` 包含 STOP 基准的完整构建产物、日志和原始读数。SHA-256 为 `6e6af2cde9ac195416dad5d8dedcc87ce90ad4678e8822e8e4bcd06b870d0660`。
-- 本机归档 `build/joint1-motion-evidence.tar.gz` 包含三段采样的 BIN、CSV、JSON 和波形、PC 命令时戳、时钟原始读数，以及运动固件的 ELF、map、编译命令和执行日志。SHA-256 为 `ed17bc72c320a4ded6d3f49cc8967de4941c44f8952c275187f01de9a27fc035`。
+- [运动测试完整归档](joint1_evidence/archives/joint1-motion-evidence.tar.gz)包含三段采样的 BIN、CSV、JSON 和波形、PC 命令时戳、时钟原始读数，以及运动固件的 ELF、map、编译命令和执行日志。SHA-256 为 `ed17bc72c320a4ded6d3f49cc8967de4941c44f8952c275187f01de9a27fc035`。
