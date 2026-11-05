@@ -16,7 +16,7 @@
 #define METAL_MOTOR_SPEED_DIVISOR 4095.0f
 
 /* 按枚举顺序配置 metalarm 的六个关节和夹爪电机。 */
-static const Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
+static Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
     /* 关节 1 电机的驱动、总线标识、编码量程和模式增益。 */
     {.driver=&ARM_DRIVER_DM, .model="DM MIT",
         .tx_id=1, .rx_id=17, .tx_group=CAN_TX_500HZ_G0,
