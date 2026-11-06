@@ -73,7 +73,7 @@ class ControlTests(unittest.TestCase):
         c.step(0, commands=[Command(0, K.START), Command(0, K.POSITION_VELOCITY,
                (1000,) * 6, 1000, (12,) * 6)], motor_feedback=samples(0))
         self.assertEqual(arm.command.source, [90, 206.26, 171.88, 90, 90, 119.17])
-        self.assertEqual(arm.command.gripper_angle, 142)
+        self.assertEqual(arm.command.gripper_angle, 157)
         self.assertEqual(arm.command.velocity, [12] * 6)
         c.step(2, commands=[Command(0, K.POSITION, (0, .5, .5, 0, 0, 0))], motor_feedback=samples(2))
         self.assertFalse(arm.control.joint_velocity)

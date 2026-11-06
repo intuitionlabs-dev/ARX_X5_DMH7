@@ -14,9 +14,12 @@
 #define ARX_X5_MOTOR_POSITION_DIVISOR 65536.0f
 #define ARX_X5_MOTOR_SPEED_DIVISOR 4096.0f
 
-/* ARX-X5 腕部关节和夹爪的对称角度范围。 */
+/* ARX-X5 腕部关节的对称角度范围。 */
 #define ARX_X5_WRIST_LIMIT_DEG 90.0f
-#define ARX_X5_GRIPPER_LIMIT_DEG 142.0f
+
+/* ARX-X5 夹爪协议角的软限位。 */
+#define ARX_X5_GRIPPER_MIN_DEG -142.0f
+#define ARX_X5_GRIPPER_MAX_DEG 157.0f
 
 /* 按枚举顺序配置 ARX-X5 的六个关节和夹爪电机。 */
 // 不作为常量指针，便于运行时修改。
@@ -335,7 +338,7 @@ const Arm_profile ARM_PROFILE_ARX_X5 = {
         .cmd=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,
         .motor_deg=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
-        .minimum=-ARX_X5_GRIPPER_LIMIT_DEG, .maximum=ARX_X5_GRIPPER_LIMIT_DEG},
+        .minimum=ARX_X5_GRIPPER_MIN_DEG, .maximum=ARX_X5_GRIPPER_MAX_DEG},
     /* 配置复位时长、设零时限和夹爪初始化判据。 */
     .init={
         .reset_time_s=ARM_PROFILE_RESET_TIME_S,
