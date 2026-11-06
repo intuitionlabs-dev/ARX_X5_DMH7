@@ -1,4 +1,5 @@
 /build/
+/tests/benchmarks/results/
 build_*
 install
 *pyc

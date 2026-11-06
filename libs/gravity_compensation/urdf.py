@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: LGPL-2.1-or-later
+
 """读取 URDF 关节几何、质量、质心和连杆系惯量。"""
 
 from dataclasses import dataclass

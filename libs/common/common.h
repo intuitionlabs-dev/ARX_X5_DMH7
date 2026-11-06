@@ -7,11 +7,11 @@
 #define RAD2DEG (180.0f / pi)
 #define DEG2RAD (pi / 180.0f)
 
-// 取最大值
+/* 取最大值 */
 #define _MAX(a, b) ((a) > (b) ? (a) : (b))
-// 取最小值
+/* 取最小值 */
 #define _MIN(a, b) ((a) < (b) ? (a) : (b))
-// 双端限幅 a<x<b
+/* 双端限幅 a<x<b */
 #define _MID(x, a, b) _MAX(_MIN((x), (b)), (a))
 
 // NOLINTBEGIN

@@ -1,19 +1,6 @@
 #include "soft_crc.h"
 
-/*
- * 表在编译期算好，运行时不做任何初始化。
- *
- * 生成方式：
- *   poly = bit_reverse(CRC16_CCITT) = 0x8408
- *   for i in 0..255:
- *       crc = 0; c = i
- *       for j in 0..7:
- *           crc = ((crc ^ c) & 1) ? ((crc >> 1) ^ poly) : (crc >> 1)
- *           c >>= 1
- *       table[i] = crc
- *
- * 校验值："123456789" -> CRC16 = 0x6F91，CRC8 = 0x0B
- */
+/* 使用编译期查找表；测试向量 123456789 的 CRC16 为 0x6F91，CRC8 为 0x0B。 */
 
 #define CRC16_CCITT 0x1021
 #define CRC8_MAXIM 0x31

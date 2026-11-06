@@ -1,6 +1,5 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "x5_gravity.h"
-#include <stdio.h> /* Used by this example only, not by the calculation core. */
+#include <stdio.h>
 
 int main(void)
 {

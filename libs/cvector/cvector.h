@@ -5,16 +5,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MIN_LEN 5      // cvector最小长度
-#define EXPANED_VAL 1  // cvector最小扩张倍数
+#define MIN_LEN 5      /* cvector最小长度 */
+#define EXPANED_VAL 1  /* cvector最小扩张倍数 */
 
 #pragma pack(1)
 
 typedef struct cvector_t {
-    void* cv_pdata;     // 指向数组所申请的内存
-    size_t cv_len;      // 数组中元素个数
-    size_t cv_size;     // 单个元素大小(字节)
-    size_t cv_tot_len;  // 数组总大小(字节)
+    void* cv_pdata;     /* 指向数组所申请的内存 */
+    size_t cv_len;      /* 数组中元素个数 */
+    size_t cv_size;     /* 单个元素大小(字节) */
+    size_t cv_tot_len;  /* 数组总大小(字节) */
 } cvector;
 #pragma pack()
 

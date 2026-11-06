@@ -1,5 +1,5 @@
 #include "bsp_supervise.h"
-#include "main.h" // HAL_GetTick()
+#include "main.h"
 
 void FrameRateStatistics(FPS_t *FPS) {
     FPS->count++;

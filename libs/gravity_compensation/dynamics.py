@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: LGPL-2.1-or-later
-# Copyright (C) 2009 Ruben Smits and Dominick Vanthienen.
+
+
 """基于 Orocos KDL RNE 的 X5 六轴逆动力学。"""
 
 from enum import IntEnum

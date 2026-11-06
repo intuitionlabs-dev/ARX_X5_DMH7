@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: LGPL-2.1-or-later
+
 """Small, explicit 3-D operations used by the static KDL/RNE extraction.
 
 No NumPy, Eigen, ROS, KDL binary, or hardware SDK is needed at runtime.

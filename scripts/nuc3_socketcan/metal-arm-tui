@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}/metal-arm-control"
+exec 9>"${XDG_CACHE_HOME:-$HOME/.cache}/metal-arm-control"/tui.lock
+if ! flock -n 9; then
+    echo '机械臂控制台正在运行。' >&2
+    exit 1
+fi
+sudo -n systemctl start metal-arm-slcan@0.service metal-arm-slcan@1.service
+exec "${METAL_TUI_BIN:-metal-arm-tui}" \
+    --interface socketcan --channel metalcan0 --channel metalcan1 "$@"

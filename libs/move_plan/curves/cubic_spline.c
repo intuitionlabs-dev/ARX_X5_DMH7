@@ -2,14 +2,10 @@
 #include <stdlib.h>
 #include "common.h"
 
-/* 私有函数 */
-// 计算三次多项式系数
+/* 计算三次多项式系数 */
 static Cubic_poly poly_calc(float x0, float y0, float dy0, float x1, float y1, float dy1);
 
-/**
- * @brief 计算两点确定的三次样条多项式系数
- * @return Cubic_spline* 三次样条对象
- */
+/* 由两端位置和一阶导数计算三次多项式系数。 */
 Cubic_spline* Cubic_Spline_Create(Cubic_spline_config* config) {
     Cubic_spline* spline = malloc(sizeof(Cubic_spline));
     spline->poly =

@@ -61,8 +61,8 @@ ENCOS_Result ENCOS_PackMixed(ENCOS_Frame *f, uint16_t id, const ENCOS_Ranges *r,
     uint32_t v = quantize(speed, r->speed, 4095);
     uint32_t t = quantize(torque, r->torque, 4095);
     uint32_t k = quantize(kp, r->kp, 4095);
-    uint32_t d = quantize(kd, r->kd, 511); /* KD is 9 bits, not clipped 12 bits. */
-    f->data[0] = (uint8_t)(k >> 7); /* mode 0 in high three bits */
+    uint32_t d = quantize(kd, r->kd, 511);
+    f->data[0] = (uint8_t)(k >> 7);
     f->data[1] = (uint8_t)((k << 1) | (d >> 8));
     f->data[2] = (uint8_t)d;
     put16(f->data + 3, (uint16_t)p);

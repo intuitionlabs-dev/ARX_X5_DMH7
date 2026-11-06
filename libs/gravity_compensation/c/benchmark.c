@@ -1,7 +1,3 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later
- * Host CPU-time benchmark only; stdio/time are NOT used by the C core.
- * Compile without LTO, so the repeated function calls cannot be folded.
- */
 #include "x5_gravity.h"
 #include <stdio.h>
 #include <time.h>

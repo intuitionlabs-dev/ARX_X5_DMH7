@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LGPL-2.1-or-later
+
 """Host-only float C validation against the independently verified Python model.
 
 Python/compiler/ctypes are verification tools, never runtime dependencies of C.
@@ -33,9 +33,9 @@ def compile_library(build, compiler, no_trig=False):
         flags.append("-DX5_GRAVITY_NO_TRIG")
     obj = build / (stem + ".o")
     subprocess.run(compiler + flags + ["-c", str(SOURCE / "x5_gravity.c"), "-o", str(obj)], check=True)
-    # A freestanding build must not import sin/cos, allocation, memcpy, or any
-    # other runtime function. This check is on host GCC; an MCU without FPU may
-    # require the compiler's own float arithmetic helpers instead.
+    # 检查独立构建是否仅依赖目标平台的浮点辅助函数。
+
+
     symbols = subprocess.check_output(["nm", "-u", str(obj)], text=True).strip()
     if symbols:
         raise AssertionError(f"unexpected runtime dependencies: {symbols}")
@@ -68,7 +68,7 @@ def main():
     subprocess.run([sys.executable, str(SOURCE / "generate_model_data.py"), "--check"], check=True)
     rng = random.Random(20261003)
     poses = [[0.0]*6, [128.0]*6, [-128.0]*6, [math.pi/2]*6]
-    # Include quadrant boundaries and float-rounded neighbors, not only random q.
+    # 覆盖象限边界及相邻单精度数值。
     for k in range(-81, 82):
         for delta in (-1e-5, 0, 1e-5):
             poses.append([k*math.pi/2 + delta]*6)
@@ -100,7 +100,7 @@ def main():
                             raise AssertionError((name, tuple(q), gravity, mode, error, cache_error))
                         max_error, max_cached_error = max(max_error, error), max(max_cached_error, cache_error)
                     count += 1
-    # Check API failures leave all outputs untouched, including NaN/Inf.
+    # 验证包含 NaN、Inf 的无效输入保持输出不变。
     for q in (None, Float6(math.nan, 0, 0, 0, 0, 0), Float6(math.inf, 0, 0, 0, 0, 0),
               Float6(128.01, 0, 0, 0, 0, 0)):
         out = Float6(*([123.0]*6))

@@ -1,4 +1,3 @@
-
 #include "fast_def.h"
 #include "fast_math.h"
 
@@ -110,52 +109,38 @@ const float _cosTable_f32[FAST_MATH_TABLE_SIZE + 1] = {
 float fast_cos_f32(
   float x)
 {
-  float cosVal, fract, in;                   /* Temporary input, output variables */
-  uint16_t index;                                /* Index variable */
-  float a, b;                                /* Two nearest output values */
+  float cosVal, fract, in;
+  uint16_t index;
+  float a, b;
   int32_t n;
   float findex;
 
-  /* input x is in radians */
-  /* Scale input to [0 1] range from [0 2*PI] , divide input by 2*pi, add 0.25 (pi/2) to read sine table */
   in = x * 0.159154943092f + 0.25f;
 
-  /* Calculation of floor value of input */
   n = (int32_t) in;
 
-  /* Make negative values towards -infinity */
   if (in < 0.0f)
   {
     n--;
   }
 
-  /* Map input value to [0 1] */
   in = in - (float) n;
 
-  /* Calculation of index of the table */
   findex = (float)FAST_MATH_TABLE_SIZE * in;
   index = (uint16_t)findex;
 
-  /* when "in" is exactly 1, we need to rotate the index down to 0 */
   if (index >= FAST_MATH_TABLE_SIZE) {
     index = 0;
     findex -= (float)FAST_MATH_TABLE_SIZE;
   }
 
-  /* fractional value calculation */
   fract = findex - (float) index;
 
   /* Read two nearest values of input value from the cos table */
   a = _cosTable_f32[index];
   b = _cosTable_f32[index+1];
 
-  /* Linear interpolation process */
   cosVal = (1.0f - fract) * a + fract * b;
 
-  /* Return output value */
   return (cosVal);
 }
-
-/**
-  @} end of cos group
- */

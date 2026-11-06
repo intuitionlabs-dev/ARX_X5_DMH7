@@ -1,7 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later
- * Copyright (C) 2009 Ruben Smits and Dominick Vanthienen.
- * 基于 Orocos KDL v1.5.1 ChainIdSolver_RNE 的六轴 C 实现。
- */
+/* 计算 ARX-X5 六轴递归逆动力学。 */
 #include "x5_dynamics.h"
 #include <math.h>
 

@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
-// Offline comparison oracle: real KDL 1.5.1 and optionally the pinned ARX math
-// method. Never constructs InterfacesPy/ControllerBase or invokes CAN functions.
 #include "chaindynparam.hpp"
 #include <array>
 #include <cstddef>
@@ -32,7 +29,7 @@ int main(int argc, char** argv) {
             std::cin >> mass;
             const auto com = read_vector();
             const KDL::Frame origin(KDL::Rotation::RPY(rpy.x(), rpy.y(), rpy.z()), xyz);
-            // Same URDF -> KDL construction as kdl_parser::toKdl/addChildrenToTree.
+
             const auto name = "joint" + std::to_string(i);
             const KDL::Joint joint = kind == 0 ? KDL::Joint(name, KDL::Joint::Fixed)
                 : KDL::Joint(name, xyz, origin.M * axis,
@@ -45,8 +42,6 @@ int main(int argc, char** argv) {
         const auto joints = chain.getNrOfJoints();
         KDL::JntArray q(joints), torque(joints);
 
-        // Test-only x86_64 ABI adapter for the specific hashed vendor binary.
-        // Disassembly shows the math method only reads nj at +0xc8 and a
         // ChainDynParam* at +0xf8. It never touches hardware/controller state.
         using VendorMath = KDL::JntArray (*)(void*, const KDL::JntArray&);
         VendorMath vendor = nullptr;
@@ -62,7 +57,6 @@ int main(int argc, char** argv) {
             auto* ptr = &dynamics;
             std::memcpy(storage.data() + 0xc8, &joints, sizeof(joints));
             std::memcpy(storage.data() + 0xf8, &ptr, sizeof(ptr));
-            // Keep the dlopen handle until process exit; no controller lifetime.
         }
         std::cout << std::setprecision(17);
         unsigned int cases;

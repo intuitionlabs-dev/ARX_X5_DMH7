@@ -1,8 +1,6 @@
-# SPDX-License-Identifier: LGPL-2.1-or-later
-# Static specialization of Orocos KDL's recursive Newton-Euler algorithm.
-# Original algorithm: Copyright (C) 2009 Ruben Smits and Dominick Vanthienen.
-# Modified 2026-10-03: explicit Python vector math, zero velocity/acceleration,
-# no external wrenches; ARX scaling kept separate from physical joint torque.
+
+
+
 """Offline ARX X5 gravity calculation, without importing the vendor SDK."""
 
 from dataclasses import dataclass
@@ -53,13 +51,13 @@ class GravityCompensator:
         poses = self._poses(q)
         forces, moments = [], []
         acceleration = scale(self.gravity, -1.0)  # KDL ag = -gravity
-        # Forward sweep: express supporting acceleration in each link frame.
+        # 前向递推：将支撑加速度换算到各连杆坐标系。
         for segment, (rotation, _) in zip(self.segments, poses):
             acceleration = rotate(transpose(rotation), acceleration)
             force = scale(acceleration, segment.mass)
             forces.append(force)
             moments.append(cross(segment.com, force))
-        # Backward sweep: accumulate descendant wrench and project on axis.
+        # 后向递推：累加子树力并投影到关节轴。
         torques = []
         for i in range(len(self.segments) - 1, -1, -1):
             segment = self.segments[i]

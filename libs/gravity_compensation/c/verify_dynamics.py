@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LGPL-2.1-or-later
+
 """验证 C 逆动力学与原始 Orocos KDL 的一致性。"""
 import argparse
 import ctypes as C

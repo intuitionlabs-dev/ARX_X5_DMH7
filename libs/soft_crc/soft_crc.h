@@ -7,12 +7,7 @@
 extern "C" {
 #endif
 
-/*
- * 不需要初始化：查找表是编译期的 const，直接调就行。
- *
- * 一次算完一整块：
- *   uint16_t crc = CRC16_Modbus_calc(buf, len);
- */
+/* 查找表在编译期生成，可直接计算整段数据的 CRC。 */
 uint16_t CRC16_Modbus_calc(const uint8_t* data, uint32_t len);  //NOLINT
 uint8_t CRC8_Modbus_calc(const uint8_t* data, uint32_t len);    //NOLINT
 

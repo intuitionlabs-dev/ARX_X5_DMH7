@@ -7,15 +7,7 @@
 #include "encos_protocol.h"
 #include <stdint.h>
 
-/* 依赖：DEVICE_CAN_CNT 在 libs/can/can_config.h（bsp_can.h 已 include 它）；
- * 时间用 HAL_GetTick()，见 ENCOS_motor.c 的 now_ms()。 */
-
-/* ENCOS V1.20EAP driver.
- * Formerly published under MT4 names; API renamed to ENCOS_motor / ENCOSmotor_*.
- * All ranges MUST match the motor's actual stored protocol settings.
- * No automatic motor configuration, zeroing, brake release or ID changes.
- * APIs/Rx/Send_Step must be serialized by the caller (see README_ENCOS.md).
- */
+/* 编码量程须匹配驱动器设置；API、接收回调和发送步骤由调用方串行执行。 */
 struct encos_motor_t;
 typedef void (*control_encos_func)(struct encos_motor_t *motor);
 typedef float (*calc_fdb_func_encos)(void *arg);
@@ -23,49 +15,36 @@ typedef enum { encos_stop, encos_enable } ENCOS_enable;
 typedef enum { encos_output_normal, encos_output_reverse } ENCOS_output_mode;
 typedef enum { encos_soft_stop, encos_damping_stop } ENCOS_stop_mode;
 
-/* 未使能态("停着")给电机发哪种帧 —— 实测结论是这一条决定 j3 认不认我们。
- *   1 = 发 8 字节零增益 mode-0 混控帧（厂商 SDK 空闲时的做法）；
- *   0 = 发 3 字节零电流 mode-3 停帧（`61 00 00`）。
- * 真机实测：
- *   - j3(MT4) 只认 8 字节 mode-0 混控帧的**帧流**；3 字节停帧、2 字节查询帧它当废帧，
- *     一帧都不回。厂商 SDK 对 MT4 从头到尾也只发 8 字节帧，同一个道理。
- *   - 只发混控帧（没有短帧掺和）时，帧流够密它就按查询帧持续回型号 5 应答。
- * Kp/Kd 恒为 0：手册 §3.1 `T_ref = Kp·e_p + Kd·e_v + T_des` ⇒ 扭矩恒 0，不出力。
- * 注意手册同一段提醒"全零 **不等于** 驱动器失能"——这不是机械抱闸，只是不出力。
- * damping_stop 走 mode-3 阻尼刹车，不受本宏影响。 */
+/* 1：软停止发送零增益 mode-0 帧；0：发送 mode-3 零电流帧，阻尼停止使用 mode-3。 */
 #define ENCOS_IDLE_USE_MIXED_FRAME 1
 
 typedef struct encos_motor_config_t {
     uint8_t bsp_can_index;
-    uint16_t can_tx_id, can_rx_id; /* 1..0x7FE; must be equal */
+    uint16_t can_tx_id, can_rx_id;
     controller_config motor_controller_config;
     calc_fdb_func_encos pos_fdb_calc, speed_fdb_calc;
     void *arg;
     lost_callback lost_callback_;
     ENCOS_output_mode output_mode;
-    /* 发送分组掩码(见 libs/can/can_config.h 的 CAN_TX_xxxHZ_Gn)：
-     * 这一路控制帧属于哪些组。总线只在"当前组"匹配时才真的发出去，
-     * 于是**控制频率由掩码决定**——1ms 一拍、每拍轮着调一次 Send_Step、传 CAN_TX_500HZ_G0
-     * 就是 500 Hz，不需要再在驱动里分频。0 会被兜底成 CAN_TX_GROUP_ALL
-     * (不管控位掩码是"永远发不出去"，太难查)。 */
+    /* 配置控制帧发送相位，0 使用 CAN_TX_GROUP_ALL。 */
     uint8_t tx_group;
-    ENCOS_Ranges ranges; /* REQUIRED: kp/kd/position/speed/torque/current min/max */
+    ENCOS_Ranges ranges;
     float torque_constant; /* Nm/A; 0 = unknown, estimated torque is invalid */
     float position_offset; /* rad; host coordinate = motor position + offset */
-    uint32_t feedback_timeout_ms; /* 0 means 100ms; independent of motor CAN timeout */
-    ENCOS_stop_mode stop_mode; /* default zero-current, optional variable damping brake */
+    uint32_t feedback_timeout_ms;
+    ENCOS_stop_mode stop_mode;
 } ENCOS_motor_config;
 
 typedef struct encos_motor_t {
     ENCOS_motor_config config;
     ENCOS_enable enable; /* 应用唯一要写的使能入口：encos_enable / encos_stop */
-    uint8_t enable_cleared; /* 驱动私有：本次使能是否已清过环(见 Send_Step 的 ⓪)。应用别写 */
-    uint8_t update; /* set to 1 after accepted reply; caller may clear */
+    uint8_t enable_cleared; /* 驱动内部记录本次使能是否已清空控制器。 */
+    uint8_t update;
     uint8_t rx_data[8], rx_len, errcode;
-    ENCOS_Feedback feedback; /* latest typed reply including raw query payload */
+    ENCOS_Feedback feedback;
     float last_fdb_position, fdb_position, real_fdb_position; /* rad */
     float fdb_speed, fdb_current; /* rad/s, phase A */
-    float fdb_torque; /* estimated current * configured Kt; NAN if unknown */
+    float fdb_torque;
     float t_rotor, t_mos; /* deg C, half-degree resolution */
     uint8_t torque_valid, feedback_valid, seen_reply;
     uint32_t last_rx_ms, last_position_ms, last_speed_ms;
@@ -79,9 +58,7 @@ typedef struct encos_motor_t {
     uint32_t zero_sent_ms;
     ENCOS_Result last_result;
 
-    /* "这一拍已经处理过了" —— 由 ENCOSmotor_Send_Step() 置位、ENCOSmotor_Send_Begin()
-     * 每拍清 0。轮转循环(见 freertos.c 的 StartMotorTask)一拍里会把 Send_Step 调好几次，
-     * 没有这个标志第一台电机就会被反复发。相位不匹配被跳过的电机也置位。 */
+    /* 周期开始清零，发送步骤处理或跳过电机后置位。 */
     uint8_t sent_this_tick;
 } ENCOS_motor;
 
@@ -89,34 +66,29 @@ typedef struct encos_motor_t {
 #define ENCOS_CAN_ID_MAX 0x7FEu
 #define ENCOS_BROADCAST_ID ENCOS_SETTINGS_ID
 #define ENCOS_OFFLINE_TIMEOUT_MS 100u
-#define ENCOS_SETTING_GUARD_MS 501u /* manual section 3.5 requires >500ms */
-#define ENCOS_ZERO_ACK_TIMEOUT_MS 1000u /* host policy, not a protocol guarantee */
+#define ENCOS_SETTING_GUARD_MS 501u
+#define ENCOS_ZERO_ACK_TIMEOUT_MS 1000u
 
 void ENCOSmotor_Driver_Init(void);
 ENCOS_motor *ENCOSmotor_Create(ENCOS_motor_config *config, control_encos_func func);
-/* ---- 发送：一拍一帧的步进形式(见 ENCOS_motor.c 的注释) ---- */
+/* 每次发送步骤最多提交一帧。 */
 /* 每拍开跑前调一次，清掉所有电机的 sent_this_tick */
 void ENCOSmotor_Send_Begin(void);
-/* 在 can_id 这条总线上**最多发一帧**。返回 1 = 发了(调用方要按轮等一次最小帧间隔)，
- * 0 = 这条总线这一拍没事干了。 */
+/* 在指定总线尝试发送一帧，已发送返回 1，本周期无待发帧返回 0。 */
 uint8_t ENCOSmotor_Send_Step(uint8_t can_id);
-/* **使能没有接口给应用调**：应用只写 obj->enable = encos_enable / encos_stop。
- * 驱动在自己的发送拍上(ENCOSmotor_Send_Step 的 ⓪)抓 stop->enable 的边沿，清一次
- * 控制器状态，再按反馈是否新鲜决定这一拍发控制帧还是停止帧 —— 所以应用层不用、
- * 也拿不到 ENCOSmotor_Enable()，别自己判"反馈新鲜了没"再决定要不要使能。 */
-/* Disable means software STOP, not physical power-stage disable. Sends stop frame now. */
+/* 应用设置 enable，驱动在发送步骤检测使能边沿并重置控制器。 */
+
 ENCOS_Result ENCOSmotor_Disable(ENCOS_motor *obj);
-/* Stop all motors on this CAN bus before zeroing. Bus TX pauses >500ms afterward. */
+
 ENCOS_Result ENCOSmotor_Save_Zero(ENCOS_motor *obj);
 ENCOS_Result ENCOSmotor_Query(ENCOS_motor *obj, uint8_t decimal_code);
-/* Pure builders in encos_protocol.h cover servo/current/torque/brake/ID commands.
- * Do not bypass this driver's bus setting guard when transmitting those frames. */
+/* 直接构造设置类命令时仍须遵守驱动的总线设置保护间隔。 */
 void ENCOSmotor_RxCallBack(uint8_t can_id, uint32_t identifier, uint8_t *data, uint32_t len);
 ENCOS_Result ENCOSmotor_FeedbackData_Update(ENCOS_motor *obj, const uint8_t *data, size_t len);
 const char *ENCOSmotor_Err_String(uint8_t errcode);
 uint8_t ENCOSmotor_Is_Online(ENCOS_motor *obj);
 uint8_t ENCOSMotor_Check_InPlace(ENCOS_motor *obj, float range);
-/* Legacy unsupported operations are explicit, never emit invented commands. */
+
 ENCOS_Result ENCOSmotor_Clear_Err(ENCOS_motor *obj);
 ENCOS_Result ENCOSmotor_Reset_Round(ENCOS_motor *obj);
 ENCOS_Result ENCOSmotor_Broadcast_Cmd(ENCOS_motor *obj, uint8_t sub_cmd);

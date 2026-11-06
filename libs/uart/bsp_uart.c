@@ -1,30 +1,20 @@
 #include "bsp_uart.h"
 
-#include <string.h> /* memcpy */
+#include <string.h>
 
-/* ==================== 收发缓冲 ====================
- *
- * 这两个数组就是这一层存在的理由：它们必须落在 DMA 够得着的 RAM 里(见 bsp_uart.h
- * 开头那段)。放在这里之后，**调用方传什么数组进来都行** —— 栈上的、普通静态的、
- * 甚至 malloc 出来的，BSP_UART_Send() 会拷进来再发，上层再也不用背内存段这件事。
- *
- * .RAM_D1 段在 STM32H723xG_flash.ld 里(RAM_D1 / AXI SRAM, 0x24000000)。该段是 NOLOAD，
- * 启动代码不清零它 —— 两块缓冲每次收发前都会被 DMA 重新填，不依赖初值，没关系。 */
+/* DMA 收发缓冲放在 .RAM_D1；NOLOAD 段初值由每次收发填充。 */
 #define BSP_UART_DMA_MEM __attribute__((section(".RAM_D1"), aligned(32)))
 
 BSP_UART_DMA_MEM static uint8_t s_rx_dma[BSP_UART_CNT][BSP_UART_RX_BUF_LEN];
 BSP_UART_DMA_MEM static uint8_t s_tx_frame[BSP_UART_CNT][BSP_UART_TX_BUF_LEN];
 
-/* ==================== 每口一份的状态 ==================== */
+/* 每口一份的状态 */
 
-/* uart_config.h 是唯一 include usart.h 的地方，&huart2 / &huart3 从这里来。 */
 static UART_HandleTypeDef *const s_port[BSP_UART_CNT] = BSP_UART_PORT_ARRAY;
 
 static bsp_uart_rx_cb s_rx_cb[BSP_UART_CNT];
 static BspUartStat s_stat[BSP_UART_CNT];
 
-/* DMA 接收缓冲区所在的最小地址(RAM_D1 + D2 域 SRAM1/2/3，都在 AXI/AHB 上，
- * 也就是 DMA 够得着的那些)。DTCM/ITCM 在 0x20000000/0x00000000，比它低。 */
 #define BSP_UART_DMA_ADDR_MIN 0x24000000UL
 
 static int32_t BspUart_Find(const UART_HandleTypeDef *huart) {
@@ -35,21 +25,14 @@ static int32_t BspUart_Find(const UART_HandleTypeDef *huart) {
             return (int32_t)i;
         }
     }
-    return -1; /* 不是本层管的串口(huart7/huart10)，一律不管 */
+    return -1;
 }
 
-/* 武装(或重新武装)某一路的接收。
- *
- * 一帧收完(IDLE)之后 HAL 会自己把接收停掉 —— 它会清 DMAR、把 RxState 打回 READY、
- * 顺手 abort 掉 DMA 流(见 Drivers/.../stm32h7xx_hal_uart.c 里 IDLE 那一段)。所以
- * **每收完一帧都必须重装一次**，不是可选的"保险"。收满整块缓冲(TC)那条路也一样，
- * 收完同样是 READY。 */
+/* 每次接收结束或发生接收错误后重新启动 DMA 接收。 */
 static void BspUart_Arm(uint8_t idx) {
     UART_HandleTypeDef *huart = s_port[idx];
 
-    /* 没配 DMA 流就到此为止。HAL 自己也会返回 HAL_ERROR，但那样这一路和"真的重装失败"
-     * 混在同一个 rearm_fail 里，分不出是配置漏了还是偶发；no_dma 是配置问题的一次性标志，
-     * 见 BSP_UART_Init()。 */
+    /* 缺少 DMA 句柄时记录重装失败并结束。 */
     if (huart->hdmarx == NULL) {
         s_stat[idx].rearm_fail++;
         return;
@@ -60,13 +43,7 @@ static void BspUart_Arm(uint8_t idx) {
         return;
     }
 
-    /* 半传输中断(收满一半)对我们没有意义：缓冲比最长帧长一截，正常帧永远灌不满，
-     * 只会在 IDLE 上报。留着它只会让每帧多进一次回调，喂进去半帧残渣。
-     *
-     * 这里是安全的：HAL_DMA_Start_IT() 只在 XferHalfCpltCallback 非空时开 HT 中断，
-     * 而 UART_Start_Receive_DMA() 正好给它装了一个，所以必须关。关之前不可能已经进过
-     * 一次 HT —— 半传输要收够 147 字节，在 921600 下是 1.6 ms，而这几行是同一个
-     * 中断上下文里的顺序代码(DMA 中断优先级和我们一样是 5，抢不进来)。 */
+    /* 关闭半传输中断，仅在接收结束时提交数据。 */
     if (huart->hdmarx != NULL) {
         __HAL_DMA_DISABLE_IT(huart->hdmarx, DMA_IT_HT);
     }
@@ -79,9 +56,7 @@ void BSP_UART_Init(void) {
         s_rx_cb[i] = NULL;
         memset(&s_stat[i], 0, sizeof s_stat[i]);
 
-        /* 进来先查一眼这一路到底有没有 DMA 流。uart_config.h 里加了口、但 CubeMX 那边
-         * 忘了给 RX/TX 配流，是**最容易漏、又最不报错**的一种坏法 —— 编译链接全过，
-         * 现象只是"这个串口收发全无"。所以在这儿记一个一次性标志，JLink 读得到。 */
+        /* 记录各端口是否配置了接收和发送 DMA 句柄。 */
         if ((s_port[i]->hdmarx == NULL) || (s_port[i]->hdmatx == NULL)) {
             s_stat[i].no_dma = 1U;
         }
@@ -111,15 +86,13 @@ int32_t BSP_UART_Send(uint8_t id, const uint8_t *data, uint16_t len) {
 
     huart = s_port[id];
 
-    /* 上一笔还没发完就直说。**不排队** —— 排队要动态内存或者环形队列，
-     * 而"发不出去"这件事上层比本层更清楚该怎么处理(丢帧 / 下轮重发 / 报错)。 */
+    /* 发送繁忙时立即返回，由上层决定重试策略。 */
     if (huart->gState != HAL_UART_STATE_READY) {
         s_stat[id].tx_fail++;
         return BSP_UART_ERR_BUSY;
     }
 
-    /* 拷进自己的 DMA 缓冲再发。这一步就是"调用方不用管内存段"的代价：
-     * 一帧最多 262 字节，memcpy 几十纳秒，换掉一整类上机才炸的 bug，值。 */
+    /* 复制到 .RAM_D1 发送缓冲后启动 DMA。 */
     memcpy(s_tx_frame[id], data, (size_t)len);
 
     if (HAL_UART_Transmit_DMA(huart, s_tx_frame[id], len) != HAL_OK) {
@@ -150,19 +123,9 @@ uint8_t BSP_UART_LayoutOk(void) {
     return 0U;
 }
 
-/* ==================== HAL 回调 ====================
- *
- * 这两个是 HAL 的全局弱回调(Drivers 里是 __weak)，本层覆盖它们。
- * **本层因此占住了"ReceiveToIdle + DMA"这条接收路径** —— 以后别的模块要用
- * huart7/huart10 走同样的接收方式，得把口加进 uart_config.h 的
- * BSP_UART_PORT_ARRAY(而不是再定义一个同名回调，那会重复符号)。
- *
- * 都在中断上下文：只做统计、回调、重装，绝不阻塞、绝不打印。 */
+/* HAL 中断回调仅更新统计、分派接收数据并重装 DMA。 */
 
-/* 收完一段字节时进来。Size 是这一次实际收了多少(正常就是整帧)。
- *
- * 顺序**必须**是"先给上层、后重装"：反过来的话 DMA 会在回调还在读 s_rx_dma 的时候
- * 就开始往里写，上层拿到的是被踩过的数据。 */
+/* 先调用上层处理数据，再重装接收，保证回调期间缓冲内容稳定。 */
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
     int32_t found = BspUart_Find(huart);
     uint8_t idx;
@@ -175,8 +138,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
     s_stat[idx].rx_events++;
     s_stat[idx].rx_bytes += (uint32_t)Size;
     if ((uint32_t)Size >= BSP_UART_RX_BUF_LEN) {
-        /* 收满了整块缓冲才停 —— 对端发的东西比缓冲还长，尾部可能已经被截掉。
-         * 正常帧(≤262)灌不满 294 字节的缓冲，所以这一条正常恒为 0。 */
+        /* 达到接收缓冲容量时累计可能截断的接收事件。 */
         s_stat[idx].rx_over++;
     }
 
@@ -187,10 +149,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
     BspUart_Arm(idx);
 }
 
-/* 出错时进来。DMA 接收模式下**任何**错误都是阻塞型的：HAL 会把接收整个停掉
- * (清 DMAR、RxState 回 READY、abort 掉 DMA 流)，然后才从 DMA 的 abort 中断里回调
- * 这里 —— 所以此刻重装是安全且必要的，不然这一路从此再也收不到东西，
- * 现象跟"对端根本没发/线没接"一模一样，最容易误判。 */
+/* 接收错误后重装 DMA，恢复后续接收。 */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
     int32_t found = BspUart_Find(huart);
     uint8_t idx;
@@ -208,7 +167,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
     }
 
     /* 按 RxState 判断要不要重装，不按错误码：ORE/RTO 以及 DMA 模式下的一切错误
-     * 都会把接收停掉(那时 RxState 已经不是 BUSY_RX，要重装)。 */
+ * 都会把接收停掉(那时 RxState 已经不是 BUSY_RX，要重装)。 */
     if (huart->RxState != HAL_UART_STATE_BUSY_RX) {
         BspUart_Arm(idx);
     }

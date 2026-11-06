@@ -4,8 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* ENCOS V1.20EAP, classic CAN, standard identifiers, big-endian data.
- * This codec has no HAL dependency and never transmits anything. */
 #define ENCOS_SETTINGS_ID 0x7FFu
 #define ENCOS_PI 3.14159265358979323846f
 
@@ -41,11 +39,11 @@ typedef struct {
     uint8_t type, error, valid;
     float position; /* rad: type 2/query 1 converted from degrees */
     float speed;    /* rad/s: type 3/query 2 converted from RPM */
-    float current; /* A, NOT torque */
+    float current;
     float motor_temp, mos_temp; /* deg C, preserves 0.5 degree resolution */
     uint8_t code, status, brake_released;
-    ENCOS_Range query_range; /* type 5/code 23..28, decoded physical range */
-    float query_value; /* type 5/code 1..5, 22, 31; wire's physical units */
+    ENCOS_Range query_range;
+    float query_value;
     uint8_t payload[6], payload_len; /* query/config details; never auto-applied */
 } ENCOS_Feedback;
 
@@ -53,15 +51,15 @@ int ENCOS_ValidId(uint16_t id);
 int ENCOS_ValidRanges(const ENCOS_Ranges *r);
 ENCOS_Result ENCOS_PackMixed(ENCOS_Frame *f, uint16_t id, const ENCOS_Ranges *r,
                             float kp, float kd, float pos, float speed, float torque);
-/* Position: degrees, speed limit: RPM, current limit: A. */
+
 ENCOS_Result ENCOS_PackPosition(ENCOS_Frame *f, uint16_t id, float degrees,
                                float rpm_limit, float current_limit, uint8_t ack);
 ENCOS_Result ENCOS_PackSpeed(ENCOS_Frame *f, uint16_t id, float rpm,
                             float current_limit, uint8_t ack);
-/* value is A, Nm, brake-current A, or release=0/1 depending on mode. */
+
 ENCOS_Result ENCOS_PackCurrent(ENCOS_Frame *f, uint16_t id, ENCOS_CurrentMode mode,
                               float value, uint8_t ack);
-/* Ordinary queries: decimal codes 1..5, 22..35, 37..39. Code 36 needs a group. */
+
 ENCOS_Result ENCOS_PackQuery(ENCOS_Frame *f, uint16_t id, uint8_t code);
 ENCOS_Result ENCOS_PackZero(ENCOS_Frame *f, uint16_t id);
 ENCOS_Result ENCOS_PackSetId(ENCOS_Frame *f, uint16_t old_id, uint16_t new_id);

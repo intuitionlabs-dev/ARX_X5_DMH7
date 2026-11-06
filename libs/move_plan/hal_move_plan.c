@@ -1,21 +1,15 @@
 #include "hal_move_plan.h"
 
-/* 源工程里这个文件被 `#if _HAL_MOVEPLAN_ENABLE` 包着，宏没定义时整个文件只剩一个空壳函数。
- * 本工程没有这个宏，条件恒为 0，所以把那对条件编译删掉，让它直接生效。
- * 源工程用的 osal_*（osal/osal.h）没移植，这里换成 CMSIS-RTOS2 / FreeRTOS，
- * 和 Core/Src/freertos.c 里其它任务的写法保持一致。 */
-
 #include "FreeRTOS.h"
 #include "task.h"
 #include "cmsis_os2.h"
-#include "move_plan.h"     /* Move_Plan_Init() / Move_Plan_Update() */
+#include "move_plan.h"
 #include "bsp_supervise.h" /* FPS_t / FrameRateStatistics() */
 
-/* 任务在不在跑，JLink 直接读它（FPS 应该在 500 左右，即 2ms 一拍） */
+/* 统计规划线程调用频率。 */
 static FPS_t FPS_Moveplan;
 
-/* 静态栈 + 静态 TCB，不占 FreeRTOS heap。
- * 本工程 configTOTAL_HEAP_SIZE 只有 15360，其它任务也都是静态栈。 */
+/* 静态分配规划线程栈和任务控制块。 */
 osThreadId_t Moveplan_TaskHandle;
 uint32_t Moveplan_TaskBuffer[256];
 StaticTask_t Moveplan_TaskControlBlock;
@@ -25,36 +19,27 @@ const osThreadAttr_t Moveplan_Task_attributes = {
     .cb_size = sizeof(Moveplan_TaskControlBlock),
     .stack_mem = &Moveplan_TaskBuffer[0],
     .stack_size = sizeof(Moveplan_TaskBuffer),
-    /* 源工程给的是 40（= osPriorityHigh），但本工程 CmdTask/MotorTask 已经是 High。
-     * 规划器慢一拍只是 setpoint 旧 2ms，抢了控制任务却会直接掉控制周期，所以压到
-     * AboveNormal：高于 defaultTask，低于 CmdTask/MotorTask/MonitorTask。 */
+    /* 规划线程优先级为 AboveNormal。 */
     .priority = (osPriority_t)osPriorityAboveNormal,
 };
 
 static void start_moveplan_task(void *argument) {
     (void)argument;
-    /* Infinite loop。500 Hz。 */
+    /* 按 500 Hz 调度规划更新。 */
     portTickType currentTimeMoveplan;
     currentTimeMoveplan = xTaskGetTickCount();
     for (;;) {
         FrameRateStatistics(&FPS_Moveplan);
         Move_Plan_Update();
-        /* 接住返回值：xTaskDelayUntil 在"该醒的时刻已经过去"时**不阻塞**，却照样把
-         * prev 推进一个周期(task.h 原文：A task will not be delayed if the next
-         * expected wake time is in the past)，任务会一直以循环体自身的耗时为空转
-         * 周期、再也回不来。pdFALSE = 这一拍没睡成，重新对齐到"现在"。
-         * 详见 Core/Src/freertos.c 里 StartMotorTask 的实测记录。 */
+        /* 延时已过期时重置周期基准，保持后续按 2 ms 周期调度。 */
         if (xTaskDelayUntil(&currentTimeMoveplan, 2) == pdFALSE) {
-            currentTimeMoveplan = xTaskGetTickCount();   /* 这一拍没睡成：重新对齐到"现在" */
+            currentTimeMoveplan = xTaskGetTickCount();   /* 周期延时失效时以当前时刻重新对齐。 */
         }
     }
 }
 
 void HAL_Moveplan_Thread_Create(void) {
-    /* Move_Plan_Init() 里是 cvector_create() → malloc()。放在这里（建任务之前、
-     * 调度器启动之前）调用，单线程、没有 malloc 竞态。
-     * 不初始化的话 move_plan_list / move_plan_temp_list 都是 NULL，
-     * Move_Plan_Update() 会在第一行直接 return，规划器等于没接。 */
+    /* 调度器启动前初始化动态规划列表，再创建规划线程。 */
     Move_Plan_Init();
     Moveplan_TaskHandle =
         osThreadNew(start_moveplan_task, NULL, &Moveplan_Task_attributes);

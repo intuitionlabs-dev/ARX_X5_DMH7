@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LGPL-2.1-or-later
+
 """使用固件的头文件配置在主机验证控制层。"""
 import argparse
 import json
@@ -20,16 +20,18 @@ flags = [flag for flag in arguments if flag.startswith(("-I", "-D"))]
 build = args.build_dir.resolve()
 build.mkdir(parents=True, exist_ok=True)
 exe = build / "control_dynamics_test"
+ruckig = build / "ruckig"
+subprocess.run(["cmake", "-S", str(ROOT / "libs/ruckig"), "-B", str(ruckig),
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer"],
+               check=True, cwd=ROOT)
+subprocess.run(["cmake", "--build", str(ruckig), "-j", "4"], check=True, cwd=ROOT)
 subprocess.run(["cc", "-std=gnu11", "-O2", "-g", "-ffunction-sections", "-fdata-sections",
-                "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+                "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-UNDEBUG",
                 "-Wno-pointer-to-int-cast", "-Wno-int-to-pointer-cast", *flags,
                 str(Path(__file__).with_name("control_dynamics_test.c")),
-                str(ROOT / "libs/gravity_compensation/c/x5_dynamics.c"),
-                str(ROOT / "libs/gravity_compensation/c/x5_gravity.c"),
-                str(ROOT / "libs/controller/adrc.c"),
-                str(ROOT / "libs/controller/pid.c"),
-                str(ROOT / "libs/move_plan/curves/quintic_spline.c"),
-                str(ROOT / "libs/common/common.c"), "-Wl,--gc-sections",
-                "-Wl,--wrap=x5_dynamics_compute", "-lm", "-o", str(exe)],
-               check=True, cwd=ROOT)
+                str(ROOT / "libs/gravity_compensation/c/arm_dynamics.c"),
+                str(ROOT / "libs/common/common.c"), str(ruckig / "libruckig_c.a"),
+                "-Wl,--gc-sections,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free,--wrap=ruckig_c_update",
+                "-lstdc++", "-lm", "-o", str(exe)], check=True, cwd=ROOT)
 subprocess.run([str(exe)], check=True)

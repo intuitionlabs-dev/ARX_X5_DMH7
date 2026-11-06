@@ -1,14 +1,10 @@
 #include "ENCOS_motor.h"
-#include "main.h" /* HAL_GetTick()：源工程走 bsp_time.h 的 BSP_sys_time_ms()，那函数体就一行 return HAL_GetTick() */
+#include "main.h" /* 使用 HAL 毫秒时基。 */
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
 
-/* 本工程 printf 是坏的(__io_putchar 没定义)，日志 include 就不引了；
- * 接入本工程日志时再加回来。 */
-
-/* Monitor_Loop() 的周期(ms)，见 Core/Src/freertos.c 的 StartMonitorTask()(tick += 10)。
- * monitor 的 count 单位是"Loop 被调了几次"不是毫秒，所以下面 Monitor_Register() 要除它。 */
+/* 监控计数由超时毫秒数除以 Monitor_Loop 周期得到。 */
 #define MONITOR_LOOP_PERIOD_MS 10
 
 cvector *ENCOS_motor_list;
@@ -25,15 +21,14 @@ static int bus_busy(uint8_t bus) {
   bus_guard[bus] = 0;
   return 0;
 }
-/* tx_group: 见 libs/can/can_config.h。控制帧传 obj->config.tx_group(频率由掩码决定)；
- * 设零/查询这类必须送达的命令帧传 CAN_TX_GROUP_ALL，别被分组吃掉。 */
+/* 控制帧使用电机相位，设零和查询命令使用全部相位。 */
 static ENCOS_Result send_frame(ENCOS_motor *obj, const ENCOS_Frame *frame,
                                uint8_t tx_group) {
   if (bus_busy(obj->config.bsp_can_index))
     return ENCOS_BUSY;
   BSP_CAN_Send(obj->config.bsp_can_index, frame->id, (uint8_t *)frame->data,
                frame->len);
-  return ENCOS_OK; /* submitted to BSP; NOT an acknowledgement from motor */
+  return ENCOS_OK;
 }
 static void reset_controller(ENCOS_motor *obj) {
   controller *c = obj->motor_controller;
@@ -51,8 +46,7 @@ static void reset_controller(ENCOS_motor *obj) {
 static ENCOS_Result send_stop(ENCOS_motor *obj) {
   ENCOS_Frame frame;
 #if ENCOS_IDLE_USE_MIXED_FRAME
-  /* 软停走"零增益混控帧"保活(见 ENCOS_motor.h 那个宏的注释)。damping_stop 是
-   * 明确的阻尼刹车需求，仍走下面的 mode-3；PackMixed 失败(量程不合法)也不硬来。 */
+  /* 软停止按配置发送零增益混控帧；阻尼停止发送 mode-3 命令。 */
   if (obj->config.stop_mode == encos_soft_stop) {
     ENCOS_Result mixed = ENCOS_PackMixed(&frame, obj->config.can_tx_id,
                                          &obj->config.ranges, 0, 0, 0, 0, 0);
@@ -144,7 +138,7 @@ void ENCOSmotor_RxCallBack(uint8_t can_id, uint32_t identifier, uint8_t *data,
       obj->zero_ack_received = 1;
       obj->zero_ack_success = data[3] == 3;
       obj->zero_pending = 0;
-      /* Prior coordinates are stale after zeroing; require new telemetry. */
+
       obj->feedback_valid &= (uint8_t)~(ENCOS_HAS_POSITION | ENCOS_HAS_SPEED);
       obj->last_rx_ms = now_ms();
       obj->seen_reply = 1;
@@ -169,7 +163,6 @@ ENCOS_motor *ENCOSmotor_Create(ENCOS_motor_config *config, control_encos_func fu
        config->stop_mode != encos_damping_stop) ||
       (config->output_mode != encos_output_normal &&
        config->output_mode != encos_output_reverse)) {
-    // printf_log("Invalid ENCOS config\n");
     return NULL;
   }
   ENCOSmotor_Driver_Init();
@@ -186,23 +179,19 @@ ENCOS_motor *ENCOSmotor_Create(ENCOS_motor_config *config, control_encos_func fu
     return NULL;
   memset(obj, 0, sizeof(*obj));
   obj->config = *config;
-  /* 掩码 0 = 哪位都不属于 = 这一路永远发不出去，是最难查的那类故障，
-   * 所以兜底成"每拍都发"。 */
+  /* 相位掩码为 0 时使用 CAN_TX_GROUP_ALL。 */
   if (!obj->config.tx_group)
     obj->config.tx_group = CAN_TX_GROUP_ALL;
   if (!obj->config.feedback_timeout_ms)
     obj->config.feedback_timeout_ms = ENCOS_OFFLINE_TIMEOUT_MS;
-  /* Allocation failures are checked before publishing the motor to callbacks.
-   */
+
   obj->motor_controller =
       create_controller(&obj->config.motor_controller_config);
   if (!obj->motor_controller) {
     free(obj);
     return NULL;
   }
-  /* count 的单位是 Monitor_Loop() 的周期，**不是毫秒**（见 libs/monitor/monitor.h）。
-   * 本工程跑 100 Hz(10 ms)，不除的话 100 ms 的超时会变成 1 s，所以这里要除掉周期。
-   * 改 StartMonitorTask() 的频率，这个换算跟着改。 */
+  /* 将反馈超时从毫秒换算为监控调用周期数。 */
   obj->monitor = Monitor_Register(obj->config.lost_callback_,
                                   (int)(obj->config.feedback_timeout_ms /
                                         MONITOR_LOOP_PERIOD_MS),
@@ -226,8 +215,7 @@ ENCOS_motor *ENCOSmotor_Create(ENCOS_motor_config *config, control_encos_func fu
   BSP_CAN_AddFilter(config->bsp_can_index, config->can_rx_id);
   return obj;
 }
-/* 应用层只写 obj->enable，跳变处理在 ENCOSmotor_Send_Step() 的 ⓪（理由见那里）。
- * reset_controller() 由 Send_Step 的 ⓪ 和 ENCOSmotor_Disable() 两处调。 */
+/* 使能边沿和显式失能时重置控制器状态。 */
 ENCOS_Result ENCOSmotor_Disable(ENCOS_motor *obj) {
   if (!obj)
     return ENCOS_INVALID;
@@ -269,9 +257,7 @@ ENCOS_Result ENCOSmotor_Query(ENCOS_motor *obj, uint8_t code) {
     return obj->last_result = r;
   r = send_frame(obj, &frame, CAN_TX_GROUP_ALL);
   if (r == ENCOS_OK) {
-    /* 查询也是一条"指令"，同样要占住 §3.5 那条 >500ms 的总线指令间隔 ——
-     * 不占的话，"设零帧 → 501ms 后查询 → 4ms 后又一条设零帧"就串起来了。
-     * (App/arm_zero.c 的设零复核会用 Query 主动把设零后的位置要回来。) */
+    /* 查询和设置操作共用总线设置保护间隔。 */
     bus_setting_ms[obj->config.bsp_can_index] = now_ms();
     bus_guard[obj->config.bsp_can_index] = 1;
   }
@@ -282,27 +268,16 @@ const char *ENCOSmotor_Err_String(uint8_t code) {
 }
 ENCOS_Result ENCOSmotor_Clear_Err(ENCOS_motor *obj) {
   (void)obj;
-  return ENCOS_UNSUPPORTED; /* No clear-fault command specified in manual. */
+  return ENCOS_UNSUPPORTED;
 }
 ENCOS_Result ENCOSmotor_Reset_Round(ENCOS_motor *obj) {
   (void)obj;
-  return ENCOS_UNSUPPORTED; /* No invented 25rad / 2pi position wrapping. */
+  return ENCOS_UNSUPPORTED;
 }
 ENCOS_Result ENCOSmotor_Broadcast_Cmd(ENCOS_motor *obj, uint8_t sub_cmd) {
   return sub_cmd == 3 ? ENCOSmotor_Save_Zero(obj) : ENCOS_UNSUPPORTED;
 }
-/* ==================== 发送：一拍一帧的步进 ====================
- *
- * **每次调用最多发一帧**，由 MotorTask 的轮转循环驱动(见 Core/Src/freertos.c 的
- * StartMotorTask)：**一轮里两条总线各发一帧，一轮只等一次**最小帧间隔
- * (BSP_CAN_TxGapWait)。一次把本总线该发的全发完会让两条总线各等一次，每路帧率砍半。
- *
- * 每个发送周期开始前先调 ENCOSmotor_Send_Begin() 清 sent_this_tick —— 它保证"一台
- * 电机一拍只发一次"，不然轮转循环会把第一台反复发。
- *
- * 循环体里那几条 `continue`(反馈非法/该发停止帧)都**发过帧**了，所以这几条路径都
- * `return 1`：一次调用最多发一帧这条线不能破。
- */
+/* 周期开始调用 Send_Begin，Send_Step 每次最多发送一帧。 */
 
 void ENCOSmotor_Send_Begin(void) {
   if (!ENCOS_motor_list)
@@ -318,7 +293,7 @@ uint8_t ENCOSmotor_Send_Step(uint8_t can_id) {
     return 0;
   for (size_t i = 0; i < ENCOS_motor_list->cv_len; ++i) {
     ENCOS_motor *obj = *(ENCOS_motor **)cvector_val_at(ENCOS_motor_list, i);
-    /* 本总线的电机才归这一步管；轮不到的(这一拍已经处理过的)跳过 */
+    /* 只处理本总线尚未调度的电机。 */
     if (obj->config.bsp_can_index != can_id)
       continue;
     if (obj->sent_this_tick)
@@ -326,25 +301,15 @@ uint8_t ENCOSmotor_Send_Step(uint8_t can_id) {
     obj->sent_this_tick = 1;
     if (bus_busy(can_id))
       continue;
-    /* Missing zero ACK is observable; do not retain an eternal pending state.
-     */
+
     if (obj->zero_pending &&
         (uint32_t)(now_ms() - obj->zero_sent_ms) >= ENCOS_ZERO_ACK_TIMEOUT_MS)
       obj->zero_pending = 0;
-    /* 控制频率由 obj->config.tx_group 的掩码决定：不在当前组的这一拍整拍跳过。
-     * 不能"算了不发"：PID_Calc 没有 dt，增益按调用次数算，按 1 kHz 算而按
-     * 500 Hz 发会让 KI 凭空翻倍。(上面的 zero_pending 超时清理是"每隔多久检查
-     * 一次"，跟发送无关，所以留在门外面。) */
+    /* 按发送相位调度控制计算，设零超时检查独立执行。 */
     if (!BSP_CAN_TxGroupMatch(obj->config.tx_group))
       continue;
 
-    /* ---- ⓪ 使能边沿在驱动内部落地 ------------------------------------------
-     * 应用只写 obj->enable，没有 ENCOSmotor_Enable() 可调，所以 stop -> enable
-     * 这个跳变得由驱动自己抓：抓到就清一次控制器状态，
-     * 清完紧接着 ① 就算，第一帧不会带着上面 stop 期间攒下的积分发出去。
-     * 用"锁存"而不是"和上一拍比"：下面 ② 可能因为反馈不新鲜把 enable 打回
-     * stop，比较法会在下一拍把环再清一次。清环**不能**挪进 ① 每拍都跑，
-     * 否则 stop 期间算出来的积分/微分下一拍就被抹掉，"stop 时也算"就白算了。 */
+    /* 首次检测到使能请求时清空控制器状态。 */
     if (obj->enable == encos_enable) {
       if (!obj->enable_cleared) {
         reset_controller(obj);
@@ -353,11 +318,7 @@ uint8_t ENCOSmotor_Send_Step(uint8_t can_id) {
     } else
       obj->enable_cleared = 0;
 
-    /* ---- ① 只要轮到自己这一组，就无条件算一遍 controller --------------------
-     * **和使能状态无关**：stop 时也照算，对齐 DMmotor_Send_Step 里那句
-     * "即使 stop 也应该更新 motor_controller"。发什么由下面的 ② 决定，
-     * 所以停着的电机 controller 里的 fdb/ref/积分/微分一直跟着走，
-     * 不会因为"这一拍整拍跳过了"而在切到 enable 的那一拍跳一下。 */
+    /* 命中发送相位后更新控制器，包含软停止状态。 */
     controller *c = obj->motor_controller;
     c->fdb_position = obj->config.pos_fdb_calc
                           ? obj->config.pos_fdb_calc(obj->config.arg)
@@ -379,11 +340,7 @@ uint8_t ENCOSmotor_Send_Step(uint8_t can_id) {
                             : c->output;
     }
 
-    /* ---- ② 算完之后的行为由状态决定 ----------------------------------------
-     * 没使能(或反馈不新鲜/有错误码/正在设零) -> 这一拍发停止帧；否则发混控控制帧。
-     * 注意这里**不再**每拍调 reset_controller()：那样 ① 刚算出来的积分/微分下一拍
-     * 就被抹掉，"stop 时也算"就白算了。清环只发生在上面 ⓪ 的使能边沿里，
-     * 以及 ENCOSmotor_Disable()(后者也是下面两条故障路径的收尾)。 */
+    /* 根据使能、反馈有效性、故障和设零状态选择停止帧或控制帧。 */
     if (obj->enable != encos_enable || !motion_ready(obj)) {
       obj->enable = encos_stop;
       obj->last_result = send_stop(obj);
@@ -391,7 +348,7 @@ uint8_t ENCOSmotor_Send_Step(uint8_t can_id) {
     }
     if (bus_busy(obj->config.bsp_can_index))
       continue;
-    /* control_calc 是外部钩子，理论上能在上面把 enable 改掉，所以再问一次 */
+    /* 控制回调执行后再次检查使能状态。 */
     if (obj->enable != encos_enable) {
       obj->last_result = send_stop(obj);
       return 1; /* 停止帧已发出 */
@@ -406,8 +363,7 @@ uint8_t ENCOSmotor_Send_Step(uint8_t can_id) {
       obj->last_result = r;
     } else
       obj->last_result = send_frame(obj, &frame, obj->config.tx_group);
-    /* 走到这里一定发出去了一帧(要么混控帧，要么上面 PackMixed 失败时的失能帧) ——
-     * 这个不变式变了要同步改轮转循环里的等待次数。 */
+    /* 返回已发送状态，供上层按轮调度帧间隔。 */
     return 1;
   }
   return 0;

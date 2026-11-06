@@ -1,8 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later
- * Static specialization of KDL RNE; original algorithm (C) 2009 Ruben Smits
- * and Dominick Vanthienen. Modified: X5-specific C99 implementation,
- * subtree first-moment reduction, axis rotations, internal bounded sin/cos.
- */
+/* 使用子树一阶矩递推计算六轴静态重力力矩。 */
 #include "x5_gravity.h"
 #include "x5_gravity_data.h"
 #include <float.h>
@@ -61,12 +57,7 @@ static int valid_request(x5_model model, const x5_real g[3],
 #ifndef X5_GRAVITY_NO_TRIG
 static void bounded_sincos(x5_real angle, x5_real *s, x5_real *c)
 {
-    /* Reduce to [-pi/4, pi/4] using only float and a small integer quadrant.
-     * |angle| <= 128 -> |quadrant| <= 81: multiplication by 1.5703125f is
-     * exact in float. Split pi/2 avoids cancellation from subtracting one
-     * rounded large float constant. Polynomial remainder < 2.5e-8, below
-     * float rounding. No double arithmetic, lookup table, heap or libm.
-     */
+    /* 按 π/2 分象限并归约到 [-π/4,π/4]；拆分 π/2 常量以限制浮点消减误差。 */
     const x5_real scaled = angle * 0.63661977236758134308f;
     const int quadrant = (int)(scaled + (scaled >= 0.0f ? 0.5f : -0.5f));
     const x5_real x = (angle - (x5_real)quadrant * 1.5703125f)
@@ -102,7 +93,7 @@ static void calculate(x5_model model, const x5_real s[6], const x5_real c[6],
     const vec3 zero = {0, 0, 0};
     x5_real tau[6];
     int i;
-    /* Joint6's fixed roll and its X rotation commute: fuse both rotations. */
+
     const x5_real s6 = X5_FIXED_ROLL_SIN*c[5] + X5_FIXED_ROLL_COS*s[5];
     const x5_real c6 = X5_FIXED_ROLL_COS*c[5] - X5_FIXED_ROLL_SIN*s[5];
     if (g) { a1.x = -g[0]; a1.y = -g[1]; a1.z = -g[2]; }
@@ -113,10 +104,7 @@ static void calculate(x5_model model, const x5_real s[6], const x5_real c[6],
     a5 = rz(a4, -s[4], c[4]);
     a6 = rx(a5, -s6, c6);
 
-    /* h_i = m_i*com_i + subtree_mass_(i+1)*joint_origin_(i+1).
-     * Descendant force equals subtree_mass*(-gravity) in each frame, so no
-     * per-link force vectors, force transforms or 3x3 matrices are needed.
-     */
+    /* h_i=m_i·com_i+后代质量·下一关节偏移；按子树一阶矩递推力矩。 */
     n = moment(h[5], a6, zero); tau[5] = n.x;
     n = moment(h[4], a5, rx(n, s6, c6)); tau[4] = n.z;
     n = moment(h[3], a4, rz(n, s[4], c[4])); tau[3] = n.y;
@@ -124,7 +112,6 @@ static void calculate(x5_model model, const x5_real s[6], const x5_real c[6],
     n = moment(h[1], a2, rx(ry(n, s[2], c[2]), X5_FIXED_ROLL_SIN, X5_FIXED_ROLL_COS));
     tau[1] = n.y;
     if (vertical) {
-        /* Rotation about the gravity axis cannot change potential energy. */
         tau[0] = 0;
     } else {
         n = moment(h[0], a1, ry(n, s[1], c[1])); tau[0] = n.z;
@@ -145,7 +132,7 @@ int x5_gravity_compute(x5_model model, const x5_real q[6], const x5_real g[3],
         if (!(q[i] >= -X5_GRAVITY_MAX_ANGLE && q[i] <= X5_GRAVITY_MAX_ANGLE))
             return X5_GRAVITY_ANGLE_RANGE;
     s[0] = 0; c[0] = 1;
-    /* Default installation: yaw has no gravity effect, so only 5 trig pairs. */
+
     i = (!g || (g[0] == 0 && g[1] == 0)) ? 1 : 0;
     for (; i < 6; ++i) bounded_sincos(q[i], &s[i], &c[i]);
     calculate(model, s, c, g, mode, torque);

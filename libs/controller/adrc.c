@@ -1,13 +1,3 @@
-/**
- * @file           : adrc.c
- * @brief          : ADRC算法实现
- * @Author         : 李鸣航
- * @Date           : 2022-04-09 14:48
- * @LastEditTime   : 2022-05-06 21:57
- * @Note           : 使用该算法之前请务必阅读说明文档，禁止随意调参
- * @Copyright(c)   : 哈尔滨工业大学（深圳）南工骁鹰机器人队版权所有 Critical HIT copyrighted
- */
-
 #include "adrc.h"
 
 #include <common.h>
@@ -24,60 +14,24 @@ void NLSEFFunction(ADRC_t* adrc_data);
 void ESOFunction(ADRC_t* adrc_data);
 void ADRCFunction(ADRC_t* adrc_data);
 
-/**
- * @brief      :浮点数限幅函数
- * @attention  :无
- * @param {float} amt 要比较的值
- * @param {float} low 下限
- * @param {float} high 上限
- */
+/* 将输入限制到给定上下界。 */
 float ConstrainFloat(float amt, float low, float high) {
     return ((amt) < (low) ? (low) : ((amt) > (high) ? (high) : (amt)));
 }
 
-/**
- * @brief      :二维符号函数
- * @attention  :无
- * @param {float} x 输入1
- * @param {float} d 输入2
- */
+/* 计算带阈值的二维符号函数。 */
 int fsg(float x, float d) {
     return ((fsgn(x + d) - fsgn(x - d)) / 2);
 }
 
-/**
- * @brief      :fal是一种工业上运用很广的非线性结构函数，其可用于观测器或者函数滤波器，本质上是对工业上“大误差，小增益；小误差，大增益”经验知识的一个数学拟合
- * @attention  :
- *  调参说明：
- *  1.a为非线性因子，合理选择可以极大地改变控制效果，对于比例误差（即正常相减得到的误差）和积分误差，我们需要在小误差时选用大增益，在大误差时选用小增益，此时0<a<1
- *                                               对于微分误差，我们需要在小误差时选择小增益，在大误差时选择大增益，此时a>1
- *      同时，对于a来说，a越小，跟踪效果越好，但滤波效果会变差，反之同理
- *  2.delta为滤波因子，一般取5T≤delta≤10T，其中T为采样周期，在代码中体现为操作系统中任务的运行周期
- *      同时，对于delta来说，delta越大，滤波效果越好，但跟踪效果会越延迟
- * @return  {float} 经过滤波后的误差输出信号
- * @param {float} e 带有噪声的误差输入信号
- * @param {float} a 非线性因子
- * @param {float} delta 滤波因子
- */
+/* fal 在误差阈值内采用线性增益，阈值外采用带符号幂函数。 */
 float fal(float e, float a, float delta) {
     int s = 0;
     s = (fsgn(e + delta) - fsgn(e - delta)) / 2;
     return (e * s / (powf(delta, 1 - a)) + powf(fabs(e), a) * fsgn(e) * (1 - s));
 }
 
-/**
- * @brief      :fst是一种最速跟踪函数，可以快速有效的跟踪信号，其物理意义是在限制了加速度r的情况下，如何最快达到预期值
- * @attention  :
- *  调参说明：
- *  1. 需要配合跟踪微分器一起使用，按照跟踪微分器的传参和迭代方式进行
- *  2. r为速度因子，决定跟踪速度，r越大，快速性越好，但大的r容易引起超调和振荡
- *  3. h为滤波因子，h越大，静态误差越小，刚开始带来的“超调”越小，初始的误差越小；但会导致上升过慢，快速性不好，一般取步长的2倍
- * @return  {float} 输出跟踪的微分信号
- * @param {float} x1_delta 误差输入信号
- * @param {float} x2 误差的微分信号
- * @param {float} r 速度因子
- * @param {float} h0 滤波因子
- */
+/* 最速跟踪函数使用 r 限制跟踪加速度，h0 决定滤波时间尺度。 */
 float fst(float x1_delta, float x2, float r, float h0) {
     float d, y, a0, a, a1, a2;
     d = r * h0 * h0;
@@ -89,12 +43,7 @@ float fst(float x1_delta, float x2, float r, float h0) {
     return (-r * (a / d) * fsg(a, d) - r * fsgn(a) * (1 - fsg(a, d)));
 }
 
-/**
- * @brief      : 跟踪微分器
- * @attention  : 无
- * @return  {*}
- * @param {ADRC_t*} adrc_data adrc数据结构体
- */
+/* 更新参考信号及其导数的跟踪状态。 */
 void TDFunction(ADRC_t* adrc_data) {
     float last_v1, last_v2;
     last_v1 = adrc_data->prog.v1;
@@ -104,12 +53,7 @@ void TDFunction(ADRC_t* adrc_data) {
                                        fst(last_v1 - adrc_data->prog.ref, last_v2,
                                            adrc_data->adrc_config.td.r, adrc_data->adrc_config.td.h0);
 }
-/**
- * @brief      : 非线性反馈
- * @attention  : 无
- * @return  {*}
- * @param {ADRC_t*} adrc_data adrc数据结构体
- */
+/* 按跟踪误差计算非线性反馈。 */
 void NLSEFFunction(ADRC_t* adrc_data) {
     adrc_data->prog.e2 = ConstrainFloat(adrc_data->prog.e2, -3000, 3000);
     adrc_data->prog.u0 = adrc_data->adrc_config.nlsef.Kp *
@@ -118,12 +62,7 @@ void NLSEFFunction(ADRC_t* adrc_data) {
                              fal(adrc_data->prog.e2, adrc_data->adrc_config.nlsef.alpha2, adrc_data->adrc_config.nlsef.delta);
 }
 
-/**
- * @brief      : 扩张观测器
- * @attention  : 实际测试中，低成本硬件很容易导致z3发散，所以要对z3进行限幅！！！！！！
- * @return  {*}
- * @param {ADRC_t*} adrc_data adrc数据结构体
- */
+/* 更新扩张状态观测器并限制扰动估计。 */
 void ESOFunction(ADRC_t* adrc_data) {
     float error, last_z1, last_z2, last_z3;
     last_z1 = adrc_data->prog.z1;
@@ -140,12 +79,7 @@ void ESOFunction(ADRC_t* adrc_data) {
     adrc_data->prog.z3 = ConstrainFloat(adrc_data->prog.z3, -200, 200);
 }
 
-/**
- * @brief      : ADRC总函数
- * @attention  : 无
- * @return  {*}
- * @param {ADRC_t*} adrc_data adrc数据结构体
- */
+/* 推进跟踪、观测和扰动补偿控制。 */
 void ADRCFunction(ADRC_t* adrc_data) {
     TDFunction(adrc_data);
     ESOFunction(adrc_data);
@@ -156,13 +90,8 @@ void ADRCFunction(ADRC_t* adrc_data) {
     adrc_data->prog.output = ConstrainFloat(adrc_data->prog.output, -adrc_data->adrc_config.output_max, adrc_data->adrc_config.output_max);
 }
 
-/**
- * @brief      : 与ADRC解耦的跟踪微分器
- * @attention  : 无
- * @return  {*}
- * @param {TD_t*} td td数据结构体
- */
-void TDFunction_independent(TD_t* td) {  
+/* 独立更新跟踪微分器状态。 */
+void TDFunction_independent(TD_t* td) {
     float last_v1, last_v2;
     last_v1 = td->v1;
     last_v2 = td->v2;
@@ -171,12 +100,7 @@ void TDFunction_independent(TD_t* td) {
     td->v2 = last_v2 + td->config.h * td->v3;
 }
 
-/**
- * @brief      : 与ADRC解耦的扩张观测器
- * @attention  : 实际测试中，低成本硬件很容易导致z2发散，所以要对z2进行限幅！！！！！！
- * @return  {*}
- * @param {ESO_t*} eso eso数据结构体
- */
+/* 独立更新扩张状态观测器并限制估计值。 */
 void ESOFunction_independent(ESO_t* eso) {
     float error, last_z1, last_z2, last_z3;
     float omega = eso->config.beta1 / 3;
@@ -187,9 +111,7 @@ void ESOFunction_independent(ESO_t* eso) {
     last_z2 = eso->z2;
     last_z3 = eso->z3;
     error = eso->fdb - last_z1;
-    // eso->z1 = last_z1 + eso->config.h *
-    //                         (last_z2 - eso->config.beta1 * error +
-    //                          eso->config.b * eso->output);
+
     eso->z1 = last_z1 + eso->config.h *
                             (last_z2 + beta1 * error);
     eso->z2 = last_z2 + eso->config.h *
@@ -198,11 +120,7 @@ void ESOFunction_independent(ESO_t* eso) {
     eso->z3 = ConstrainFloat(eso->z3, -eso->config.z3_max, eso->config.z3_max);
 }
 
-/**
- * @brief      : ADRC结构体配置初始化
- * @attention  : 调参说明在adrc.h中，切勿自行更改参数
- * @return  {*}
- */
+/* 初始化 ADRC 配置参数。 */
 void ADRC_SetConfig(ADRC_Config_t* adrc_config,
                     float r, float h, float h0,
                     float Kp, float Kd, float alpha1, float alpha2, float delta,
@@ -222,11 +140,7 @@ void ADRC_SetConfig(ADRC_Config_t* adrc_config,
     adrc_config->output_max = output_max;
 }
 
-/**
- * @brief      : TD结构体配置初始化
- * @attention  : 调参说明在adrc.h中，切勿自行更改参数
- * @return  {*}
- */
+/* 初始化跟踪微分器配置。 */
 void TD_SetConfig(TD_Config* td_config, float r, float h, float h0, float J) {
     td_config->r = r;
     td_config->h = h;
@@ -234,11 +148,7 @@ void TD_SetConfig(TD_Config* td_config, float r, float h, float h0, float J) {
     td_config->J = J;
 }
 
-/**
- * @brief      : ESO结构体配置初始化
- * @attention  : 调参说明在adrc.h中，切勿自行更改参数
- * @return  {*}
- */
+/* 初始化扩张状态观测器配置。 */
  void ESO_SetConfig(ESO_Config* eso_config, float beta1, float beta2, float b, float h, float z3_max, int8_t output_mode) {
     eso_config->beta1 = beta1;
     eso_config->beta2 = beta2;
@@ -248,34 +158,19 @@ void TD_SetConfig(TD_Config* td_config, float r, float h, float h0, float J) {
     eso_config->output_mode = output_mode;
 }
 
-/**
- * @brief      :ADRC结构体初始化
- * @attention  :无
- * @param {ADRC_t*} adrc_data
- * @param {ADRC_Config_t*} adrc_config
- */
+/* 清空 ADRC 状态并加载配置。 */
 void ADRC_Init(ADRC_t* adrc_data, ADRC_Config_t* adrc_config) {
     adrc_data->adrc_config = *adrc_config;
     memset(&adrc_data->prog, 0, sizeof(adrc_data->prog));
 }
 
-/**
- * @brief      :TD结构体初始化
- * @attention  :无
- * @param {TD_t*} td
- * @param {TD_Config*} td_config
- */
+/* 清空跟踪微分器状态并加载配置。 */
 void TD_Init(TD_t* td, TD_Config* td_config) {
     memset(td, 0, sizeof(TD_t));
     td->config = *td_config;
 }
 
-/**
- * @brief      :ESO结构体初始化
- * @attention  :无
- * @param {ESO_t*} eso
- * @param {ESO_Config*} eso_config
- */
+/* 清空扩张状态观测器状态并加载配置。 */
 void ESO_Init(ESO_t* eso, ESO_Config* eso_config) {
     memset(eso, 0, sizeof(ESO_t));
     eso->config.beta1 = eso_config->beta1;

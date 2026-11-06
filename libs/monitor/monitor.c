@@ -1,4 +1,4 @@
-// 外设监控
+/* 外设监控 */
 #include "monitor.h"
 
 #include "cvector.h"
@@ -8,9 +8,9 @@ cvector* monitor_lists;
 void Monitor_Init() { monitor_lists = cvector_create(sizeof(monitor_item*)); }
 
 void Monitor_Reset(monitor_item* item) { item->count = item->reload_count; }
-// 采用注册的方式
-// 比如电机注册一个monitor，该函数会返回一个对象指针
-// count相当于看门狗计数器值
+/* 采用注册的方式 */
+/* 比如电机注册一个monitor，该函数会返回一个对象指针 */
+/* count相当于看门狗计数器值 */
 monitor_item* Monitor_Register(lost_callback callback, int count, void* callback_data) {
     if (monitor_lists == NULL) {
         Monitor_Init();

@@ -1,5 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
-// 使用原始 KDL RNE 和完整 URDF 惯量验证 C 实现。
+/* 使用原始 KDL RNE 和完整 URDF 惯量验证 C 实现。 */
 #include "chainidsolver_recursive_newton_euler.hpp"
 #include <iomanip>
 #include <iostream>
