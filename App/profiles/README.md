@@ -171,7 +171,7 @@ joint_deg = (motor_deg - position_zero_deg) × direction / reduction
 
 两个内置机型使用角度恒等映射。
 metalarm 的夹爪范围为 0～2.4 rad。
-ARX-X5 的夹爪范围为 -142～157 deg。
+ARX-X5 的夹爪范围为 -157～142 deg。
 ARX-X5 原始角减小为闭合、增大为张开，协议角到电机角不反号。
 上下软限位只约束目标角，实际开口距离由夹爪两点标定确定。
 

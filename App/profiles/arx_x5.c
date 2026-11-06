@@ -18,8 +18,8 @@
 #define ARX_X5_WRIST_LIMIT_DEG 90.0f
 
 /* ARX-X5 夹爪协议角的软限位：负向闭合，正向张开。 */
-#define ARX_X5_GRIPPER_MIN_DEG -142.0f
-#define ARX_X5_GRIPPER_MAX_DEG 157.0f
+#define ARX_X5_GRIPPER_MIN_DEG -157.0f
+#define ARX_X5_GRIPPER_MAX_DEG 142.0f
 
 /* 按枚举顺序配置 ARX-X5 的六个关节和夹爪电机。 */
 // 不作为常量指针，便于运行时修改。
