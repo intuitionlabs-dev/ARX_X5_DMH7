@@ -38,16 +38,18 @@ EXPORT void init_fixture(void) { // NOLINT(readability-identifier-naming)
         arm->state = robot_state_wait_init;
         if (cmd) {
             Plan_group_temp temp_group = cmd->temp_group;
+            ruckig_c_context* planners[ARM_JOINT_NUM];
+            for (unsigned i=0; i<ARM_JOINT_NUM; ++i) {
+                planners[i] = cmd->joint_ruckig_ref[i].planner;
+                ruckig_c_reset(planners[i]);
+            }
             memset(cmd, 0, sizeof(*cmd));
             cmd->temp_group = temp_group;
+            for (unsigned i=0; i<ARM_JOINT_NUM; ++i)
+                cmd->joint_ruckig_ref[i].planner = planners[i];
             cmd->arm = arm;
             cmd->gimbal = arm->gimbal;
 
-            const float r[] = {1000,4000,4000,2000,2000,2000};
-            for (unsigned i=0; i<6; ++i) {
-                TD_Config cfg = {.r=r[i], .h=.002f, .h0=.004f};
-                TD_Init(&cmd->joint_angle_td[i], &cfg);
-            }
         } else cmd = Gimbal_Cmd_Create(arm);
         arm->gimbal_cmd = cmd;
         memset(arm->gimbal->arm_feedback_data.motor_inited, 1, ARM_JOINT_NUM);
@@ -124,6 +126,50 @@ EXPORT void init_reset(unsigned bus, float gripper) { // NOLINT(readability-iden
     arm->arm_mode = arm_damping;
     arm->gimbal->arm_control_data.gripper_angle = gripper;
     HandleArmReset(arm);
+}
+
+/* 使用两种机型验证各臂的版本上报和握手。 */
+EXPORT void version_fixture(unsigned arx_bus) {
+    for (unsigned bus=0; bus<ARM_NUM; ++bus) {
+        Arm* arm = &g_arm[bus];
+        arm->gimbal->profile = bus == arx_bus ? &ARM_PROFILE_ARX_X5 : &ARM_PROFILE_METAL;
+        arm->state = robot_state_wait_handshake;
+        arm->handshake_ok = 0;
+        arm->handshake_cnt = 0;
+        arm->handshake_reject_cnt = 0;
+        arm->hs_last_ms = clock_ms - ROBOT_HANDSHAKE_PERIOD_MS;
+    }
+    s_tx_head = s_tx_tail = 0;
+}
+
+EXPORT void version_poll(void) {
+    for (unsigned bus=0; bus<ARM_NUM; ++bus) Handshake_Step(&g_arm[bus]);
+}
+
+EXPORT void version_receive(unsigned bus, uint32_t code) {
+    const Robot_rx_payload payload = {.version={.code=code}};
+    HandleVersion(&g_arm[bus], &payload, sizeof(FramePktVersion));
+}
+
+EXPORT void version_observe(unsigned bus, unsigned* out) {
+    const Arm* arm = &g_arm[bus];
+    const unsigned state[] = {arm->handshake_ok, arm->handshake_cnt,
+        arm->handshake_reject_cnt, arm->state};
+    memcpy(out, state, sizeof(state));
+}
+
+EXPORT int version_pop(unsigned* out) {
+    if (s_tx_head == s_tx_tail) return 0;
+    const Robot_tx_slot* slot = &s_tx_q[s_tx_tail];
+    FrameParser parser = {0};
+    FrameStatus status = FRAME_INCOMPLETE;
+    for (unsigned i=0; i<slot->len; ++i) status = FrameParserFeed(&parser, slot->buf[i]);
+    s_tx_tail = (s_tx_tail + 1U) % ROBOT_TX_Q_NUM;
+    if (status != FRAME_OK || parser.data_len != sizeof(FramePktVersion)) return -1;
+    out[0] = parser.arm_id;
+    out[1] = parser.type_id;
+    out[2] = parser.buf.f.payload.version.code;
+    return 1;
 }
 
 void FrameRateStatistics(FPS_t* fps) { fps->now = clock_ms; fps->count++; }

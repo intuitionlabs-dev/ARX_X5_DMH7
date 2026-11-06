@@ -9,7 +9,8 @@ typedef struct {
     float direction, reduction, position_zero_deg;
     float minimum_deg, maximum_deg, reset_deg;
     float torque_scale, viscous_damping, velocity_scale, plan_velocity_scale;
-    float td_r;
+    /* 普通位置控制上限，单位 deg/s、deg/s²、deg/s³。 */
+    float max_velocity_deg_s, max_acceleration_deg_s2, max_jerk_deg_s3;
     uint8_t absolute_encoder;
 } Arm_joint_config;
 
@@ -37,14 +38,15 @@ typedef struct {
 /* 集中提供机型参数、模型及初始化回调。 */
 typedef struct Arm_profile { // NOLINT(readability-identifier-naming)
     const char* name;
+    /* 握手版本码为版本串的 FNV-1a 32 位哈希。 */
+    const char* version_string;
     size_t joint_count, motor_count;
-    const Arm_motor_config* motors;
+    Arm_motor_config* motors; //不要使用常量指针，便于运行时修改。
     const Arm_joint_config* joints;
     Arm_gripper_mapping gripper;
     Arm_init_policy init;
     const Arm_dynamics_model* dynamics;
     float gravity[3];
-    float quintic_duration_s;
     uint8_t stop_on_motor_lost;
     /* start=1 启动；返回 0 等待、1 完成、负值失败。 */
     int (*initialize)(struct Gimbal_cmd_t* cmd, uint8_t start);

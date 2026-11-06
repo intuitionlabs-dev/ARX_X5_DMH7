@@ -2,8 +2,10 @@
 
 本文说明 `libs/frame` 这一层的线协议。读者是上位机和对端的开发者。
 
-本文的每个字节都以代码为准。帧格式见 `frame.h`，码表和 payload 见 `type_id.h`，版本串见
-`frame_config.h`，校验多项式见 `libs/soft_crc/soft_crc.c`。
+帧格式见 `frame.h`。
+码表和载荷见 `type_id.h`。
+版本串见 `App/profiles/` 中各机型的 `version_string`。
+校验多项式见 `libs/soft_crc/soft_crc.c`。
 
 这一层只做三件事：切帧、校验、把 `type_id` 和 payload 交出去。它不认识任何码值的含义。
 本工程 App 侧的上层是 **`App/robot_state.c`（机器人总模式状态机）**，运行在**板载 USB CDC** 上。
@@ -15,14 +17,19 @@
 
 | 项 | 值 |
 | --- | --- |
-| 协议版本串 | `Intuition-Metal-Arm-v0.4` |
-| 版本码 | `0xD8D044AE` |
+| metalarm 协议版本串 | `Intuition-Metal-Arm-v0.4` |
+| metalarm 版本码 | `0xD8D044AE` |
+| ARX-X5 协议版本串 | `Intuition-ARX-X5-2023-v0.3` |
+| ARX-X5 版本码 | `0xF81DD236` |
 | 版本码算法 | FNV-1a 32 |
 | 帧格式版本 | 见第 2 节（帧头带 `arm_id`） |
 
-版本串是**协议版本的身份**，也是版本码的唯一源头。它定义在 `libs/frame/frame_config.h` 的
-`FRAME_VERSION_STRING`。板上取当前值用 `FrameVersionCode()`。
-**不要在两端硬写 `0xD8D044AE` 这个数字** —— 修改版本串后版本码随之改变。
+`Arm_profile.version_string` 定义各机型的协议版本串。
+版本码为 `FrameVersionHash(profile->version_string)`。
+板子按 `arm_id` 选择机型配置。
+版本上报和握手校验使用该机型的版本码。
+上位机使用对应机型的版本串计算版本码。
+修改字段布局、单位或码值时，必须同步更新版本串。
 
 上位机要计算同一个值。任何语言三行即可实现，不需要移植本工程的实现：
 
@@ -287,9 +294,15 @@ typedef struct {
 } FramePktArmCtrlPosVel;                           /* 共 52 字节     */
 ```
 
-`joint_vel[]` 为上位机给定的关节速度，进入 `Arm_control_data.joint_vel`，经方向、减速比和 `JOINT_SPEEDCOMP_COEF` 转换为电机速度前馈。同时，该参考速度用于 Metal 科氏和摩擦补偿；此命令的参考加速度为零。
+`joint_angle[]` 通过 Ruckig 生成位置参考。
+Ruckig 的运动上限取自机型配置。
+`joint_vel[]` 为上位机给定的关节速度。
+该速度进入 `Arm_control_data.joint_vel`。
+固件按方向、减速比和 `JOINT_SPEEDCOMP_COEF` 换算电机速度前馈。
+Metal 科氏和摩擦补偿使用该参考速度。
+此命令的参考加速度为零。
 
-`0x16` 纯位置命令使用五次样条生成位置、速度、加速度；规划速度和加速度同时用于动力学前馈。两种命令的动力学位置输入均为关节反馈角。
+`0x16` 纯位置命令使用 Ruckig 逐轴生成位置、速度、加速度，按机型配置约束速度、加速度和加加速度；选择满足起终状态和运动约束的最快可行轨迹，没有额外的最短时长限制。规划速度和加速度同时用于动力学前馈。两种命令的动力学位置输入均为关节反馈角。
 
 两个控制包的 `gripper_angle` 均为角度值（deg）。夹爪已初始化时，命令层限幅到 0～约 137.50987°（2.4 rad）。`Set_Motor_ref()` 将目标位置传给 MIT 控制器，编码时转换为 rad。该通道尚未完成真机验证。
 
@@ -516,7 +529,7 @@ if (FrameParserFeed(&parser, byte) == FRAME_OK) {
 
 ```
 1. 握手   上位机 ──0x01 VERSION(code=自己的版本码)──→ 板子
-          板子   ──0x01 VERSION(code=FrameVersionCode())──→ 上位机   (①→②)
+          板子   ──0x01 VERSION(code=该臂机型的版本码)──→ 上位机   (①→②)
           板子**未握手期间一直**每 100 ms 主动发一帧 0x01，上面那行只是其中一帧
           两边比对 code；不相等就不要继续发送指令 —— 见下面的警告。
 

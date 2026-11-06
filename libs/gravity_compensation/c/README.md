@@ -79,7 +79,7 @@ python3 libs/gravity_compensation/c/generate_dynamics_data.py --robot metal
 | `JOINT_DYNAMICS_GRAVITY_MODE` | `METAL_GRAVITY_SDK` |
 | `JOINT_DYNAMICS_GRAVITY_BASE` | `NULL` |
 
-[gimbal_arm.c](../../../App/gimbal_arm.c) 将关节角度从 deg 转为 rad，将命令层参考速度、加速度转为 rad/s、rad/s²。RUN 使用完整前馈，GRAVITY 使用静态重力，STOP / DAMPING 的动力学前馈为零。普通位置目标和自动复位使用五次样条导数；`0x17` 使用外部速度，参考加速度为零。
+[gimbal_arm.c](../../../App/gimbal_arm.c) 将关节角度从 deg 转为 rad，将命令层参考速度、加速度转为 rad/s、rad/s²。RUN 使用完整前馈，GRAVITY 使用静态重力，STOP / DAMPING 的动力学前馈为零。普通位置目标使用 Ruckig 的导数，自动复位使用五次样条导数；`0x17` 使用外部速度，参考加速度为零。
 
 计算频率由 CmdTask 决定，为 500 Hz。CAN 命令发送频率为 J1 500 Hz、其他电机 250 Hz，两者分别调度。编译时应保持 NaN / Inf 检查有效，不启用 `-ffast-math`。MCU 上的实际周期耗时需结合任务调度测量。
 

@@ -21,6 +21,9 @@ function(arm_register_profile NAME SYMBOL SOURCE URDF BASE TIP MODEL_SYMBOL HEAD
             "${PROJECT_SOURCE_DIR}/libs/gravity_compensation/spatial.py"
         VERBATIM
     )
+    # 生成规则位于子目录，显式建立目标依赖以支持全新目录的并行构建。
+    add_custom_target(arm_model_${NAME} DEPENDS "${ARM_MODEL_DIR}/${HEADER}")
+    add_dependencies(${CMAKE_PROJECT_NAME} arm_model_${NAME})
     # 将机型源码和生成模型加入固件目标。
     target_sources(${CMAKE_PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/${SOURCE}"
         "${ARM_MODEL_DIR}/${HEADER}")

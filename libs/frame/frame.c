@@ -3,7 +3,6 @@
 #include <stddef.h>
 
 #include "soft_crc.h"
-#include "frame_config.h" /* 协议版本串，只有这个文件看得到 */
 
 _Static_assert(FRAME_MAX_LEN == 263U, "帧长常量算错了");
 
@@ -96,10 +95,6 @@ uint32_t FrameVersionHash(const char *s) {
   }
 
   return h;
-}
-
-uint32_t FrameVersionCode(void) {
-  return FrameVersionHash(FRAME_VERSION_STRING);
 }
 
 void FrameParserReset(FrameParser *p) {

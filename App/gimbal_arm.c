@@ -199,9 +199,9 @@ void Gimbal_Update(Gimbal* obj) {
     obj->arm_feedback_data.mode = obj->arm_mode;
     Arm_Motors_Unlock(interrupt_mask);
 
-    /* 采样 A 臂 JOINT2 的反馈、参考值及控制输出。 */
+    /* 采样 A 臂 的反馈、参考值及控制输出。 */
     if (obj == g_arm[ARM_A].gimbal) {
-        const controller* control = obj->motors[JOINT2].control;
+        const controller* control = obj->motors[JOINT1].control;
         g_fdb_pos = control->fdb_position;
         g_fdb_speed = control->fdb_speed;
         g_ref_pos = control->ref_position;

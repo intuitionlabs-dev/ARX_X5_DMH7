@@ -60,18 +60,36 @@ int main(void) {
     for (int i = 0; i < ARM_JOINT_NUM; ++i)
         joints[i] = (Arm_joint_config){.direction=-1, .reduction=2, .position_zero_deg=3,
             .minimum_deg=-90, .maximum_deg=90, .reset_deg=5+i, .torque_scale=2,
-            .velocity_scale=1, .plan_velocity_scale=1, .td_r=1000, .absolute_encoder=1};
-    Arm_profile profile = {.name="test", .joint_count=ARM_JOINT_NUM, .motor_count=ARM_MOTOR_NUM,
+            .velocity_scale=1, .plan_velocity_scale=1, .absolute_encoder=1,
+            .max_velocity_deg_s=90, .max_acceleration_deg_s2=360, .max_jerk_deg_s3=3600};
+    Arm_profile profile = {.name="test", .version_string="test-v1",
+        .joint_count=ARM_JOINT_NUM, .motor_count=ARM_MOTOR_NUM,
         .motors=motors, .joints=joints, .gripper={.cmd={0,100}, .motor_deg={80,-120},
             .torque_scale=-2, .minimum=0, .maximum=100},
         .init={.reset_time_s=.02f, .pose_tolerance_deg=20, .zero_total_ms=1000,
             .zero_motor_ms=100, .zero_disable_timeout_ms=1500, .zero_disable_retry_ms=100, .gripper_home_torque=.5f, .gripper_speed_deg_s=100,
             .gripper_backoff_deg=1, .gripper_follow_error_deg=20, .gripper_backoff_tolerance_deg=4, .gripper_settle_ms=400, .stall_tolerance_deg=.5f, .stall_window_ms=2,
             .stall_windows=2, .seek_timeout_ms=100, .backoff_timeout_ms=100},
-        .quintic_duration_s=.16f, .stop_on_motor_lost=1, .initialize=Arm_Initialize_Hold,
+        .stop_on_motor_lost=1, .initialize=Arm_Initialize_Hold,
         .rc_joint={-1,-1,-1}};
     CHECK(Arm_Profile_Validate(&profile));
+    float* motion_limits[] = {&joints[0].max_velocity_deg_s,
+        &joints[0].max_acceleration_deg_s2, &joints[0].max_jerk_deg_s3};
+    const float invalid_limits[] = {0, -1, NAN, INFINITY};
+    for (unsigned i=0; i<3; ++i) {
+        const float saved = *motion_limits[i];
+        for (unsigned k=0; k<4; ++k) {
+            *motion_limits[i] = invalid_limits[k];
+            CHECK(!Arm_Profile_Validate(&profile));
+        }
+        *motion_limits[i] = saved;
+    }
     Arm_profile invalid = profile;
+    invalid.version_string = NULL;
+    CHECK(!Arm_Profile_Validate(&invalid));
+    invalid.version_string = "";
+    CHECK(!Arm_Profile_Validate(&invalid));
+    invalid = profile;
     invalid.joint_count++;
     CHECK(!Arm_Profile_Validate(&invalid));
     invalid = profile;

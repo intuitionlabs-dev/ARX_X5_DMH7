@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
+from ruckig_test_support import ruckig_library
 
 from arx_x5_control import ArmConfig, ArmMode, Command, CommandKind, ControlSystem
 from arx_x5_control.config import POSITION_PID
@@ -57,9 +58,9 @@ class FirmwareParityTests(unittest.TestCase):
                         "-DSTM32H723xx", "-DUSE_HAL_DRIVER", "-DUSE_PWR_LDO_SUPPLY",
                         "-Wno-pointer-to-int-cast", "-Wno-int-to-pointer-cast",
                         *["-I" + str(ROOT / p) for p in command_includes],
-                        *[str(ROOT / p) for p in ("tests/c_command_reference.c", "libs/controller/adrc.c",
+                        *[str(ROOT / p) for p in ("tests/c_command_reference.c",
                           "libs/common/common.c", "libs/move_plan/curves/quintic_spline.c")],
-                        "-Wl,--gc-sections", "-Wl,-z,defs", "-lm", "-o", str(command_library)],
+                        ruckig_library(), "-lstdc++", "-Wl,--gc-sections", "-Wl,-z,defs", "-lm", "-o", str(command_library)],
                        check=True, capture_output=True, text=True)
         cls.command_lib = C.CDLL(str(command_library))
         cls.command_lib.reference_command_init.argtypes = [fptr]
@@ -137,7 +138,7 @@ class FirmwareParityTests(unittest.TestCase):
                         for a, b in zip(actual, out):
                             self.assertAlmostEqual(a, b, delta=5e-5 + 4e-6*abs(b))
 
-    def test_command_sources_and_replanning_against_original_c(self):
+    def test_auto_and_passive_sources_against_python(self):
         arm = ControlSystem([ArmConfig(gravity_enabled=False)]).arms[0]
         arm.initialized = [True] * 7
         arm.joint_angle = [0, 40, 60, 0, 0, 0]
@@ -145,16 +146,16 @@ class FirmwareParityTests(unittest.TestCase):
         out = (C.c_float * 18)()
         rng = random.Random(1017)
         for step in range(400):
-            arm.mode = ArmMode.DAMPING if 250 <= step < 260 else ArmMode.RUN
-            planning = 160 <= step < 200
-            external = 100 <= step < 140
+            arm.mode = (ArmMode.RUN, ArmMode.STOP, ArmMode.DAMPING, ArmMode.GRAVITY)[step//40%4]
+            planning = arm.mode == ArmMode.RUN
+            external = False
             target = Float6(*(rng.uniform(5, 70) for _ in range(6))) if step % 15 == 0 else target
             if arm.mode != ArmMode.RUN:
                 target = Float6(*arm.joint_angle)
             velocity = Float6(*(rng.uniform(-10, 10) for _ in range(6)))
             acc = Float6(*(rng.uniform(-20, 20) for _ in range(6)))
             arm.command.auto = "parity" if planning else None
-            arm.command.plan = SimpleNamespace(running=planning, current=tuple(
+            arm.command.plan = SimpleNamespace(running=planning, cancel=lambda: None, current=tuple(
                 Waypoint(*values) for values in zip(target, velocity, acc)))
             arm.control = Command(0, CommandKind.POSITION_VELOCITY if external else CommandKind.POSITION,
                                   tuple(target), 0, tuple(velocity) if external else ())

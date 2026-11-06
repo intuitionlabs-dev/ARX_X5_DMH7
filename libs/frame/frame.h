@@ -110,9 +110,6 @@ FrameStatus FrameParserFeed(FrameParser *p, uint8_t byte);
 /* 对版本串计算 FNV-1a 32 位哈希；空指针返回 0。 */
 uint32_t FrameVersionHash(const char *s);
 
-/* 返回 FRAME_VERSION_STRING 的 FNV-1a 版本码。 */
-uint32_t FrameVersionCode(void);
-
 #ifdef __cplusplus
 }
 #endif

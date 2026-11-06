@@ -21,18 +21,22 @@ const Robot_ctrl_cmd* Robot_State_Ctrl(const Arm* arm) {
 
 __attribute__((visibility("default")))
 void reference_command_init(const float* feedback) { // NOLINT(readability-identifier-naming)
+    for (int i=0; i<ARM_JOINT_NUM; ++i)
+        ruckig_c_destroy(gimbal_cmd.joint_ruckig_ref[i].planner);
     memset(&gimbal, 0, sizeof(gimbal));
     memset(&gimbal_cmd, 0, sizeof(gimbal_cmd));
     memset(&cmd, 0, sizeof(cmd));
     gimbal_cmd.gimbal = &gimbal;
     gimbal.profile = &profile;
     profile.joints = joints;
-    profile.quintic_duration_s = .16f;
-    for (int i=0; i<ARM_JOINT_NUM; ++i) joints[i].plan_velocity_scale = 1;
-    const float r[6] = {1000, 4000, 4000, 2000, 2000, 2000};
+    for (int i=0; i<ARM_JOINT_NUM; ++i) {
+        joints[i].plan_velocity_scale = 1;
+        joints[i].max_velocity_deg_s = 90;
+        joints[i].max_acceleration_deg_s2 = 360;
+        joints[i].max_jerk_deg_s3 = 3600;
+        gimbal_cmd.joint_ruckig_ref[i].planner = ruckig_c_create(ARM_CONTROL_PERIOD_S);
+    }
     for (int i = 0; i < 6; ++i) {
-        TD_Config config = {.r = r[i], .h = .002f, .h0 = .004f};
-        TD_Init(&gimbal_cmd.joint_angle_td[i], &config);
         gimbal.arm_feedback_data.joint_angle[i] = feedback[i];
     }
 }
@@ -49,7 +53,6 @@ void reference_command_step(int mode, int planning, int external_velocity, // NO
         gimbal_cmd.plan_joint_acc[i] = acc[i];
         cmd.joint_vel[i] = velocity[i];
     }
-    if (mode != arm_run) joint_angle_td_follow(&gimbal_cmd, gimbal.arm_feedback_data.joint_angle);
     Ctrl_Post_Process(&gimbal_cmd);
     Arm_Ref_Set(&gimbal_cmd);
     for (int i = 0; i < 6; ++i) {

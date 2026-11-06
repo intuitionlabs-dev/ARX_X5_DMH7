@@ -10,6 +10,12 @@
 
 #define GIMBAL_CMD_PERIOD_S ARM_CONTROL_PERIOD_S
 
+/* 调试器观测 A 臂 JOINT1 的 Ruckig 输入输出。 */
+volatile ruckig_c_input g_ruckig_input;
+volatile ruckig_c_output g_ruckig_output;
+volatile int g_ruckig_status;
+volatile uint8_t g_ruckig_active;
+
 /* 读取遥控器在线状态。 */
 static uint8_t Rc_Online(void) { return (uint8_t)(!is_Offline(rc.monitor)); } // NOLINT(readability-identifier-naming)
 
@@ -25,9 +31,9 @@ static void Ctrl_Post_Process(Gimbal_cmd* obj); // NOLINT(readability-identifier
 static void Arm_Ref_Set(Gimbal_cmd* obj); // NOLINT(readability-identifier-naming)
 
 static void joint_src_follow(Gimbal_cmd* obj);
-static void joint_angle_td_follow(Gimbal_cmd* obj, float ref[ARM_JOINT_NUM]);
+static void joint_post_process_follow(Gimbal_cmd* obj);
 
-/* 创建命令状态、临时规划组和关节跟踪器。 */
+/* 创建命令状态、临时规划组和关节轨迹实例。 */
 Gimbal_cmd* Gimbal_Cmd_Create(Arm* arm) {
 
     /* 机械臂或电机控制对象无效时拒绝创建。 */
@@ -46,16 +52,16 @@ Gimbal_cmd* Gimbal_Cmd_Create(Arm* arm) {
         return NULL;
     }
 
-    /* 按各关节配置初始化跟踪微分器。 */
-    for (int i = 0; i < ARM_JOINT_NUM; i++) {
-        /* 配置关节跟踪速度和控制采样周期。 */
-        TD_Config td_config = {
-            .r = obj->gimbal->profile->joints[i].td_r,
-            .h = GIMBAL_CMD_PERIOD_S,
-            .h0 = GIMBAL_CMD_PERIOD_S * 2,
-            .J = 0,
-        };
-        TD_Init(&obj->joint_angle_td[i], &td_config);
+    /* 创建阶段分配全部 Ruckig 实例，周期更新复用这些实例。 */
+    for (int i = 0; i < ARM_JOINT_NUM; ++i) {
+        obj->joint_ruckig_ref[i].planner = ruckig_c_create(GIMBAL_CMD_PERIOD_S);
+        if (!obj->joint_ruckig_ref[i].planner) {
+            for (int j = 0; j < i; ++j)
+                ruckig_c_destroy(obj->joint_ruckig_ref[j].planner);
+            free((void*)obj->temp_group);
+            free(obj);
+            return NULL;
+        }
     }
 
     return obj;
@@ -107,7 +113,7 @@ void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
     /* 按机型关节和夹爪范围限制目标。 */
     Motor_Angle_Limit(obj);
 
-    /* 推进目标跟踪并衔接自动轨迹状态。 */
+    /* 更新轨迹参考并衔接控制源状态。 */
     Ctrl_Post_Process(obj);
 
     /* 选择各轴参考来源并发布运动导数。 */
@@ -126,23 +132,13 @@ void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
 /* 取消自动动作并使关节和夹爪目标跟随反馈。 */
 static void Stop_Mode_Update(Gimbal_cmd* obj) {
 
+    obj->mode = arm_stop;
     obj->gimbal->arm_control_data.mode = arm_stop;
 
     obj->auto_mode = arm_auto_none;
     obj->auto_step = 0;
 
-    /* 使停止参考位置跟随反馈并清空运动导数。 */
-    memcpy(obj->gimbal->arm_control_data.joint_angle,
-        obj->gimbal->arm_feedback_data.joint_angle,
-        sizeof(obj->gimbal->arm_feedback_data.joint_angle));
-    memset(obj->gimbal->arm_control_data.joint_vel, 0,
-        sizeof(obj->gimbal->arm_control_data.joint_vel));
-    memset(obj->gimbal->arm_control_data.joint_acc, 0,
-        sizeof(obj->gimbal->arm_control_data.joint_acc));
-
     joint_src_follow(obj);
-
-    joint_angle_td_follow(obj, obj->gimbal->arm_feedback_data.joint_angle);
 
     /* 停止模式使夹爪目标跟随反馈并清零力矩。 */
     obj->gimbal->arm_control_data.gripper_angle =
@@ -154,16 +150,7 @@ static void Stop_Mode_Update(Gimbal_cmd* obj) {
 static void Passive_Mode_Update(Gimbal_cmd* obj) {
     obj->gimbal->arm_control_data.mode = obj->mode;
 
-    memcpy(obj->gimbal->arm_control_data.joint_angle,
-        obj->gimbal->arm_feedback_data.joint_angle,
-        sizeof(obj->gimbal->arm_feedback_data.joint_angle));
-    memset(obj->gimbal->arm_control_data.joint_vel, 0,
-        sizeof(obj->gimbal->arm_control_data.joint_vel));
-    memset(obj->gimbal->arm_control_data.joint_acc, 0,
-        sizeof(obj->gimbal->arm_control_data.joint_acc));
-
     joint_src_follow(obj);
-    joint_angle_td_follow(obj, obj->gimbal->arm_feedback_data.joint_angle);
 
     obj->gimbal->arm_control_data.gripper_angle =
         obj->gimbal->arm_feedback_data.gripper_angle;
@@ -184,13 +171,18 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
 
         const float channels[] = {rc.rx, rc.ry, rc.lx};
         /* 按机型映射将摇杆输入分配给关节。 */
-        for (int channel = 0; channel < 3; ++channel) {
-            const int joint = obj->gimbal->profile->rc_joint[channel];
-            /* 有效通道超出死区时累加关节目标。 */
-            if (joint >= 0 && joint < ARM_JOINT_NUM && fabsf(channels[channel]) > 0.1f)
-                obj->ctrl_src.joint_src.joint_angle[joint] += fsgn(channels[channel])
-                    * obj->gimbal->profile->rc_speed_deg_s*GIMBAL_CMD_PERIOD_S;
-        }
+        // for (int channel = 0; channel < 3; ++channel) {
+        //     const int joint = obj->gimbal->profile->rc_joint[channel];
+        //     /* 有效通道超出死区时累加关节目标。 */
+        //     if (joint >= 0 && joint < ARM_JOINT_NUM && fabsf(channels[channel]) > 0.1f)
+        //         obj->ctrl_src.joint_src.joint_angle[joint] += fsgn(channels[channel])
+        //             * obj->gimbal->profile->rc_speed_deg_s*GIMBAL_CMD_PERIOD_S;
+        // }
+
+        if (Etc_Get(rc.trig.rx_left))
+            obj->ctrl_src.joint_src.joint_angle[JOINT1] += 45;
+        if (Etc_Get(rc.trig.rx_right))
+            obj->ctrl_src.joint_src.joint_angle[JOINT1] -= 45;
         return;
     }
 
@@ -226,7 +218,9 @@ static void Auto_Mode_Update(Gimbal_cmd* obj) {
 
 /* 根据自动动作步骤更新规划运行标志。 */
 static void Plan_Running_Check(Gimbal_cmd* obj) {
-    obj->plan_running = obj->auto_mode == arm_auto_reset && obj->auto_step > 0;
+    // 检查是否为一键模式以及tempgoup是否正在运行
+    obj->plan_running =
+        (obj->auto_mode != arm_auto_none && obj->temp_group[0]->status == move_plan_run);
 }
 
 /* 清空本周期速度、加速度和夹爪力矩。 */
@@ -278,141 +272,100 @@ static void Motor_Angle_Limit(Gimbal_cmd* obj) {
                 obj->gimbal->profile->gripper.maximum);
 }
 
-/* 更新关节跟踪器并同步自动规划状态。 */
+/* 更新关节轨迹并处理控制源衔接和故障。 */
 static void Ctrl_Post_Process(Gimbal_cmd* obj) {
-
-    /* 逐轴推进跟踪微分器。 */
-    for (int i = 0; i < ARM_JOINT_NUM; i++) {
-
-        obj->joint_angle_td[i].ref = obj->ctrl_src.joint_angle_solved[i];
-        TDFunction_independent(&obj->joint_angle_td[i]);
-    }
-
-    /* 自动轨迹运行时使跟踪器跟随规划位置。 */
-    if (obj->plan_running) {
-        joint_angle_td_follow(obj, obj->ctrl_src.joint_angle_solved);
-    }
-}
-
-/* 更新单关节位置命令的连续运动参考。 */
-static void Joint_Quintic_Ref_Update(Gimbal_cmd* obj, int joint) { // NOLINT(readability-identifier-naming)
-    Joint_quintic_ref* ref = &obj->joint_quintic_ref[joint];
-    const float target = obj->ctrl_src.joint_angle_solved[joint];
-    /* 首次采样以当前反馈建立参考初值。 */
-    if (!ref->initialized) {
-        ref->position = obj->gimbal->arm_feedback_data.joint_angle[joint];
-        ref->velocity = 0.0f;
-        ref->acc = 0.0f;
-        ref->initialized = 1;
-    }
-
-    /* 目标变化或轨迹未激活时重建五次曲线。 */
-    if (!ref->active || target != ref->target) {
-        /* 以当前参考导数和新目标构造曲线边界。 */
-        Quintic_spline_config config = {
-            .x0 = 0.0f,
-            .y0 = ref->position,
-            .dy0 = ref->velocity,
-            .ddy0 = ref->acc,
-            .x1 = obj->gimbal->profile->quintic_duration_s,
-            .y1 = target,
-            .dy1 = 0.0f,
-            .ddy1 = 0.0f,
-            .xmin = 0.0f,
-            .xmax = obj->gimbal->profile->quintic_duration_s,
-        };
-        Quintic_Spline_Reinit(&ref->curve, &config);
-        ref->target = target;
-        ref->elapsed = 0.0f;
-        ref->active = 1;
-    }
-
-    /* 按命令控制周期推进曲线时间。 */
-    ref->elapsed += GIMBAL_CMD_PERIOD_S;
-    /* 到达轨迹终点后保持目标并清零导数。 */
-    if (ref->elapsed >= obj->gimbal->profile->quintic_duration_s) {
-        ref->elapsed = obj->gimbal->profile->quintic_duration_s;
-        ref->position = ref->target;
-        ref->velocity = 0.0f;
-        ref->acc = 0.0f;
-    } else { /* 在轨迹区间内计算位置及一、二阶导数。 */
-        ref->position = Quintic_Spline_Calc_y(&ref->curve, ref->elapsed);
-        ref->velocity = Quintic_Spline_Calc_dy(&ref->curve, ref->elapsed);
-        ref->acc = Quintic_Spline_Calc_ddy(&ref->curve, ref->elapsed);
-    }
-}
-
-/* 按控制来源生成位置、速度和加速度参考。 */
-static void Arm_Ref_Set(Gimbal_cmd* obj) {
-    Arm_control_data* control = &obj->gimbal->arm_control_data;
+    const uint8_t debug_arm = obj->arm->id == ARM_A;
+    if (debug_arm) g_ruckig_active = 0;
+    const uint8_t running = obj->mode == arm_run;
+    const uint8_t use_ruckig = running && !obj->plan_running;
     const Robot_ctrl_cmd* cmd = Robot_State_Ctrl(obj->arm);
     const uint8_t use_external_velocity =
-        (obj->mode == arm_run && !Rc_Online() && cmd != NULL && cmd->valid && cmd->has_vel);
+        use_ruckig && !Rc_Online() && cmd != NULL && cmd->valid && cmd->has_vel;
+    const uint8_t previous_external_velocity = obj->external_velocity_active;
+    obj->external_velocity_active = use_external_velocity;
 
-    /* 逐轴选择参考来源并发布控制输出。 */
+    if (!running) joint_post_process_follow(obj);
+
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
-        float angle;
-        float velocity;
-        float acc;
-
-        /* 自动规划运行时使用规划位置和导数。 */
-        if (obj->plan_running) {
-            angle = obj->ctrl_src.joint_angle_solved[i];
-            velocity = obj->plan_joint_vel[i] * obj->gimbal->profile->joints[i].plan_velocity_scale;
-            acc = obj->plan_joint_acc[i];
-        } else if (use_external_velocity) { /* 带速度协议使用跟踪位置和协议速度。 */
-            angle = obj->joint_angle_td[i].v1;
-            velocity = cmd->joint_vel[i];
-            acc = 0.0f;
-        } else if (obj->mode == arm_run) { /* 普通位置控制使用连续曲线参考。 */
-            Joint_Quintic_Ref_Update(obj, i);
-            angle = obj->joint_quintic_ref[i].position;
-            velocity = obj->joint_quintic_ref[i].velocity;
-            acc = obj->joint_quintic_ref[i].acc;
-        } else { /* 被动和停止模式使用跟踪器输出。 */
-            angle = obj->joint_angle_td[i].v1;
-            velocity = obj->joint_angle_td[i].v2;
-            acc = obj->joint_angle_td[i].v3;
+        Joint_ruckig_ref* ref = &obj->joint_ruckig_ref[i];
+        if (running && obj->plan_running) {
+            obj->post_processed_joint_angle[i] = obj->ctrl_src.joint_angle_solved[i];
+            obj->post_processed_joint_vel[i] =
+                obj->plan_joint_vel[i] * obj->gimbal->profile->joints[i].plan_velocity_scale;
+            obj->post_processed_joint_acc[i] = obj->plan_joint_acc[i];
+        } else if (use_ruckig) {
+            if (!ref->initialized) {
+                ref->state = (ruckig_c_state){obj->gimbal->arm_feedback_data.joint_angle[i], 0, 0};
+                ref->initialized = 1;
+                ruckig_c_reset(ref->planner);
+            } else if (previous_external_velocity && !use_external_velocity) {
+                /* 控制源切换以已发布的速度和加速度衔接轨迹。 */
+                ref->state.velocity = ref->external_velocity;
+                ref->state.acceleration = 0;
+                ruckig_c_reset(ref->planner);
+            }
+            const Arm_joint_config* config = &obj->gimbal->profile->joints[i];
+            const ruckig_c_input input = {
+                .current = ref->state,
+                .target = {obj->ctrl_src.joint_angle_solved[i], 0, 0},
+                .max_velocity = config->max_velocity_deg_s,
+                .max_acceleration = config->max_acceleration_deg_s2,
+                .max_jerk = config->max_jerk_deg_s3,
+            };
+            ruckig_c_output output;
+            const uint8_t debug_joint = debug_arm && i == JOINT1;
+            if (debug_joint) g_ruckig_input = input;
+            ref->status = ruckig_c_update(ref->planner, &input, &output);
+            if (debug_joint) {
+                g_ruckig_status = ref->status;
+                if (ref->status >= 0) g_ruckig_output = output;
+                g_ruckig_active = 1;
+            }
+            if (ref->status < 0) goto reference_failed;
+            ref->state = output.state;
+            if (use_external_velocity) ref->external_velocity = cmd->joint_vel[i];
+            obj->post_processed_joint_angle[i] = output.state.position;
+            obj->post_processed_joint_vel[i] = use_external_velocity
+                ? ref->external_velocity : output.state.velocity;
+            obj->post_processed_joint_acc[i] = use_external_velocity ? 0 : output.state.acceleration;
         }
 
-        /* 被动和停止模式清零参考加速度。 */
-        if (obj->mode != arm_run) acc = 0.0f;
-        /* 参考值异常时切入阻尼并清除轨迹状态。 */
-        if (!isfinite(angle) || !isfinite(velocity) || !isfinite(acc)) {
-            obj->mode = arm_damping;
-            control->mode = obj->mode;
-            /* 逐轴恢复反馈位置并清零运动参考。 */
-            for (int j = 0; j < ARM_JOINT_NUM; j++) {
-                control->joint_angle[j] = obj->gimbal->arm_feedback_data.joint_angle[j];
-                control->joint_vel[j] = 0.0f;
-                control->joint_acc[j] = 0.0f;
-                obj->joint_quintic_ref[j].initialized = 0;
-                obj->joint_quintic_ref[j].active = 0;
-            }
-            return;
+        if (!isfinite(obj->post_processed_joint_angle[i])
+            || !isfinite(obj->post_processed_joint_vel[i])
+            || !isfinite(obj->post_processed_joint_acc[i])) {
+            ref->status = RUCKIG_C_INVALID_INPUT;
+            goto reference_failed;
         }
-
-        /* 将本轴选定的位置、速度和加速度写入执行目标。 */
-        control->joint_angle[i] = angle;
-        control->joint_vel[i] = velocity;
-        control->joint_acc[i] = acc;
-        /* 同步其他控制来源的状态以衔接位置轨迹。 */
-        if (obj->mode != arm_run || obj->plan_running || use_external_velocity) {
-            Joint_quintic_ref* ref = &obj->joint_quintic_ref[i];
-            /* 被动和停止模式以反馈重置参考状态。 */
-            if (obj->mode != arm_run) {
-                ref->position = obj->gimbal->arm_feedback_data.joint_angle[i];
-                ref->velocity = 0.0f;
-                ref->acc = 0.0f;
-            } else { /* 运行模式以实际发布参考建立衔接状态。 */
-                ref->position = angle;
-                ref->velocity = velocity;
-                ref->acc = acc;
-            }
+        if (!use_ruckig) {
+            /* Ruckig 接管时从当前后处理参考继续规划。 */
+            ref->state = (ruckig_c_state){obj->post_processed_joint_angle[i],
+                obj->post_processed_joint_vel[i], obj->post_processed_joint_acc[i]};
             ref->initialized = 1;
-            ref->active = 0;
+            ruckig_c_reset(ref->planner);
         }
     }
+    return;
+
+reference_failed:
+    /* 整臂回到反馈位置并进入阻尼，所有轴清零运动导数。 */
+    obj->mode = arm_damping;
+    obj->external_velocity_active = 0;
+    joint_post_process_follow(obj);
+    for (int i = 0; i < ARM_JOINT_NUM; ++i) {
+        Joint_ruckig_ref* ref = &obj->joint_ruckig_ref[i];
+        ref->state = (ruckig_c_state){obj->post_processed_joint_angle[i], 0, 0};
+        ref->initialized = 0;
+        ruckig_c_reset(ref->planner);
+    }
+}
+
+/* 发布后处理阶段生成的关节参考和外部速度前馈。 */
+static void Arm_Ref_Set(Gimbal_cmd* obj) {
+    Arm_control_data* control = &obj->gimbal->arm_control_data;
+    control->mode = obj->mode;
+    memcpy(control->joint_angle, obj->post_processed_joint_angle, sizeof(control->joint_angle));
+    memcpy(control->joint_vel, obj->post_processed_joint_vel, sizeof(control->joint_vel));
+    memcpy(control->joint_acc, obj->post_processed_joint_acc, sizeof(control->joint_acc));
 }
 
 /* 使输入关节目标跟随反馈位置。 */
@@ -422,13 +375,10 @@ static void joint_src_follow(Gimbal_cmd* obj) {
         sizeof(obj->ctrl_src.joint_src.joint_angle));
 }
 
-/* 将跟踪微分器对齐给定位置并清零导数。 */
-static void joint_angle_td_follow(Gimbal_cmd* obj, float ref[ARM_JOINT_NUM]) {
-    /* 逐轴重置跟踪微分器状态。 */
-    for (int i = 0; i < ARM_JOINT_NUM; i++) {
-        obj->joint_angle_td[i].ref = ref[i];
-        obj->joint_angle_td[i].v1 = obj->joint_angle_td[i].ref;
-        obj->joint_angle_td[i].v2 = 0;
-        obj->joint_angle_td[i].v3 = 0;
-    }
+/* 使后处理参考位置跟随反馈并清零运动导数。 */
+static void joint_post_process_follow(Gimbal_cmd* obj) {
+    memcpy(obj->post_processed_joint_angle, obj->gimbal->arm_feedback_data.joint_angle,
+        sizeof(obj->post_processed_joint_angle));
+    memset(obj->post_processed_joint_vel, 0, sizeof(obj->post_processed_joint_vel));
+    memset(obj->post_processed_joint_acc, 0, sizeof(obj->post_processed_joint_acc));
 }

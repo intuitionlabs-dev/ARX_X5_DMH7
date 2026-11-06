@@ -6,6 +6,7 @@
 #include "main.h"
 #include "test_config.h"
 #include "frame.h"
+#include "arm_profile.h"
 
 /* 启用测试时编译串口双向回环实现。 */
 #if TEST_UART_LOOPBACK_ENABLE
@@ -122,7 +123,7 @@ static void UartLoopbackTest_Build(uint32_t seq) {
     switch (UartLoopbackTest_CaseOf(seq)) {
     /* 生成携带版本码的报文。 */
     case 0:
-        s_tx_payload.version.code = FrameVersionCode();
+        s_tx_payload.version.code = FrameVersionHash(ARM_BINDINGS[ARM_A].profile->version_string);
         len = (uint8_t)sizeof(FramePktVersion);
         id = FRAME_TYPE_ID_VERSION;
         break;

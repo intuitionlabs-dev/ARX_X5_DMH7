@@ -36,6 +36,14 @@ cmake --build --preset Debug
 | SDK | `sdk/` | [使用说明](sdk/README.md)、[API](sdk/API.md)、[配置](sdk/config/README.md) |
 | USB-CAN 传输子包 | 各 PC 控制包的 `usb2can/` | [Metal](sdk/metal_arm_control/usb2can/README.md)、[ARX X5](sdk/arx_x5_control/usb2can/README.md) |
 | 动力学库 | `libs/gravity_compensation/` | [使用说明](libs/gravity_compensation/README.md) |
+| Ruckig C 轨迹库 | `libs/ruckig/` | [独立构建与调用](libs/ruckig/README.md) |
+
+H7 普通关节位置控制（`0x16` 和遥控位置目标）使用单精度 Ruckig，
+按各轴速度、加速度及加加速度上限生成连续参考。
+初始化／复位仍使用 MovePlan 五次样条，`0x17` 保留外部速度前馈。
+PC 本地后端的轨迹实现仍由 SDK 提供。
+H7 的 CMake 构建需要完整的 C/C++17 ARM 工具链（含 C++ 标准库）。
+五次插值、双精度及单精度 Ruckig 的对比见 [性能测试](tests/benchmarks/README.md)。
 
 SDK 作为 Git 子模块管理。
 在仓库根目录初始化：

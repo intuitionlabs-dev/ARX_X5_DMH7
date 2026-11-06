@@ -8,3 +8,4 @@
 
 /* USART1 原样回显测试开关。 */
 #define TEST_UART_ECHO_ENABLE 0
+

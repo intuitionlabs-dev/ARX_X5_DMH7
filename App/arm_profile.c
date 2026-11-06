@@ -14,12 +14,12 @@ static uint8_t finite_values(const float* values, size_t count) {
 /* 校验机型尺寸、参数、驱动和发送预算。 */
 int Arm_Profile_Validate(const Arm_profile* profile) {
     /* 检查必要配置指针及枚举派生尺寸。 */
-    if (!profile || !profile->motors || !profile->joints || !profile->initialize
+    if (!profile || !profile->version_string || !profile->version_string[0]
+        || !profile->motors || !profile->joints || !profile->initialize
         || profile->joint_count != ARM_JOINT_NUM || profile->motor_count != ARM_MOTOR_NUM
         || !ARM_JOINT_NUM || ARM_MOTOR_NUM > 255) return 0;
-    /* 检查轨迹时长、设零超时和重力参数。 */
-    if (!isfinite(profile->quintic_duration_s) || profile->quintic_duration_s <= 0
-        || !isfinite(profile->init.reset_time_s) || profile->init.reset_time_s <= 0
+    /* 检查复位时长、设零超时和重力参数。 */
+    if (!isfinite(profile->init.reset_time_s) || profile->init.reset_time_s <= 0
         || !isfinite(profile->init.pose_tolerance_deg) || profile->init.pose_tolerance_deg < 0
         || !profile->init.zero_motor_ms || !profile->init.zero_total_ms
         || !profile->init.zero_disable_timeout_ms || !profile->init.zero_disable_retry_ms
@@ -48,10 +48,13 @@ int Arm_Profile_Validate(const Arm_profile* profile) {
         /* 收集当前关节的换算与控制参数。 */
         const float values[] = {joint->direction, joint->reduction, joint->position_zero_deg,
             joint->minimum_deg, joint->maximum_deg, joint->reset_deg, joint->torque_scale,
-            joint->viscous_damping, joint->velocity_scale, joint->plan_velocity_scale, joint->td_r};
-        /* 拒绝无效方向、比例、跟踪参数或复位目标。 */
+            joint->viscous_damping, joint->velocity_scale, joint->plan_velocity_scale,
+            joint->max_velocity_deg_s, joint->max_acceleration_deg_s2, joint->max_jerk_deg_s3};
+        /* 拒绝无效方向、比例、运动上限或复位目标。 */
         if (!finite_values(values, sizeof(values)/sizeof(values[0]))
-            || fabsf(joint->direction) != 1 || joint->reduction <= 0 || joint->td_r <= 0
+            || fabsf(joint->direction) != 1 || joint->reduction <= 0
+            || joint->max_velocity_deg_s <= 0 || joint->max_acceleration_deg_s2 <= 0
+            || joint->max_jerk_deg_s3 <= 0
             || joint->minimum_deg > joint->maximum_deg
             || joint->reset_deg < joint->minimum_deg || joint->reset_deg > joint->maximum_deg) return 0;
     }
