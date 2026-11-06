@@ -58,7 +58,7 @@ int Arm_Initialize_Home(Gimbal_cmd* cmd, uint8_t start) {
     }
     /* 按夹爪初始化步骤推进非阻塞动作。 */
     switch (cmd->initialization.step) {
-    /* 递增夹爪目标并检测机械限位。 */
+    /* 正向搜索机械限位；ARX-X5 的正向为张开方向。 */
     case 1:
         cmd->initialization.backoff_target = fminf(position+policy->gripper_follow_error_deg,
             cmd->initialization.backoff_target+step);
@@ -80,7 +80,7 @@ int Arm_Initialize_Home(Gimbal_cmd* cmd, uint8_t start) {
             cmd->initialization.step = 2;
         } else if (now-cmd->initialization.start_ms >= policy->seek_timeout_ms) return -1; /* 搜索超过配置时限时报告失败。 */
         break;
-    /* 夹爪按配置速度退回设定距离。 */
+    /* 从正向机械限位向负向退回设定距离，回退距离独立于软限位。 */
     case 2: {
         const float current = Arm_Gripper_To_Motor(g->profile, g->arm_control_data.gripper_angle);
         home_reference(cmd, fmaxf(cmd->initialization.backoff_target, current-step), 0);

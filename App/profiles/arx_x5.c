@@ -17,7 +17,7 @@
 /* ARX-X5 腕部关节的对称角度范围。 */
 #define ARX_X5_WRIST_LIMIT_DEG 90.0f
 
-/* ARX-X5 夹爪协议角的软限位。 */
+/* ARX-X5 夹爪协议角的软限位：负向闭合，正向张开。 */
 #define ARX_X5_GRIPPER_MIN_DEG -142.0f
 #define ARX_X5_GRIPPER_MAX_DEG 157.0f
 
@@ -333,7 +333,7 @@ const Arm_profile ARM_PROFILE_ARX_X5 = {
     .version_string="Intuition-ARX-X5-2023-v0.3",
     .joint_count=sizeof(joints)/sizeof(joints[0]), .motor_count=sizeof(motors)/sizeof(motors[0]),
     .motors=motors, .joints=joints,
-    /* 配置单电机夹爪的角度映射、力矩比例和限位。 */
+    /* 夹爪协议角与电机角同向，保持负向闭合、正向张开的恒等映射。 */
     .gripper={
         .cmd=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,
         .motor_deg=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,
