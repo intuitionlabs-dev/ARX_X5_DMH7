@@ -9,16 +9,33 @@ uint8_t Arm_Zero_Busy(Gimbal* g) {
         && g->zero.state <= ARM_ZERO_CHECK));
 }
 
-/* 向该臂全部电机发送失能命令。 */
-static void zero_disable_all(Gimbal* g) {
-    /* 逐电机调用驱动失能接口。 */
+/* 请求发布后及执行期间使用同一选择范围，避免夹爪设零瞬间停止整臂。 */
+uint8_t Arm_Zero_Gripper_Only(Gimbal* g) {
+    if (!g) return 0;
+    const uint8_t* selected;
+    if (g->zero.state >= ARM_ZERO_DISABLE && g->zero.state <= ARM_ZERO_CHECK)
+        selected = g->zero.participating;
+    else {
+        if (!g->zero.request) return 0;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if (!g->zero.selection_valid) return 0;
+        selected = g->zero.selection;
+    }
+    for (int i = 0; i < ARM_JOINT_NUM; ++i)
+        if (selected[i]) return 0;
+    return selected[GRIPPER] != 0;
+}
+
+/* 仅夹爪设零只失能夹爪；关节设零仍停止整臂。 */
+static void zero_disable(Gimbal* g) {
     for (int i = 0; i < ARM_MOTOR_NUM; ++i)
-        g->motors[i].config->driver->disable(&g->motors[i]);
+        if (g->motors[i].tx_suspended)
+            g->motors[i].config->driver->disable(&g->motors[i]);
 }
 
 /* 汇总设零结果、总耗时及最终状态。 */
 static void zero_finish(Gimbal* g, uint32_t now, uint8_t failed) {
-    zero_disable_all(g);
+    zero_disable(g);
     /* 检查所有参与电机的最终结果。 */
     for (int i = 0; i < ARM_MOTOR_NUM; ++i) {
         /* 将尚未完成的参与电机标记为超时。 */
@@ -30,6 +47,7 @@ static void zero_finish(Gimbal* g, uint32_t now, uint8_t failed) {
     }
     g->zero.elapsed_ms = now-g->zero.start_ms;
     g->zero.state = failed ? ARM_ZERO_TIMEOUT : ARM_ZERO_DONE;
+    for (int i = 0; i < ARM_MOTOR_NUM; ++i) g->motors[i].tx_suspended = 0;
 }
 
 /* 跳过未参与电机并推进设零步骤。 */
@@ -54,36 +72,42 @@ void Arm_Zero_Loop(Gimbal* g) {
         /* 没有设零请求时保持空闲。 */
         if (!g->zero.request) return;
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        g->zero.request = 0;
         /* 根据选择表生成参与标志和初始结果。 */
         for (int i = 0; i < ARM_MOTOR_NUM; ++i) {
             g->zero.participating[i] = g->zero.selection_valid ? g->zero.selection[i] : i != GRIPPER;
             g->zero.result[i] = g->zero.participating[i] ? ARM_ZERO_RES_NONE : ARM_ZERO_RES_SKIP;
         }
-        g->zero.selection_valid = 0;
-        memset(g->zero.selection, 0, sizeof(g->zero.selection));
         g->zero.start_ms = g->zero.phase_ms = g->zero.retry_ms = now;
         g->zero.index = 0;
         g->zero.disable_confirmed = 0;
         g->zero.elapsed_ms = 0;
-        zero_disable_all(g);
+        /* 先发布执行状态，再清除请求和选择表，保持范围查询连续有效。 */
         g->zero.state = ARM_ZERO_WAIT_DISABLE;
+        g->zero.request = 0;
+        g->zero.selection_valid = 0;
+        memset(g->zero.selection, 0, sizeof(g->zero.selection));
+        const uint8_t gripper_only = Arm_Zero_Gripper_Only(g);
+        for (int i = 0; i < ARM_MOTOR_NUM; ++i)
+            g->motors[i].tx_suspended = !gripper_only || i == GRIPPER;
+        zero_disable(g);
         return;
     }
-    /* 设零期间维持电机在线监控计数。 */
-    for (int i = 0; i < ARM_MOTOR_NUM; ++i) g->motors[i].monitor->reset(g->motors[i].monitor);
+    /* 仅为暂停控制发送的电机维持在线计数，其余关节继续接受掉线保护。 */
+    for (int i = 0; i < ARM_MOTOR_NUM; ++i)
+        if (g->motors[i].tx_suspended) g->motors[i].monitor->reset(g->motors[i].monitor);
     /* 总耗时超过配置时限后结束设零。 */
     if (now-g->zero.start_ms >= g->profile->init.zero_total_ms) {
         zero_finish(g, now, 1);
         return;
     }
-    /* 等待全部电机失能确认。 */
+    /* 等待本次需要失能的电机确认。 */
     if (g->zero.state == ARM_ZERO_WAIT_DISABLE) {
         uint8_t stopped = 1;
         /* 逐电机检查停止状态。 */
         for (int i = 0; i < ARM_MOTOR_NUM; ++i)
             /* 任一电机仍在运行时继续等待。 */
-            if (!g->motors[i].config->driver->stopped(&g->motors[i], now)) stopped = 0;
+            if (g->motors[i].tx_suspended
+                && !g->motors[i].config->driver->stopped(&g->motors[i], now)) stopped = 0;
         /* 全部失能确认后进入逐电机设零。 */
         if (stopped) {
             g->zero.disable_confirmed = 1;
@@ -92,7 +116,7 @@ void Arm_Zero_Loop(Gimbal* g) {
         /* 到达重试间隔后再次发送失能命令。 */
         else if (now-g->zero.retry_ms >= g->profile->init.zero_disable_retry_ms) {
             g->zero.retry_ms = now;
-            zero_disable_all(g);
+            zero_disable(g);
         }
         return;
     }

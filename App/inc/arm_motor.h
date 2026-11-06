@@ -41,6 +41,8 @@ struct Arm_motor {
     void* context;
     controller* control;
     monitor_item* monitor;
+    /* 设零任务独占该电机的发送，禁止常规控制和周期使能。 */
+    uint8_t tx_suspended;
     uint32_t zero_sent_ms;
     float zero_before;
     uint8_t zero_stage;

@@ -54,7 +54,8 @@ static int dm_create(Arm_motor* motor, const Arm_motor_config* cfg, uint8_t bus)
         .can_rx_id = (uint8_t)cfg->rx_id, .motor_controller_config = control_config(cfg),
         .pos_fdb_calc = dm_position, .speed_fdb_calc = dm_feedback_speed, .arg = motor,
         .lost_callback_ = motor_lost, .control_mode = dm_mit,
-        .tx_group = cfg->tx_group, .max_position = cfg->position_max,
+        .tx_group = cfg->tx_group, .tx_suspended = &motor->tx_suspended,
+        .max_position = cfg->position_max,
         .max_speed = cfg->speed_max, .max_torque = cfg->torque_max,
         .max_kp = cfg->kp_max, .max_kd = cfg->kd_max,
     };
@@ -142,7 +143,8 @@ static int encos_create(Arm_motor* motor, const Arm_motor_config* cfg, uint8_t b
     ENCOS_motor_config config = {
         .bsp_can_index = bus, .can_tx_id = cfg->tx_id, .can_rx_id = cfg->rx_id,
         .motor_controller_config = control_config(cfg), .lost_callback_ = motor_lost,
-        .tx_group = cfg->tx_group, .torque_constant = cfg->torque_constant,
+        .tx_group = cfg->tx_group, .tx_suspended = &motor->tx_suspended,
+        .torque_constant = cfg->torque_constant,
         .feedback_timeout_ms = 100,
         /* 配置各 MIT 字段的编码上下界。 */
         .ranges = {.kp={0,cfg->kp_max}, .kd={0,cfg->kd_max},

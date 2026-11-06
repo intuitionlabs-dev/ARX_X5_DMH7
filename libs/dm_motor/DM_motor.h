@@ -42,6 +42,8 @@ typedef struct dm_motor_config_t {
     DM_output_mode output_mode;  /* 达妙电机输出方向，默认正转 */
     /* 组掩码决定控制计算与发送相位；维护命令使用 CAN_TX_GROUP_ALL。 */
     uint8_t tx_group;
+    /* 可选发送门控：非零时暂停常规发送和周期使能，直接维护命令仍可发送。 */
+    const uint8_t* tx_suspended;
 
     /* 各物理量(或其绝对值)最大值,用于反馈与MIT模式控制时线性映射,可在上位机查看 */
     float max_position;

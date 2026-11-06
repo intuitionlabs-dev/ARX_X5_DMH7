@@ -5,6 +5,7 @@
 #include "rc.h"
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define CHECK(condition) do { if (!(condition)) return __LINE__; } while (0)
 Arm g_arm[ARM_NUM];
@@ -13,6 +14,9 @@ const Arm_motor_driver ARM_DRIVER_DM = {0}, ARM_DRIVER_ENCOS = {0};
 const Arm_binding ARM_BINDINGS[ARM_NUM] = {0};
 static uint32_t clock_ms;
 static unsigned create_count, disabled_count, zero_count;
+static unsigned disabled_mask, stopped_mask;
+static uint8_t last_enabled[ARM_NUM*ARM_MOTOR_NUM], wait_for_disable;
+static int poll_result = 1;
 static float last_kp[ARM_NUM*ARM_MOTOR_NUM], last_kd[ARM_NUM*ARM_MOTOR_NUM];
 uint32_t HAL_GetTick(void) { return clock_ms; }
 uint32_t Arm_Motors_Lock(void) { return 0; }
@@ -30,19 +34,26 @@ static int create(Arm_motor* motor, const Arm_motor_config* cfg, uint8_t bus) {
     return 1;
 }
 static void mode(Arm_motor* motor, uint8_t enabled, float kp, float kd) {
-    (void)enabled;
     unsigned i = (unsigned)(uintptr_t)motor->context;
+    last_enabled[i] = enabled;
     last_kp[i] = kp;
     last_kd[i] = kd;
 }
 static float position(const Arm_motor* m) { return m->control->fdb_position*0.01745329252f; }
 static uint8_t temperature(const Arm_motor* m) { (void)m; return 45; }
-static void disable(Arm_motor* m) { (void)m; ++disabled_count; }
-static uint8_t stopped(const Arm_motor* m, uint32_t now) { (void)m; (void)now; return 1; }
+static void disable(Arm_motor* m) {
+    ++disabled_count;
+    disabled_mask |= 1u << (unsigned)(uintptr_t)m->context;
+}
+static uint8_t stopped(const Arm_motor* m, uint32_t now) {
+    (void)now;
+    stopped_mask |= 1u << (unsigned)(uintptr_t)m->context;
+    return !wait_for_disable;
+}
 static int zero_start(Arm_motor* m, uint32_t now) {
     (void)now; m->control->fdb_position = 0; ++zero_count; return 1;
 }
-static int zero_poll(Arm_motor* m, uint32_t now) { (void)m; (void)now; return 1; }
+static int zero_poll(Arm_motor* m, uint32_t now) { (void)m; (void)now; return poll_result; }
 static const Arm_motor_driver driver = { // NOLINT(readability-identifier-naming)
     create, mode, position, temperature, disable, stopped, zero_start, zero_poll,
 };
@@ -172,6 +183,67 @@ int main(void) {
     CHECK(g->zero.result[GRIPPER] == ARM_ZERO_RES_SKIP);
     CHECK(g_arm[1].gimbal->zero.state == ARM_ZERO_IDLE);
     CHECK(disabled_count >= ARM_MOTOR_NUM);
+    CHECK(disabled_mask == (1u << ARM_MOTOR_NUM)-1);
+
+    /* Cover pending requests, retries, success, driver failure and both timeouts. */
+    profile.dynamics = &dynamics;
+    profile.gravity[2] = -9.81f;
+    for (int outcome=0; outcome<4; ++outcome) {
+        memset(&g->zero, 0, sizeof(g->zero));
+        disabled_mask = stopped_mask = 0;
+        wait_for_disable = 1;
+        poll_result = outcome == 1 ? -1 : 1;
+        g->zero.selection_valid = g->zero.selection[GRIPPER] = 1;
+        g->zero.request = 1;
+        g->arm_control_data.mode = arm_run;
+        Gimbal_Update(g);
+        CHECK(Arm_Zero_Gripper_Only(g) && g->arm_mode == arm_run);
+        CHECK(!last_enabled[GRIPPER]);
+        for (int i=0; i<ARM_JOINT_NUM; ++i) {
+            CHECK(last_enabled[i]);
+            CHECK(fabsf(g->motors[i].control->ref_position-(-17-2*i)) < .001f);
+            CHECK(g->motors[i].control->speed_comp == -4);
+        }
+        CHECK(fabsf(g->tau_comp[0]) > 1);
+        Arm_Zero_Loop(g);
+        CHECK(disabled_mask == 1u << GRIPPER);
+        CHECK(g->motors[GRIPPER].tx_suspended);
+        for (int i=0; i<ARM_JOINT_NUM; ++i) CHECK(!g->motors[i].tx_suspended);
+        clock_ms += profile.init.zero_disable_retry_ms;
+        Arm_Zero_Loop(g);
+        CHECK(stopped_mask == 1u << GRIPPER && disabled_mask == 1u << GRIPPER);
+        Gimbal_Update(g);
+        CHECK(g->arm_mode == arm_run && last_enabled[0] && !last_enabled[GRIPPER]);
+        if (outcome == 2) clock_ms += profile.init.zero_total_ms;
+        else if (outcome == 3) {
+            profile.init.zero_disable_timeout_ms = profile.init.zero_disable_retry_ms;
+        } else wait_for_disable = 0;
+        for (int i=0; i<10 && Arm_Zero_Busy(g); ++i, ++clock_ms) Arm_Zero_Loop(g);
+        CHECK(g->zero.state == (outcome ? ARM_ZERO_TIMEOUT : ARM_ZERO_DONE));
+        CHECK(g->zero.result[GRIPPER] == (outcome == 0 ? ARM_ZERO_RES_OK
+            : outcome == 1 ? ARM_ZERO_RES_FAIL : ARM_ZERO_RES_TIMEOUT));
+        CHECK(disabled_mask == 1u << GRIPPER && !Arm_Zero_Gripper_Only(g));
+        for (int i=0; i<ARM_MOTOR_NUM; ++i) CHECK(!g->motors[i].tx_suspended);
+        Gimbal_Update(g);
+        CHECK(g->arm_mode == arm_run && last_enabled[GRIPPER]);
+    }
+    wait_for_disable = 0;
+    poll_result = 1;
+    profile.init.zero_disable_timeout_ms = 1500;
+
+    /* Joint loss must still stop the arm while the gripper is being zeroed. */
+    g->zero.selection_valid = g->zero.selection[GRIPPER] = g->zero.request = 1;
+    Arm_Zero_Loop(g);
+    g->motors[0].monitor->count = 0;
+    g->motors[GRIPPER].monitor->count = 0;
+    Arm_Zero_Loop(g);
+    CHECK(g->motors[0].monitor->count == 0);
+    CHECK(g->motors[GRIPPER].monitor->count > 0);
+    Gimbal_Update(g);
+    CHECK(g->arm_mode == arm_stop && !last_enabled[0]);
+    for (int i=0; i<10 && Arm_Zero_Busy(g); ++i, ++clock_ms) Arm_Zero_Loop(g);
+    g->motors[0].monitor->reset(g->motors[0].monitor);
+    profile.dynamics = NULL;
 
     Gimbal_cmd* cmd = g_arm[0].gimbal_cmd;
     g_arm[0].ctrl.valid = 0;
@@ -193,6 +265,7 @@ int main(void) {
         CHECK(fabsf(g->arm_control_data.joint_angle[i]-joints[i].reset_deg)<.001f);
 
     profile.initialize = Arm_Initialize_Home;
+    disabled_mask = 0;
     CHECK(Arm_Initialize_Home(cmd, 1) == 0);
     int initialized = 0;
     for (int i=0; i<300; ++i) {
@@ -202,11 +275,14 @@ int main(void) {
         if (cmd->initialization.step == 2)
             g->motors[GRIPPER].control->fdb_position = cmd->initialization.backoff_target;
         if (Arm_Zero_Busy(g)) Arm_Zero_Loop(g);
+        Gimbal_Update(g);
+        CHECK(g->arm_mode == arm_run && last_enabled[0]);
         const int result = Arm_Initialize_Home(cmd, 0);
         CHECK(result >= 0);
         if (result > 0) { initialized = 1; break; }
     }
     CHECK(initialized);
+    CHECK(disabled_mask == 1u << GRIPPER);
     while (get_Rest_Temp_Plan_cnt() > 0)
         CHECK(Move_Plan_Temp_Create(0,0,0,1,0,0,10,quintic_spline));
     g->arm_feedback_data.motor_inited[GRIPPER] = 0;

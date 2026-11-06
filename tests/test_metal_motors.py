@@ -142,5 +142,16 @@ class MetalMotorTests(unittest.TestCase):
         self.lib.x5_passive_enable(out)
         self.assertEqual(list(out),[0,0])
 
+    def test_x5_gripper_zero_keeps_joint_traffic_and_blocks_periodic_gripper_enable(self):
+        self.lib.x5_gripper_zero_traffic.argtypes = [C.POINTER(C.c_uint)]
+        out = (C.c_uint*12)()
+        self.lib.x5_gripper_zero_traffic(out)
+        # Wait 800 ms for gripper disable confirmation while joints keep 500/250 Hz.
+        for i,count in enumerate(out[:6]):
+            self.assertGreaterEqual(count,400 if i == 0 else 200)
+        self.assertEqual(list(out[6:10]),[0,0,0,0])
+        self.assertEqual(out[10],5)  # ARM_ZERO_DONE
+        self.assertGreater(out[11],1)  # retries and finish only disable the gripper
+
 
 if __name__ == '__main__': unittest.main()

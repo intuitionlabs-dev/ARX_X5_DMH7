@@ -1,6 +1,7 @@
 /* Host harness: production application and unchanged DM driver, simulated CAN/HAL. */
 #include <string.h>
 #include "arm.h"
+#include "ENCOS_motor.h"
 #include "../App/gimbal_arm.c" // NOLINT(bugprone-suspicious-include)
 #include "../App/arm_zero.c" // NOLINT(bugprone-suspicious-include)
 #include "../libs/dm_motor/DM_motor.c" // NOLINT(bugprone-suspicious-include)
@@ -14,6 +15,7 @@ static unsigned registered_count[DEVICE_CAN_CNT];
 static Gimbal* x5;
 static unsigned x5_frames[9];
 static uint8_t x5_last[9][8];
+static unsigned x5_controls[9], x5_enables[9], x5_disables[9];
 static void dispatch(uint8_t bus, uint32_t id, uint8_t* data, uint32_t length) {
     for (unsigned i=0; i<registered_count[bus]; ++i) registered[bus][i](bus,id,data,length);
 }
@@ -38,6 +40,11 @@ void BSP_CAN_Send(uint8_t bus, uint16_t id, uint8_t* data, basic_data_t len) {
         if (id < 1 || id > 8 || len > 8) abort();
         x5_frames[id]++;
         memcpy(x5_last[id],data,len);
+        const uint8_t special[7] = {255,255,255,255,255,255,255};
+        if (id >= 5 && len == 8 && !memcmp(data,special,7)) {
+            if (data[7] == 0xfc) ++x5_enables[id];
+            if (data[7] == 0xfd) ++x5_disables[id];
+        } else ++x5_controls[id];
         return;
     }
     if (bus >= ARM_NUM || id < 1 || id > 7 || len != 8) abort();
@@ -163,7 +170,7 @@ EXPORT void metal_zero(unsigned bus, unsigned mask, unsigned* out) { // NOLINT(r
 }
 
 EXPORT unsigned x5_create_and_rates(unsigned* out) { // NOLINT(readability-identifier-naming)
-    x5 = Gimbal_Create_Profile(&ARM_PROFILE_ARX_X5, 2);
+    if (!x5) x5 = Gimbal_Create_Profile(&ARM_PROFILE_ARX_X5, 2);
     if (!x5) return 0;
     for (unsigned tick=0; tick<1000; ++tick) {
         clock_ms++;
@@ -192,4 +199,48 @@ EXPORT void x5_passive_enable(float* out) { // NOLINT(readability-identifier-nam
     }
     out[0]=motor->control->pid_pos_data.config.KP;
     out[1]=motor->control->pid_speed_data.config.KP;
+}
+
+/* Exercise real ENCOS/DM scheduling across more than a full enable rotation. */
+EXPORT void x5_gripper_zero_traffic(unsigned* out) {
+    if (!x5) x5 = Gimbal_Create_Profile(&ARM_PROFILE_ARX_X5, 2);
+    if (!x5) abort();
+    memset(out,0,12*sizeof(*out));
+    memset(&x5->zero,0,sizeof(x5->zero));
+    memset(x5_controls,0,sizeof(x5_controls));
+    memset(x5_enables,0,sizeof(x5_enables));
+    memset(x5_disables,0,sizeof(x5_disables));
+    x5->arm_control_data.mode = arm_run;
+    x5->zero.selection_valid = x5->zero.selection[GRIPPER] = x5->zero.request = 1;
+    for (unsigned tick=0; tick<900; ++tick,++clock_ms) {
+        for (unsigned i=0; i<ARM_MOTOR_NUM; ++i) {
+            Arm_motor* m = &x5->motors[i];
+            uint8_t data[8] = {0x20,0x7f,0xff,0x7f,0xf7,0xff,100,100};
+            if (i >= 3) data[0] = m->config->tx_id | ((i == GRIPPER && tick >= 800) ? 0 : 0x10);
+            receivers[2](2,m->config->rx_id,data,8);
+        }
+        Gimbal_Update(x5);
+        if (x5->arm_mode != arm_run) ++out[9];
+        Arm_Zero_Loop(x5);
+        if (!Arm_Zero_Busy(x5)) break;
+        Arm_Motors_Send_Begin();
+        for (unsigned round=0; round<CAN_TX_MAX_FRAMES_PER_TICK; ++round)
+            if (!(Arm_Zero_Busy(x5) && !Arm_Zero_Gripper_Only(x5)))
+                Arm_Motors_Send_Step(2);
+        for (unsigned i=0; i<ARM_JOINT_NUM; ++i) {
+            const Arm_motor* m = &x5->motors[i];
+            const uint8_t enabled = i < 3 ? ((ENCOS_motor*)m->context)->enable == encos_enable
+                : ((DM_motor*)m->context)->enable == dm_enable;
+            if (!enabled) ++out[9];
+        }
+    }
+    for (unsigned i=0; i<ARM_JOINT_NUM; ++i) {
+        const unsigned id = x5->motors[i].config->tx_id;
+        out[i] = x5_controls[id];
+        out[8] += x5_disables[id];
+    }
+    out[6] = x5_controls[8];
+    out[7] = x5_enables[8];
+    out[10] = x5->zero.state;
+    out[11] = x5_disables[8];
 }

@@ -296,6 +296,8 @@ uint8_t ENCOSmotor_Send_Step(uint8_t can_id) {
     /* 只处理本总线尚未调度的电机。 */
     if (obj->config.bsp_can_index != can_id)
       continue;
+    if (obj->config.tx_suspended && *obj->config.tx_suspended)
+      continue;
     if (obj->sent_this_tick)
       continue;
     obj->sent_this_tick = 1;

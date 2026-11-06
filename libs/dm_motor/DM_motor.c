@@ -149,8 +149,9 @@ uint8_t DMmotor_Send_Step(uint8_t can_id) {
     if (HAL_GetTick() - dm_enable_time[can_id] >= DM_ENABLE_RESEND_MS) {
         size_t total = 0;
         for (size_t i = 0; i < dm_motor_list->cv_len; i++) {
-            if ((*(DM_motor **)cvector_val_at(dm_motor_list, i))->config.bsp_can_index
-                == can_id) {
+            const DM_motor* obj = *(DM_motor **)cvector_val_at(dm_motor_list, i);
+            if (obj->config.bsp_can_index == can_id
+                && !(obj->config.tx_suspended && *obj->config.tx_suspended)) {
                 total++;
             }
         }
@@ -160,6 +161,7 @@ uint8_t DMmotor_Send_Step(uint8_t can_id) {
             for (size_t i = 0; i < dm_motor_list->cv_len; i++) {
                 DM_motor *obj = *(DM_motor **)cvector_val_at(dm_motor_list, i);
                 if (obj->config.bsp_can_index != can_id) continue;
+                if (obj->config.tx_suspended && *obj->config.tx_suspended) continue;
                 if (k == dm_enable_next[can_id]) {
                     DMmotor_Enable(obj);
                     break;
@@ -176,6 +178,7 @@ uint8_t DMmotor_Send_Step(uint8_t can_id) {
     for (size_t i = 0; i < dm_motor_list->cv_len; i++) {
         DM_motor *obj = *(DM_motor **)cvector_val_at(dm_motor_list, i);
         if (obj->config.bsp_can_index != can_id) continue;
+        if (obj->config.tx_suspended && *obj->config.tx_suspended) continue;
         if (obj->sent_this_tick) continue;
         obj->sent_this_tick = 1;
 

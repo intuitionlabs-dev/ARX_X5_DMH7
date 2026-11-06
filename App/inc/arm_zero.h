@@ -26,7 +26,9 @@ typedef struct {
     uint8_t disable_confirmed;
 } Arm_zero;
 
-/* MotorTask 每毫秒推进一次；忙时暂停该臂常规发送。 */
+/* MotorTask 每毫秒推进一次；仅夹爪设零时保留其余关节的控制发送。 */
 void Arm_Zero_Loop(Gimbal* g);
 /* 查询设零请求或执行流程是否占用该臂。 */
 uint8_t Arm_Zero_Busy(Gimbal* g);
+/* 查询待处理或执行中的请求是否只选择夹爪。 */
+uint8_t Arm_Zero_Gripper_Only(Gimbal* g);
