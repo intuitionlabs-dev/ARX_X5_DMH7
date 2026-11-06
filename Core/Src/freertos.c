@@ -326,8 +326,6 @@ void StartMotorTask(void *argument)
             uint8_t sent = 0U;
             for (bus = 0U; bus < (uint8_t)ARM_NUM; bus++) {
 
-                if (Arm_Zero_Busy(g_arm[bus].gimbal)
-                    && !Arm_Zero_Gripper_Only(g_arm[bus].gimbal)) continue;
                 if (Arm_Motors_Send_Step(ARM_BINDINGS[bus].can_index)) { sent = 1U; }
             }
             if (!sent) break;

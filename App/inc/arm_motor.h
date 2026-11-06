@@ -19,6 +19,8 @@ typedef struct {
     int (*zero_poll)(Arm_motor*, uint32_t now);
     int (*validate)(const Arm_motor_config*);
     uint8_t shared_rx_id;
+    /* 必选回调：更新驱动实例的发送门控，不影响直接维护命令。 */
+    void (*suspend_tx)(Arm_motor*, uint8_t suspended);
 } Arm_motor_driver;
 
 /* 配置驱动型号、总线标识、编码量程和控制参数。 */
@@ -41,8 +43,6 @@ struct Arm_motor {
     void* context;
     controller* control;
     monitor_item* monitor;
-    /* 设零任务独占该电机的发送，禁止常规控制和周期使能。 */
-    uint8_t tx_suspended;
     uint32_t zero_sent_ms;
     float zero_before;
     uint8_t zero_stage;

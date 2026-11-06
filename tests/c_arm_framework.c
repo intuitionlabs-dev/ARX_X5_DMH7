@@ -16,6 +16,7 @@ static uint32_t clock_ms;
 static unsigned create_count, disabled_count, zero_count;
 static unsigned disabled_mask, stopped_mask;
 static uint8_t last_enabled[ARM_NUM*ARM_MOTOR_NUM], wait_for_disable;
+static uint8_t suspended[ARM_NUM*ARM_MOTOR_NUM];
 static int poll_result = 1;
 static float last_kp[ARM_NUM*ARM_MOTOR_NUM], last_kd[ARM_NUM*ARM_MOTOR_NUM];
 uint32_t HAL_GetTick(void) { return clock_ms; }
@@ -54,8 +55,12 @@ static int zero_start(Arm_motor* m, uint32_t now) {
     (void)now; m->control->fdb_position = 0; ++zero_count; return 1;
 }
 static int zero_poll(Arm_motor* m, uint32_t now) { (void)m; (void)now; return poll_result; }
+static void suspend_tx(Arm_motor* m, uint8_t value) {
+    suspended[(unsigned)(uintptr_t)m->context] = !!value;
+}
 static const Arm_motor_driver driver = { // NOLINT(readability-identifier-naming)
     create, mode, position, temperature, disable, stopped, zero_start, zero_poll,
+    .suspend_tx = suspend_tx,
 };
 
 int main(void) {
@@ -84,6 +89,11 @@ int main(void) {
         .stop_on_motor_lost=1, .initialize=Arm_Initialize_Hold,
         .rc_joint={-1,-1,-1}};
     CHECK(Arm_Profile_Validate(&profile));
+    Arm_motor_driver missing_gate = driver;
+    missing_gate.suspend_tx = NULL;
+    motors[0].driver = &missing_gate;
+    CHECK(!Arm_Profile_Validate(&profile));
+    motors[0].driver = &driver;
     float* motion_limits[] = {&joints[0].max_velocity_deg_s,
         &joints[0].max_acceleration_deg_s2, &joints[0].max_jerk_deg_s3};
     const float invalid_limits[] = {0, -1, NAN, INFINITY};
@@ -183,7 +193,36 @@ int main(void) {
     CHECK(g->zero.result[GRIPPER] == ARM_ZERO_RES_SKIP);
     CHECK(g_arm[1].gimbal->zero.state == ARM_ZERO_IDLE);
     CHECK(disabled_count >= ARM_MOTOR_NUM);
-    CHECK(disabled_mask == (1u << ARM_MOTOR_NUM)-1);
+    CHECK(disabled_mask == (1u << ARM_JOINT_NUM)-1);
+
+    /* Every explicit subset, including empty, mixed and all motors, uses its own flags. */
+    for (unsigned selected=0; selected<(1u << ARM_MOTOR_NUM); ++selected) {
+        memset(&g->zero, 0, sizeof(g->zero));
+        disabled_mask = stopped_mask = 0;
+        g->zero.selection_valid = 1;
+        for (unsigned i=0; i<ARM_MOTOR_NUM; ++i)
+            g->zero.selection[i] = selected & (1u << i) ? 3 : 0;
+        g->zero.request = 1;
+        Gimbal_Update(g);
+        CHECK(g->arm_mode == arm_run);
+        for (unsigned i=0; i<ARM_MOTOR_NUM; ++i)
+            CHECK(last_enabled[i] == !(selected & (1u << i)));
+        Arm_Zero_Loop(g);
+        for (unsigned i=0; i<ARM_MOTOR_NUM; ++i)
+            CHECK(suspended[i] == !!(selected & (1u << i)));
+        for (int tick=0; tick<100 && Arm_Zero_Busy(g); ++tick, ++clock_ms) {
+            Gimbal_Update(g);
+            for (unsigned i=0; i<ARM_MOTOR_NUM; ++i)
+                CHECK(last_enabled[i] == !(selected & (1u << i)));
+            Arm_Zero_Loop(g);
+        }
+        CHECK(g->zero.state == ARM_ZERO_DONE && disabled_mask == selected && stopped_mask == selected);
+        Gimbal_Update(g);
+        for (unsigned i=0; i<ARM_MOTOR_NUM; ++i) {
+            CHECK(!suspended[i] && last_enabled[i]);
+            CHECK(g->zero.result[i] == (selected & (1u << i) ? ARM_ZERO_RES_OK : ARM_ZERO_RES_SKIP));
+        }
+    }
 
     /* Cover pending requests, retries, success, driver failure and both timeouts. */
     profile.dynamics = &dynamics;
@@ -197,7 +236,7 @@ int main(void) {
         g->zero.request = 1;
         g->arm_control_data.mode = arm_run;
         Gimbal_Update(g);
-        CHECK(Arm_Zero_Gripper_Only(g) && g->arm_mode == arm_run);
+        CHECK(Arm_Zero_Motor_Busy(g, GRIPPER) && g->arm_mode == arm_run);
         CHECK(!last_enabled[GRIPPER]);
         for (int i=0; i<ARM_JOINT_NUM; ++i) {
             CHECK(last_enabled[i]);
@@ -207,8 +246,8 @@ int main(void) {
         CHECK(fabsf(g->tau_comp[0]) > 1);
         Arm_Zero_Loop(g);
         CHECK(disabled_mask == 1u << GRIPPER);
-        CHECK(g->motors[GRIPPER].tx_suspended);
-        for (int i=0; i<ARM_JOINT_NUM; ++i) CHECK(!g->motors[i].tx_suspended);
+        CHECK(suspended[GRIPPER]);
+        for (int i=0; i<ARM_JOINT_NUM; ++i) CHECK(!suspended[i]);
         clock_ms += profile.init.zero_disable_retry_ms;
         Arm_Zero_Loop(g);
         CHECK(stopped_mask == 1u << GRIPPER && disabled_mask == 1u << GRIPPER);
@@ -222,8 +261,8 @@ int main(void) {
         CHECK(g->zero.state == (outcome ? ARM_ZERO_TIMEOUT : ARM_ZERO_DONE));
         CHECK(g->zero.result[GRIPPER] == (outcome == 0 ? ARM_ZERO_RES_OK
             : outcome == 1 ? ARM_ZERO_RES_FAIL : ARM_ZERO_RES_TIMEOUT));
-        CHECK(disabled_mask == 1u << GRIPPER && !Arm_Zero_Gripper_Only(g));
-        for (int i=0; i<ARM_MOTOR_NUM; ++i) CHECK(!g->motors[i].tx_suspended);
+        CHECK(disabled_mask == 1u << GRIPPER && !Arm_Zero_Busy(g));
+        for (int i=0; i<ARM_MOTOR_NUM; ++i) CHECK(!suspended[i]);
         Gimbal_Update(g);
         CHECK(g->arm_mode == arm_run && last_enabled[GRIPPER]);
     }

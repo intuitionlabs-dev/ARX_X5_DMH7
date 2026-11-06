@@ -9,27 +9,20 @@ uint8_t Arm_Zero_Busy(Gimbal* g) {
         && g->zero.state <= ARM_ZERO_CHECK));
 }
 
-/* 请求发布后及执行期间使用同一选择范围，避免夹爪设零瞬间停止整臂。 */
-uint8_t Arm_Zero_Gripper_Only(Gimbal* g) {
-    if (!g) return 0;
-    const uint8_t* selected;
+/* 逐电机读取选择标志，不根据电机组合推断设零范围。 */
+uint8_t Arm_Zero_Motor_Busy(const Gimbal* g, uint8_t index) {
+    if (!g || index >= ARM_MOTOR_NUM) return 0;
     if (g->zero.state >= ARM_ZERO_DISABLE && g->zero.state <= ARM_ZERO_CHECK)
-        selected = g->zero.participating;
-    else {
-        if (!g->zero.request) return 0;
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        if (!g->zero.selection_valid) return 0;
-        selected = g->zero.selection;
-    }
-    for (int i = 0; i < ARM_JOINT_NUM; ++i)
-        if (selected[i]) return 0;
-    return selected[GRIPPER] != 0;
+        return g->zero.participating[index];
+    if (!g->zero.request) return 0;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    return g->zero.selection_valid ? g->zero.selection[index] != 0 : index != GRIPPER;
 }
 
-/* 仅夹爪设零只失能夹爪；关节设零仍停止整臂。 */
+/* 仅向本轮参与设零的电机发送失能命令。 */
 static void zero_disable(Gimbal* g) {
     for (int i = 0; i < ARM_MOTOR_NUM; ++i)
-        if (g->motors[i].tx_suspended)
+        if (g->zero.participating[i])
             g->motors[i].config->driver->disable(&g->motors[i]);
 }
 
@@ -47,7 +40,9 @@ static void zero_finish(Gimbal* g, uint32_t now, uint8_t failed) {
     }
     g->zero.elapsed_ms = now-g->zero.start_ms;
     g->zero.state = failed ? ARM_ZERO_TIMEOUT : ARM_ZERO_DONE;
-    for (int i = 0; i < ARM_MOTOR_NUM; ++i) g->motors[i].tx_suspended = 0;
+    for (int i = 0; i < ARM_MOTOR_NUM; ++i)
+        if (g->zero.participating[i])
+            g->motors[i].config->driver->suspend_tx(&g->motors[i], 0);
 }
 
 /* 跳过未参与电机并推进设零步骤。 */
@@ -74,8 +69,10 @@ void Arm_Zero_Loop(Gimbal* g) {
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
         /* 根据选择表生成参与标志和初始结果。 */
         for (int i = 0; i < ARM_MOTOR_NUM; ++i) {
-            g->zero.participating[i] = g->zero.selection_valid ? g->zero.selection[i] : i != GRIPPER;
+            g->zero.participating[i] = g->zero.selection_valid ? g->zero.selection[i] != 0 : i != GRIPPER;
             g->zero.result[i] = g->zero.participating[i] ? ARM_ZERO_RES_NONE : ARM_ZERO_RES_SKIP;
+            if (g->zero.participating[i])
+                g->motors[i].config->driver->suspend_tx(&g->motors[i], 1);
         }
         g->zero.start_ms = g->zero.phase_ms = g->zero.retry_ms = now;
         g->zero.index = 0;
@@ -86,15 +83,12 @@ void Arm_Zero_Loop(Gimbal* g) {
         g->zero.request = 0;
         g->zero.selection_valid = 0;
         memset(g->zero.selection, 0, sizeof(g->zero.selection));
-        const uint8_t gripper_only = Arm_Zero_Gripper_Only(g);
-        for (int i = 0; i < ARM_MOTOR_NUM; ++i)
-            g->motors[i].tx_suspended = !gripper_only || i == GRIPPER;
         zero_disable(g);
         return;
     }
     /* 仅为暂停控制发送的电机维持在线计数，其余关节继续接受掉线保护。 */
     for (int i = 0; i < ARM_MOTOR_NUM; ++i)
-        if (g->motors[i].tx_suspended) g->motors[i].monitor->reset(g->motors[i].monitor);
+        if (g->zero.participating[i]) g->motors[i].monitor->reset(g->motors[i].monitor);
     /* 总耗时超过配置时限后结束设零。 */
     if (now-g->zero.start_ms >= g->profile->init.zero_total_ms) {
         zero_finish(g, now, 1);
@@ -106,7 +100,7 @@ void Arm_Zero_Loop(Gimbal* g) {
         /* 逐电机检查停止状态。 */
         for (int i = 0; i < ARM_MOTOR_NUM; ++i)
             /* 任一电机仍在运行时继续等待。 */
-            if (g->motors[i].tx_suspended
+            if (g->zero.participating[i]
                 && !g->motors[i].config->driver->stopped(&g->motors[i], now)) stopped = 0;
         /* 全部失能确认后进入逐电机设零。 */
         if (stopped) {

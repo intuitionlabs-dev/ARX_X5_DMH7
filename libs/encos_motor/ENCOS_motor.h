@@ -28,8 +28,6 @@ typedef struct encos_motor_config_t {
     ENCOS_output_mode output_mode;
     /* 配置控制帧发送相位，0 使用 CAN_TX_GROUP_ALL。 */
     uint8_t tx_group;
-    /* 可选发送门控；维护命令不受影响。 */
-    const uint8_t *tx_suspended;
     ENCOS_Ranges ranges;
     float torque_constant; /* Nm/A; 0 = unknown, estimated torque is invalid */
     float position_offset; /* rad; host coordinate = motor position + offset */
@@ -40,6 +38,8 @@ typedef struct encos_motor_config_t {
 typedef struct encos_motor_t {
     ENCOS_motor_config config;
     ENCOS_enable enable; /* 应用唯一要写的使能入口：encos_enable / encos_stop */
+    /* 非零时暂停常规发送；维护命令不受影响。 */
+    uint8_t tx_suspended;
     uint8_t enable_cleared; /* 驱动内部记录本次使能是否已清空控制器。 */
     uint8_t update;
     uint8_t rx_data[8], rx_len, errcode;

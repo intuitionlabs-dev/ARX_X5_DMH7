@@ -69,7 +69,7 @@ static void apply_motor_mode(Gimbal* obj, Arm_mode mode) {
         const float kd = mode == arm_damping ? config->damping_kd
             : passive ? 0 : config->kd;
         config->driver->mode(motor, mode != arm_stop
-            && !(i == GRIPPER && Arm_Zero_Busy(obj)), kp, kd);
+            && !Arm_Zero_Motor_Busy(obj, i), kp, kd);
     }
 }
 
@@ -175,11 +175,6 @@ void Gimbal_Update(Gimbal* obj) {
     /* 模式值超出有效范围时进入停止模式。 */
     if ((unsigned)obj->arm_mode > arm_only_gravity_comp) obj->arm_mode = arm_stop;
     get_feedback(obj);
-    /* 仅夹爪设零时，其余关节继续保持参考位置和动力学补偿。 */
-    /* 原子读取忙状态和范围，防止 MotorTask 在两次查询之间完成设零。 */
-    const uint32_t zero_mask = Arm_Motors_Lock();
-    if (Arm_Zero_Busy(obj) && !Arm_Zero_Gripper_Only(obj)) obj->arm_mode = arm_stop;
-    Arm_Motors_Unlock(zero_mask);
     dynamics_update(obj);
     /* 在临界区内同步发布电机参考值和模式。 */
     const uint32_t interrupt_mask = Arm_Motors_Lock();

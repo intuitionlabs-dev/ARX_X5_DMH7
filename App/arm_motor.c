@@ -54,8 +54,7 @@ static int dm_create(Arm_motor* motor, const Arm_motor_config* cfg, uint8_t bus)
         .can_rx_id = (uint8_t)cfg->rx_id, .motor_controller_config = control_config(cfg),
         .pos_fdb_calc = dm_position, .speed_fdb_calc = dm_feedback_speed, .arg = motor,
         .lost_callback_ = motor_lost, .control_mode = dm_mit,
-        .tx_group = cfg->tx_group, .tx_suspended = &motor->tx_suspended,
-        .max_position = cfg->position_max,
+        .tx_group = cfg->tx_group, .max_position = cfg->position_max,
         .max_speed = cfg->speed_max, .max_torque = cfg->torque_max,
         .max_kp = cfg->kp_max, .max_kd = cfg->kd_max,
     };
@@ -71,9 +70,14 @@ static int dm_create(Arm_motor* motor, const Arm_motor_config* cfg, uint8_t bus)
 /* 设置 DM 使能状态和 MIT 增益。 */
 static void dm_mode(Arm_motor* motor, uint8_t enabled, float kp, float kd) {
     DM_motor* dm = motor->context;
-    dm->enable = enabled ? dm_enable : dm_stop;
+    dm->enable = enabled && !dm->tx_suspended ? dm_enable : dm_stop;
     dm->kp = kp;
     dm->kd = kd;
+}
+
+/* 更新 DM 实例的发送门控。 */
+static void dm_suspend_tx(Arm_motor* motor, uint8_t suspended) {
+    ((DM_motor*)motor->context)->tx_suspended = !!suspended;
 }
 
 /* 提供 rad 单位的 DM 位置反馈。 */
@@ -143,8 +147,7 @@ static int encos_create(Arm_motor* motor, const Arm_motor_config* cfg, uint8_t b
     ENCOS_motor_config config = {
         .bsp_can_index = bus, .can_tx_id = cfg->tx_id, .can_rx_id = cfg->rx_id,
         .motor_controller_config = control_config(cfg), .lost_callback_ = motor_lost,
-        .tx_group = cfg->tx_group, .tx_suspended = &motor->tx_suspended,
-        .torque_constant = cfg->torque_constant,
+        .tx_group = cfg->tx_group, .torque_constant = cfg->torque_constant,
         .feedback_timeout_ms = 100,
         /* 配置各 MIT 字段的编码上下界。 */
         .ranges = {.kp={0,cfg->kp_max}, .kd={0,cfg->kd_max},
@@ -167,9 +170,14 @@ static void encos_mode(Arm_motor* motor, uint8_t enabled, float kp, float kd) {
     ENCOS_motor* encos = motor->context;
     encos->config.motor_controller_config.position_pid_config = motor->control->pid_pos_data.config;
     encos->config.motor_controller_config.speed_pid_config = motor->control->pid_speed_data.config;
-    encos->enable = enabled ? encos_enable : encos_stop;
+    encos->enable = enabled && !encos->tx_suspended ? encos_enable : encos_stop;
     encos->kp = kp;
     encos->kd = kd;
+}
+
+/* 更新 ENCOS 实例的发送门控。 */
+static void encos_suspend_tx(Arm_motor* motor, uint8_t suspended) {
+    ((ENCOS_motor*)motor->context)->tx_suspended = !!suspended;
 }
 
 /* 读取 ENCOS 多圈位置反馈，单位 rad。 */
@@ -232,12 +240,12 @@ static int encos_validate(const Arm_motor_config* cfg) {
 /* 登记 DM 驱动操作及反馈 ID 共享能力。 */
 const Arm_motor_driver ARM_DRIVER_DM = {
     dm_create, dm_mode, dm_position_rad, dm_temperature, dm_disable,
-    dm_stopped, dm_zero_start, dm_zero_poll, dm_validate, 1,
+    dm_stopped, dm_zero_start, dm_zero_poll, dm_validate, 1, dm_suspend_tx,
 };
 /* 登记 ENCOS 驱动操作及独立反馈 ID 约束。 */
 const Arm_motor_driver ARM_DRIVER_ENCOS = {
     encos_create, encos_mode, encos_position_rad, encos_temperature, encos_disable,
-    encos_stopped, encos_zero_start, encos_zero_poll, encos_validate, 0,
+    encos_stopped, encos_zero_start, encos_zero_poll, encos_validate, 0, encos_suspend_tx,
 };
 
 /* 保存中断屏蔽状态并进入参考值发布临界区。 */

@@ -225,8 +225,7 @@ EXPORT void x5_gripper_zero_traffic(unsigned* out) {
         if (!Arm_Zero_Busy(x5)) break;
         Arm_Motors_Send_Begin();
         for (unsigned round=0; round<CAN_TX_MAX_FRAMES_PER_TICK; ++round)
-            if (!(Arm_Zero_Busy(x5) && !Arm_Zero_Gripper_Only(x5)))
-                Arm_Motors_Send_Step(2);
+            Arm_Motors_Send_Step(2);
         for (unsigned i=0; i<ARM_JOINT_NUM; ++i) {
             const Arm_motor* m = &x5->motors[i];
             const uint8_t enabled = i < 3 ? ((ENCOS_motor*)m->context)->enable == encos_enable

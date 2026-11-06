@@ -68,7 +68,7 @@ int Arm_Profile_Validate(const Arm_profile* profile) {
         /* 检查必要驱动回调、发送相位及增益范围。 */
         if (!driver || !driver->create || !driver->mode || !driver->position_rad
             || !driver->temperature || !driver->disable || !driver->stopped
-            || !driver->zero_start || !driver->zero_poll || !motor->tx_group
+            || !driver->zero_start || !driver->zero_poll || !driver->suspend_tx || !motor->tx_group
             || !finite_values(ranges, sizeof(ranges)/sizeof(ranges[0]))
             || motor->position_max <= 0 || motor->speed_max <= 0 || motor->torque_max <= 0
             || motor->kp_max <= 0 || motor->kd_max <= 0 || motor->kp < 0 || motor->kd < 0
