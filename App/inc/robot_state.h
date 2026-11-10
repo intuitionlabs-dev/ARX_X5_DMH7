@@ -43,12 +43,10 @@ typedef enum {
     ROBOT_STATE_NUM, // NOLINT(readability-identifier-naming)
 } Robot_state;
 
-/* 保存已校验的协议位置、速度及夹爪目标。 */
+/* 保存已校验的协议位置及夹爪目标。 */
 typedef struct {
     uint8_t valid;
-    uint8_t has_vel;
     float joint_angle[ARM_JOINT_NUM];
-    float joint_vel[ARM_JOINT_NUM];
     float gripper_angle;
 } Robot_ctrl_cmd;
 
@@ -62,7 +60,6 @@ typedef union {
     FramePktVersion version;
     FramePktMotorSetZeroAck motor_set_zero_ack;
     FramePktArmCtrlPos arm_ctrl_pos;
-    FramePktArmCtrlPosVel arm_ctrl_pos_vel;
 } Robot_rx_payload;
 
 /* 保存单条待处理报文的类型、长度和载荷。 */

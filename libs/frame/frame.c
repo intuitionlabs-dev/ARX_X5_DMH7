@@ -21,11 +21,10 @@ _Static_assert(FRAME_ARM_ID_OFFSET < FRAME_HEADER_LEN,
 /* 各包的线上长度。这几个数写进注释里给上位机看了，编译器再核一遍。 */
 _Static_assert(sizeof(FramePktMotorSetZeroAck) == 12U, "电机设置零点回复包不是 12 字节");
 _Static_assert(sizeof(FramePktArmCtrlPos) == 28U, "控制包(角度+夹爪)不是 28 字节");
-_Static_assert(sizeof(FramePktArmCtrlPosVel) == 52U, "控制包(角度+角速度+夹爪)不是 52 字节");
 /* 反馈帧是 250 Hz 常流里最长的一包，63 是协议承诺给上位机的数（两端按这个预留
  * 缓冲），改结构体就得同步改协议文档，不能让它在编译期悄悄漂移。 */
 _Static_assert(sizeof(FramePktArmFeedback) == 63U, "机械臂反馈帧不是 63 字节");
-_Static_assert(sizeof(FramePktLinkStatus) == 88U, "链路状态包不是 88 字节");
+_Static_assert(sizeof(FramePktLinkStatus) == 84U, "链路状态包不是 84 字节");
 /* 空包必须是 0 字节：线上 datalen 就靠它。sizeof 万一变成 1，空包会多带一个字节。 */
 _Static_assert(sizeof(FramePktEmpty) == 0U, "空包结构体不是 0 字节");
 
@@ -36,7 +35,6 @@ _Static_assert(_Alignof(FramePktEmpty) == 1U, "空包结构体不是 1 字节对
 _Static_assert(_Alignof(FramePktVersion) == 1U, "版本匹配包不是 1 字节对齐");
 _Static_assert(_Alignof(FramePktMotorSetZeroAck) == 1U, "设零回复包不是 1 字节对齐");
 _Static_assert(_Alignof(FramePktArmCtrlPos) == 1U, "控制包(角度+夹爪)不是 1 字节对齐");
-_Static_assert(_Alignof(FramePktArmCtrlPosVel) == 1U, "控制包(角度+角速度+夹爪)不是 1 字节对齐");
 _Static_assert(_Alignof(FramePktArmReset) == 1U, "一键复位包不是 1 字节对齐");
 /* 反馈帧里有 4 个 uint8_t 开头，4 字节之后紧跟 float[6] —— 要是没压成 1 对齐，
  * 编译器会在那 4 个字节后面插 0 字节填充看着没事，但整个包会变成 64 字节。 */

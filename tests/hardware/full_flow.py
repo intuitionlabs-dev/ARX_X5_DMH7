@@ -131,27 +131,6 @@ class FullFlow:
 
         self.begin("position_return", index)
         self.hold(1.2, lambda: command(origin))
-        self.begin("position_velocity_negative_2deg", index)
-        start = time.monotonic()
-        while time.monotonic()-start < 1.2:
-            self.monitor()
-            t = min(1.0, time.monotonic()-start)
-            blend = 10*t**3-15*t**4+6*t**5
-            slope = 30*t*t-60*t**3+30*t**4 if t < 1 else 0
-            target = origin.copy()
-            target[0] -= 2*blend
-            velocity = [-2*slope, 0, 0, 0, 0, 0]
-            arm.send_ctrl_pos_vel(tuple(map(math.radians, target)), tuple(map(math.radians, velocity)),
-                                  gripper_raw_deg=gripper)
-            time.sleep(.01)
-        self.hold(.5, lambda: arm.send_ctrl_pos_vel(tuple(map(math.radians, target)), (0,)*6,
-                                                   gripper_raw_deg=gripper))
-        actual = arm.snapshot().joint_angles_deg
-        error = max(abs(a-b) for a, b in zip(actual, target))
-        if error > 1.5:
-            raise RuntimeError(f"arm {index}: position/velocity tracking error {error:.3f} degrees")
-        self.report["arms"][-1]["position_velocity_error_deg"] = error
-
         self.begin("return_before_modes", index)
         self.hold(1.2, lambda: command(origin))
         joint_errors = []

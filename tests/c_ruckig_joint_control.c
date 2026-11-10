@@ -49,6 +49,7 @@ void __wrap_free(void* memory) {
 }
 
 rc_t rc;
+static Edge_trigger_continuous rc_left, rc_right;
 static uint8_t rc_offline = 1;
 uint8_t is_Offline(monitor_item* item) { (void)item; return rc_offline; }
 const Robot_ctrl_cmd* Robot_State_Ctrl(const Arm* arm) { return &arm->ctrl; }
@@ -182,38 +183,8 @@ static void short_position_move(void) {
 
 static void source_transitions(void) {
     Fixture f; init(&f);
-    /* 外部速度通道使用连续位置参考及协议速度前馈。 */
-    f.arm.ctrl.valid = f.arm.ctrl.has_vel = 1;
-    for (int i=0; i<ARM_JOINT_NUM; ++i) {
-        f.arm.ctrl.joint_vel[i] = 15;
-        f.cmd->joint_ruckig_ref[i].state = (ruckig_c_state){20, 0, 0};
-        f.cmd->joint_ruckig_ref[i].initialized = 1;
-        f.cmd->ctrl_src.joint_angle_solved[i] = 40;
-    }
-    const unsigned calculations_before = new_calculations;
-    for (int k=0; k<100; ++k) reference_step(&f);
-    assert(new_calculations == calculations_before+ARM_JOINT_NUM);
-    for (int i=0; i<ARM_JOINT_NUM; ++i) {
-        assert(f.gimbal.arm_control_data.joint_angle[i] > 20);
-        assert(f.gimbal.arm_control_data.joint_angle[i] < 40);
-        assert(f.gimbal.arm_control_data.joint_vel[i] == 15);
-        assert(f.gimbal.arm_control_data.joint_acc[i] == 0);
-    }
-    /* 外部速度变化保持位置轨迹缓存有效。 */
-    const unsigned calculations_after = new_calculations;
-    for (int i=0; i<ARM_JOINT_NUM; ++i) f.arm.ctrl.joint_vel[i] = 20;
-    reference_step(&f);
-    assert(new_calculations == calculations_after);
-    assert(f.gimbal.arm_control_data.joint_vel[0] == 20);
-    const float previous_position = f.gimbal.arm_control_data.joint_angle[0];
-    f.arm.ctrl.has_vel = 0;
-    reference_step(&f);
-    assert(f.gimbal.arm_control_data.joint_angle[0] > previous_position);
-    assert(fabsf(f.gimbal.arm_control_data.joint_vel[0]-20) <= 360*ARM_CONTROL_PERIOD_S);
-    assert(fabsf(f.gimbal.arm_control_data.joint_acc[0]) <= 3600*ARM_CONTROL_PERIOD_S+1e-4f);
     /* 规划参考逐周期同步到 Ruckig，速度使用机型比例系数。 */
     f.cmd->plan_running = 1;
-    f.arm.ctrl.has_vel = 1;
     const unsigned calls_before_plan = update_calls;
     for (int k=0; k<5; ++k) {
         for (int i=0; i<ARM_JOINT_NUM; ++i) {
@@ -223,7 +194,7 @@ static void source_transitions(void) {
             f.joints[i].plan_velocity_scale = 2;
         }
         reference_step(&f);
-        assert(f.cmd->mode == arm_run && !f.cmd->external_velocity_active);
+        assert(f.cmd->mode == arm_run);
         assert(update_calls == calls_before_plan);
         for (int i=0; i<ARM_JOINT_NUM; ++i) {
             const ruckig_c_state state = f.cmd->joint_ruckig_ref[i].state;
@@ -235,7 +206,6 @@ static void source_transitions(void) {
             assert(state.acceleration == f.gimbal.arm_control_data.joint_acc[i]);
         }
     }
-    f.arm.ctrl.has_vel = 0;
     f.cmd->plan_running = 0;
     const unsigned calculations_before_resume = new_calculations;
     constrained_step(&f);
@@ -288,11 +258,6 @@ static void post_process_and_publication(void) {
 
 static void invalid_source_references(void) {
     Fixture f; init(&f);
-    f.arm.ctrl.valid = f.arm.ctrl.has_vel = 1;
-    f.arm.ctrl.joint_vel[ARM_JOINT_NUM-1] = NAN;
-    reference_step(&f);
-    assert(f.cmd->mode == arm_damping);
-    assert(!f.cmd->external_velocity_active);
     f.cmd->mode = arm_run;
     f.cmd->plan_running = 1;
     f.cmd->plan_joint_acc[ARM_JOINT_NUM-1] = INFINITY;
@@ -332,6 +297,9 @@ static void errors_and_rc(void) {
     constrained_step(&f);
     /* The RC position path also reaches Ruckig through the existing limits. */
     rc_offline = 0;
+    rc.trig.rx_left = &rc_left;
+    rc.trig.rx_right = &rc_right;
+    rc_left.flag = 1;
     rc.sw_a = 1; rc.rx = 1;
     for (int k=0; k<300; ++k) {
         Run_Mode_Update(f.cmd);

@@ -25,7 +25,6 @@ typedef uint8_t FrameTypeId;
 #define FRAME_TYPE_ID_ARM_STOP 0x14U           /* 机械臂停止包 · 下发 */
 #define FRAME_TYPE_ID_ARM_DAMPING 0x15U        /* 机械臂阻尼包 · 下发 */
 #define FRAME_TYPE_ID_ARM_CTRL_POS 0x16U       /* 机械臂控制包(角度+夹爪) · 下发 */
-#define FRAME_TYPE_ID_ARM_CTRL_POS_VEL 0x17U   /* 机械臂控制包(角度+角速度+夹爪) · 下发 */
 #define FRAME_TYPE_ID_ARM_RESET 0x18U          /* 一键复位命令包 · 下发 */
 #define FRAME_TYPE_ID_ARM_FEEDBACK 0x80U       /* 机械臂反馈帧 · 上报 */
 #define FRAME_TYPE_ID_LINK_STATUS 0x81U        /* 链路状态包 · 上报 */
@@ -35,10 +34,10 @@ typedef uint8_t FrameTypeId;
   FRAME_TYPE_ID_VERSION, FRAME_TYPE_ID_ARM_INIT, FRAME_TYPE_ID_MOTOR_SET_ZERO, \
       FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK, FRAME_TYPE_ID_ARM_START,               \
       FRAME_TYPE_ID_ARM_GRAVITY, FRAME_TYPE_ID_ARM_STOP, FRAME_TYPE_ID_ARM_DAMPING, \
-      FRAME_TYPE_ID_ARM_CTRL_POS, FRAME_TYPE_ID_ARM_CTRL_POS_VEL,              \
+      FRAME_TYPE_ID_ARM_CTRL_POS,              \
       FRAME_TYPE_ID_ARM_RESET
-#define FRAME_TID_DOWN_NUM 11U
-#define FRAME_TID_SLOT_NUM 12U
+#define FRAME_TID_DOWN_NUM 10U
+#define FRAME_TID_SLOT_NUM 11U
 
 /* 载荷使用 1 字节对齐，确保偏移 6 的多字节字段可安全访问。 */
 #pragma pack(push, 1)
@@ -82,13 +81,6 @@ typedef struct {
   float joint_angle[FRAME_PKT_JOINT_NUM];
   float gripper_angle;
 } FramePktArmCtrlPos;
-
-/* 位置速度载荷共 52 字节，角度单位为 deg，关节速度单位为 deg/s。 */
-typedef struct {
-  float joint_angle[FRAME_PKT_JOINT_NUM];
-  float joint_vel[FRAME_PKT_JOINT_NUM];
-  float gripper_angle;
-} FramePktArmCtrlPosVel;
 
 /* 空载荷关节复位请求；应用层检查入口条件并执行机型配置的复位动作。 */
 typedef FramePktEmpty FramePktArmReset;

@@ -3,26 +3,21 @@
 #include <string.h>
 
 /* 校验控制载荷并写入机械臂控制目标。 */
-int Arm_Protocol_Control(Arm* arm, const Robot_rx_payload* payload, uint8_t has_velocity) {
-    const float* position = has_velocity ? payload->arm_ctrl_pos_vel.joint_angle
-        : payload->arm_ctrl_pos.joint_angle;
-    const float* velocity = payload->arm_ctrl_pos_vel.joint_vel;
-    const float grip = has_velocity ? payload->arm_ctrl_pos_vel.gripper_angle
-        : payload->arm_ctrl_pos.gripper_angle;
+int Arm_Protocol_Control(Arm* arm, const Robot_rx_payload* payload) {
+    const float* position = payload->arm_ctrl_pos.joint_angle;
+    const float grip = payload->arm_ctrl_pos.gripper_angle;
     /* 夹爪目标为非有限值时拒绝报文。 */
     if (!isfinite(grip)) return 0;
-    /* 校验协议槽位内的关节位置和速度。 */
+    /* 校验协议槽位内的关节位置。 */
     for (int i = 0; i < ARM_JOINT_NUM && i < FRAME_PKT_JOINT_NUM; ++i)
         /* 关节目标无效时拒绝整条控制命令。 */
-        if (!isfinite(position[i]) || (has_velocity && !isfinite(velocity[i]))) return 0;
-    /* 按关节索引复制位置和可选速度目标。 */
+        if (!isfinite(position[i])) return 0;
+    /* 按关节索引复制位置目标。 */
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
         arm->ctrl.joint_angle[i] = i < FRAME_PKT_JOINT_NUM ? position[i]
             : arm->gimbal->arm_feedback_data.joint_angle[i];
-        arm->ctrl.joint_vel[i] = has_velocity && i < FRAME_PKT_JOINT_NUM ? velocity[i] : 0;
     }
     arm->ctrl.gripper_angle = grip;
-    arm->ctrl.has_vel = has_velocity;
     arm->ctrl.valid = 1;
     return 1;
 }

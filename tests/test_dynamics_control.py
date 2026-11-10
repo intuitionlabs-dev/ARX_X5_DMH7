@@ -52,17 +52,10 @@ class DynamicsControlTests(unittest.TestCase):
                          (30, 0, 0))
         self.assertEqual(system.arms[1].command.angle[0], 0)
 
-    def test_external_velocity_and_plan_handoff_preserve_state(self):
+    def test_plan_handoff_preserves_state(self):
         system = self.system(gravity_enabled=False)
         arm = system.arms[0]
-        system.step(0, commands=[Command(0, K.START), Command(0, K.POSITION_VELOCITY,
-                    (30, .5, .5, 0, 0, 0), 0, (20,) * 6)], motor_feedback=samples(0, 2))
-        self.assertEqual(arm.command.velocity, [20] * 6)
-        self.assertEqual(arm.command.acceleration, [0] * 6)
-        boundary = arm.command.quintic[0].current
-        system.step(2, commands=[Command(0, K.POSITION, (30, .5, .5, 0, 0, 0))],
-                    motor_feedback=samples(2, 2))
-        self.assertEqual(arm.command.quintic[0].curve.sample(0), boundary)
+        system.step(0, commands=[Command(0, K.START)], motor_feedback=samples(0, 2))
         arm.command.start_auto("reset")
         system.step(4, motor_feedback=samples(4, 2, positions=(20, 30, 45, 0, 0, 0, 0)))
         system.step(104, motor_feedback=samples(104, 2))
@@ -96,10 +89,11 @@ class DynamicsControlTests(unittest.TestCase):
                              reduction=(2,) * 6, viscous_damping=(.5,) * 6,
                              torque_scale=(3,) * 6)
         arm = system.arms[0]
-        system.step(0, commands=[Command(0, K.START), Command(0, K.POSITION_VELOCITY,
-                    (0, .5, .5, 0, 0, 0), 0, (12,) * 6)], motor_feedback=samples(0, 2))
-        for motor in arm.bank.motors[:6]:
-            self.assertAlmostEqual(motor.output_comp, -math.radians(12) * .5 * 3)
+        system.step(0, commands=[Command(0, K.START), Command(0, K.POSITION,
+                    (30, 30, 30, 30, 30, 30), 0)], motor_feedback=samples(0, 2))
+        for motor, velocity in zip(arm.bank.motors[:6], arm.command.velocity):
+            self.assertNotEqual(velocity, 0)
+            self.assertAlmostEqual(motor.output_comp, -math.radians(velocity) * .5 * 3)
 
     def test_passive_modes_and_failure_clear_compensation(self):
         system = self.system()

@@ -278,12 +278,6 @@ static void Ctrl_Post_Process(Gimbal_cmd* obj) {
     if (debug_arm) g_ruckig_active = 0;
     const uint8_t running = obj->mode == arm_run;
     const uint8_t use_ruckig = running && !obj->plan_running;
-    const Robot_ctrl_cmd* cmd = Robot_State_Ctrl(obj->arm);
-    const uint8_t use_external_velocity =
-        use_ruckig && !Rc_Online() && cmd != NULL && cmd->valid && cmd->has_vel;
-    const uint8_t previous_external_velocity = obj->external_velocity_active;
-    obj->external_velocity_active = use_external_velocity;
-
     if (!running) joint_post_process_follow(obj);
 
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
@@ -297,11 +291,6 @@ static void Ctrl_Post_Process(Gimbal_cmd* obj) {
             if (!ref->initialized) {
                 ref->state = (ruckig_c_state){obj->gimbal->arm_feedback_data.joint_angle[i], 0, 0};
                 ref->initialized = 1;
-                ruckig_c_reset(ref->planner);
-            } else if (previous_external_velocity && !use_external_velocity) {
-                /* 控制源切换以已发布的速度和加速度衔接轨迹。 */
-                ref->state.velocity = ref->external_velocity;
-                ref->state.acceleration = 0;
                 ruckig_c_reset(ref->planner);
             }
             const Arm_joint_config* config = &obj->gimbal->profile->joints[i];
@@ -323,11 +312,9 @@ static void Ctrl_Post_Process(Gimbal_cmd* obj) {
             }
             if (ref->status < 0) goto reference_failed;
             ref->state = output.state;
-            if (use_external_velocity) ref->external_velocity = cmd->joint_vel[i];
             obj->post_processed_joint_angle[i] = output.state.position;
-            obj->post_processed_joint_vel[i] = use_external_velocity
-                ? ref->external_velocity : output.state.velocity;
-            obj->post_processed_joint_acc[i] = use_external_velocity ? 0 : output.state.acceleration;
+            obj->post_processed_joint_vel[i] = output.state.velocity;
+            obj->post_processed_joint_acc[i] = output.state.acceleration;
         }
 
         if (!isfinite(obj->post_processed_joint_angle[i])
@@ -349,7 +336,6 @@ static void Ctrl_Post_Process(Gimbal_cmd* obj) {
 reference_failed:
     /* 整臂回到反馈位置并进入阻尼，所有轴清零运动导数。 */
     obj->mode = arm_damping;
-    obj->external_velocity_active = 0;
     joint_post_process_follow(obj);
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
         Joint_ruckig_ref* ref = &obj->joint_ruckig_ref[i];
@@ -359,7 +345,7 @@ reference_failed:
     }
 }
 
-/* 发布后处理阶段生成的关节参考和外部速度前馈。 */
+/* 发布后处理阶段生成的关节参考。 */
 static void Arm_Ref_Set(Gimbal_cmd* obj) {
     Arm_control_data* control = &obj->gimbal->arm_control_data;
     control->mode = obj->mode;

@@ -101,13 +101,10 @@ class SDKLinkTests(unittest.TestCase):
         a.start()
         self.advance(link, 8004)
         angles = (0.2, 0.3, 0.4, -0.1, 0.15, -0.2)
-        velocities = (0.01, 0.02, 0.03, -0.01, 0.02, -0.03)
-        self.assertEqual(a.send_ctrl_pos_vel(angles, velocities, gripper_raw_deg=-25), 60)
+        self.assertEqual(a.send_ctrl_pos(angles, gripper_raw_deg=-25), 36)
         self.advance(link, 8008)
         accepted = link.controller.arms[0].control
         for actual, want in zip(accepted.joint_angle, map(degrees, angles)):
-            self.assertAlmostEqual(actual, want, places=5)
-        for actual, want in zip(accepted.joint_velocity, map(degrees, velocities)):
             self.assertAlmostEqual(actual, want, places=5)
         self.assertEqual(accepted.gripper_angle, -25)
         self.assertIsNone(link.controller.arms[1].control)
@@ -184,8 +181,8 @@ class SDKLinkTests(unittest.TestCase):
         invalid = [(P.TID_VERSION, struct.pack("<I", 0)), (P.TID_VERSION, b""),
                    (P.TID_ARM_START, b"x"), (P.TID_ARM_CTRL_POS, b""),
                    (P.TID_ARM_CTRL_POS, struct.pack("<7f", float("nan"), *([0] * 6))),
-                   (P.TID_ARM_CTRL_POS_VEL, struct.pack("<13f", *([float("inf")] * 13))),
-                   (P.TID_ARM_FEEDBACK, b""), (255, b"")]
+                   (P.TID_ARM_CTRL_POS, struct.pack("<7f", *([float("inf")] * 7))),
+                   (P.TID_ARM_FEEDBACK, b""), (0x17, bytes(52)), (255, b"")]
         before = link.n_tx
         for tid, payload in invalid:
             with self.subTest(tid=tid, payload=payload), self.assertRaises(sdk.ProtocolError):

@@ -11,8 +11,8 @@
 /* 配置轮次周期，单位 ms；两路通信参数须一致。 */
 #define UART_LB_PERIOD_MS 10u
 
-/* 六类用例每两轮切换一次，覆盖两个传输方向。 */
-#define UART_LB_CASE_CNT 6u
+/* 五类用例每两轮切换一次，覆盖两个传输方向。 */
+#define UART_LB_CASE_CNT 5u
 
 /* 测试启用时提供观测变量及双向回环接口。 */
 #if TEST_UART_LOOPBACK_ENABLE
