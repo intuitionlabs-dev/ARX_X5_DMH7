@@ -4,6 +4,7 @@
 
 rc_t rc;
 static Robot_ctrl_cmd cmd;
+static Arm arm;
 static Gimbal gimbal;
 static Gimbal_cmd gimbal_cmd;
 static Arm_profile profile;
@@ -27,6 +28,7 @@ void reference_command_init(const float* feedback) { // NOLINT(readability-ident
     memset(&gimbal_cmd, 0, sizeof(gimbal_cmd));
     memset(&cmd, 0, sizeof(cmd));
     gimbal_cmd.gimbal = &gimbal;
+    gimbal_cmd.arm = &arm;
     gimbal.profile = &profile;
     profile.joints = joints;
     for (int i=0; i<ARM_JOINT_NUM; ++i) {
@@ -42,16 +44,14 @@ void reference_command_init(const float* feedback) { // NOLINT(readability-ident
 }
 
 __attribute__((visibility("default")))
-void reference_command_step(int mode, int planning, int external_velocity, // NOLINT(readability-identifier-naming)
+void reference_command_step(int mode, int planning, // NOLINT(readability-identifier-naming)
     const float* target, const float* velocity, const float* acc, float* output) {
     gimbal_cmd.mode = mode;
     gimbal_cmd.plan_running = planning;
-    cmd.valid = cmd.has_vel = external_velocity;
     for (int i = 0; i < 6; ++i) {
         gimbal_cmd.ctrl_src.joint_angle_solved[i] = target[i];
         gimbal_cmd.plan_joint_vel[i] = velocity[i];
         gimbal_cmd.plan_joint_acc[i] = acc[i];
-        cmd.joint_vel[i] = velocity[i];
     }
     Ctrl_Post_Process(&gimbal_cmd);
     Arm_Ref_Set(&gimbal_cmd);

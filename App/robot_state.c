@@ -75,7 +75,7 @@ static uint8_t Tid_Index(uint8_t tid) { // NOLINT(readability-identifier-naming)
 
 _Static_assert(sizeof(FramePktArmFeedback) == 63U, "反馈帧不是 63 字节");
 
-_Static_assert(ROBOT_RX_DATA_LEN >= sizeof(FramePktArmCtrlPosVel), "环槽放不下 0x17 包");
+_Static_assert(ROBOT_RX_DATA_LEN >= sizeof(FramePktArmCtrlPos), "环槽容量不足以存放位置控制载荷");
 _Static_assert(ROBOT_RX_DATA_LEN >= sizeof(FramePktMotorSetZeroAck), "环槽放不下 0x11 包");
 
 /* 编码报文并写入共享发送环形队列。 */
@@ -192,10 +192,9 @@ static void Robot_State_OnRx(uint8_t id, const uint8_t* data, uint16_t len) { //
     }
 }
 
-/* 清除协议目标及速度目标的有效标志。 */
+/* 清除协议目标的有效标志。 */
 static void Ctrl_Invalidate(Arm* arm) { // NOLINT(readability-identifier-naming)
     arm->ctrl.valid = 0U;
-    arm->ctrl.has_vel = 0U;
 }
 
 /* 执行状态退出处理并设置目标状态的控制模式。 */
@@ -427,7 +426,7 @@ static void HandleModeSwitch(Arm* arm, uint8_t type_id) { // NOLINT(readability-
 }
 
 /* 校验正常运行状态下的关节控制载荷。 */
-static void HandleCtrl(Arm* arm, const Robot_rx_payload* pl, uint8_t len, uint8_t has_vel) { // NOLINT(readability-identifier-naming)
+static void HandleCtrl(Arm* arm, const Robot_rx_payload* pl, uint8_t len) { // NOLINT(readability-identifier-naming)
 
     /* 正常状态以外丢弃运动目标。 */
     if (arm->state != robot_state_normal) return;
@@ -436,13 +435,12 @@ static void HandleCtrl(Arm* arm, const Robot_rx_payload* pl, uint8_t len, uint8_
     /* 遥控器接管时丢弃协议运动目标。 */
     if (Rc_Online()) return;
 
-    const uint8_t need = has_vel ? (uint8_t)sizeof(FramePktArmCtrlPosVel)
-                                 : (uint8_t)sizeof(FramePktArmCtrlPos);
+    const uint8_t need = (uint8_t)sizeof(FramePktArmCtrlPos);
     /* 载荷长度不匹配时丢弃运动目标。 */
     if (len != need) return;
 
     /* 控制对象或载荷无效时丢弃运动目标。 */
-    if (!arm->gimbal || !Arm_Protocol_Control(arm, pl, has_vel)) return;
+    if (!arm->gimbal || !Arm_Protocol_Control(arm, pl)) return;
     arm->ctrl_frame_cnt++;
 }
 
@@ -488,11 +486,7 @@ static void HandleFrame(Arm* arm, uint8_t type_id, const Robot_rx_payload* pl, u
         break;
     /* 校验并接收关节位置目标。 */
     case FRAME_TYPE_ID_ARM_CTRL_POS:
-        HandleCtrl(arm, pl, len, 0U);
-        break;
-    /* 校验并接收关节位置和速度目标。 */
-    case FRAME_TYPE_ID_ARM_CTRL_POS_VEL:
-        HandleCtrl(arm, pl, len, 1U);
+        HandleCtrl(arm, pl, len);
         break;
     /* 处理机械臂复位请求。 */
     case FRAME_TYPE_ID_ARM_RESET:

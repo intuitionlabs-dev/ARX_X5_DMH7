@@ -12,7 +12,7 @@ class JointRuckigTests(unittest.TestCase):
     def test_firmware_reference_transitions_and_constraints(self):
         with tempfile.TemporaryDirectory(prefix="h7-joint-ruckig-") as temp:
             executable = Path(temp) / "joint-control"
-            sources = ["tests/c_ruckig_joint_control.c", "libs/common/common.c"]
+            sources = ["tests/c_ruckig_joint_control.c", "libs/common/common.c", "libs/edge_trigger/edge_trigger_cont.c"]
             result = subprocess.run([
                 "cc", *FLAGS, "-ffunction-sections", "-fdata-sections", "-UNDEBUG",
                 *["-I" + str(ROOT / p) for p in INCLUDES],

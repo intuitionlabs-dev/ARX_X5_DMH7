@@ -23,8 +23,6 @@ typedef struct {
 typedef struct {
     ruckig_c_context* planner;
     ruckig_c_state state;
-    /* 外部速度前馈，单位 deg/s。 */
-    float external_velocity;
     int status;
     uint8_t initialized;
 } Joint_ruckig_ref;
@@ -59,7 +57,6 @@ typedef struct Gimbal_cmd_t {
     float post_processed_joint_vel[ARM_JOINT_NUM];
     float post_processed_joint_acc[ARM_JOINT_NUM];
 
-    uint8_t external_velocity_active;
     /* 保存夹爪搜索、停滞检测、回退和稳定计时状态。 */
     struct {
         uint8_t step, home_active;

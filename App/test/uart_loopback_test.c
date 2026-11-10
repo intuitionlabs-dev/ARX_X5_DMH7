@@ -158,20 +158,6 @@ static void UartLoopbackTest_Build(uint32_t seq) {
         id = FRAME_TYPE_ID_ARM_CTRL_POS;
         break;
 
-    /* 生成关节位置、速度和夹爪目标报文。 */
-    case 4:
-        /* 逐关节填充位置与速度目标。 */
-        for (i = 0U; i < FRAME_PKT_JOINT_NUM; i++) {
-            s_tx_payload.arm_ctrl_pos_vel.joint_angle[i] =
-                (float)((int32_t)(seq % 360U) - 180) * 0.5f;
-            s_tx_payload.arm_ctrl_pos_vel.joint_vel[i] =
-                (float)((int32_t)(seq % 100U) - 50) * 1.5f;
-        }
-        s_tx_payload.arm_ctrl_pos_vel.gripper_angle = (float)(seq % 90U) * 0.5f;
-        len = (uint8_t)sizeof(FramePktArmCtrlPosVel);
-        id = FRAME_TYPE_ID_ARM_CTRL_POS_VEL;
-        break;
-
     /* 生成占满最大载荷长度的边界报文。 */
     default:
         /* 逐字节填充与轮次相关的边界数据。 */
@@ -260,21 +246,6 @@ static int UartLoopbackTest_Match(const FrameParser *p) {
         for (i = 0U; i < FRAME_PKT_JOINT_NUM; i++) {
             /* 关节位置不匹配时报告失败。 */
             if (got->joint_angle[i] != exp->joint_angle[i]) {
-                return 0;
-            }
-        }
-        return (got->gripper_angle == exp->gripper_angle);
-    }
-
-    /* 核对关节位置、速度与夹爪目标。 */
-    case FRAME_TYPE_ID_ARM_CTRL_POS_VEL: {
-        const FramePktArmCtrlPosVel *got = &p->buf.f.payload.arm_ctrl_pos_vel;
-        const FramePktArmCtrlPosVel *exp = &s_tx_payload.arm_ctrl_pos_vel;
-        /* 逐关节比较位置和速度字段。 */
-        for (i = 0U; i < FRAME_PKT_JOINT_NUM; i++) {
-            /* 位置或速度不匹配时报告失败。 */
-            if ((got->joint_angle[i] != exp->joint_angle[i]) ||
-                (got->joint_vel[i] != exp->joint_vel[i])) {
                 return 0;
             }
         }

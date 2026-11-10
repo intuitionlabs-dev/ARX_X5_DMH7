@@ -29,7 +29,7 @@ class MetalInitializationTests(unittest.TestCase):
                     'Drivers/STM32H7xx_HAL_Driver/Inc','libs/gravity_compensation/c',
                     'libs/move_plan/curves','libs/move_plan/move_plan']
         includes += [str(p.relative_to(ROOT)) for p in (ROOT/'libs').iterdir() if p.is_dir()]
-        sources = ['tests/c_metal_initialization.c','libs/common/common.c',
+        sources = ['tests/c_metal_initialization.c','libs/common/common.c','libs/edge_trigger/edge_trigger_cont.c',
                    'libs/cvector/cvector.c','libs/monitor/monitor.c','libs/controller/adrc.c',
                    'libs/frame/frame.c','libs/soft_crc/soft_crc.c',
                    'libs/move_plan/move_plan/move_plan.c','libs/move_plan/move_plan/plan_group.c']
@@ -64,6 +64,8 @@ class MetalInitializationTests(unittest.TestCase):
             version_receive=[C.c_uint,C.c_uint], version_observe=[C.c_uint,up]).items():
             getattr(cls.lib,name).argtypes = args
             getattr(cls.lib,name).restype = None
+        cls.lib.control_receive.argtypes = [C.c_uint, C.c_uint, C.c_float]
+        cls.lib.control_receive.restype = C.c_uint
         cls.lib.version_pop.argtypes = [up]
         cls.lib.version_pop.restype = C.c_int
 
@@ -80,6 +82,13 @@ class MetalInitializationTests(unittest.TestCase):
 
     def start(self, bus=0, state=WAIT_INIT, mode=STOP, lost=0, rc=0):
         self.lib.init_entry(bus,state,mode,lost,rc)
+
+    def test_control_dispatch_validates_type_length_and_finite_position(self):
+        self.assertEqual(self.lib.control_receive(0x16, 28, 12), 3)
+        for tid, length, target in ((0x17, 52, 12), (0x16, 52, 12),
+                                    (0x16, 27, 12), (0x16, 28, float("nan"))):
+            with self.subTest(tid=tid, length=length, target=target):
+                self.assertEqual(self.lib.control_receive(tid, length, target), 4)
 
     def test_version_advertisements_follow_each_arm_profile(self):
         out = (C.c_uint*3)()

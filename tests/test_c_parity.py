@@ -64,7 +64,7 @@ class FirmwareParityTests(unittest.TestCase):
                        check=True, capture_output=True, text=True)
         cls.command_lib = C.CDLL(str(command_library))
         cls.command_lib.reference_command_init.argtypes = [fptr]
-        cls.command_lib.reference_command_step.argtypes = [C.c_int] * 3 + [fptr] * 4
+        cls.command_lib.reference_command_step.argtypes = [C.c_int] * 2 + [fptr] * 4
 
     def test_pid_against_original_c(self):
         rng = random.Random(123)
@@ -148,7 +148,6 @@ class FirmwareParityTests(unittest.TestCase):
         for step in range(400):
             arm.mode = (ArmMode.RUN, ArmMode.STOP, ArmMode.DAMPING, ArmMode.GRAVITY)[step//40%4]
             planning = arm.mode == ArmMode.RUN
-            external = False
             target = Float6(*(rng.uniform(5, 70) for _ in range(6))) if step % 15 == 0 else target
             if arm.mode != ArmMode.RUN:
                 target = Float6(*arm.joint_angle)
@@ -157,10 +156,9 @@ class FirmwareParityTests(unittest.TestCase):
             arm.command.auto = "parity" if planning else None
             arm.command.plan = SimpleNamespace(running=planning, cancel=lambda: None, current=tuple(
                 Waypoint(*values) for values in zip(target, velocity, acc)))
-            arm.control = Command(0, CommandKind.POSITION_VELOCITY if external else CommandKind.POSITION,
-                                  tuple(target), 0, tuple(velocity) if external else ())
+            arm.control = Command(0, CommandKind.POSITION, tuple(target), 0)
             arm.command.update(step * 2)
-            self.command_lib.reference_command_step(arm.mode, planning, external, target, velocity, acc, out)
+            self.command_lib.reference_command_step(arm.mode, planning, target, velocity, acc, out)
             actual = arm.command.angle + arm.command.velocity + arm.command.acceleration
             for index, (a, b) in enumerate(zip(actual, out)):
                 self.assertAlmostEqual(a, b, delta=(.002, .02, 2.0)[index // 6])

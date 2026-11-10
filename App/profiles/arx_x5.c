@@ -330,7 +330,7 @@ static const Arm_dynamics_model dynamics = { // NOLINT(readability-identifier-na
 /* 汇总 ARX-X5 机型参数和初始化操作。 */
 const Arm_profile ARM_PROFILE_ARX_X5 = {
     .name="ARX-X5",
-    .version_string="Intuition-ARX-X5-2023-v0.3",
+    .version_string="Intuition-ARX-X5-2023-v0.4",
     .joint_count=sizeof(joints)/sizeof(joints[0]), .motor_count=sizeof(motors)/sizeof(motors[0]),
     .motors=motors, .joints=joints,
     /* 夹爪协议角与电机角同向，保持负向闭合、正向张开的恒等映射。 */

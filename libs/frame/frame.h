@@ -62,7 +62,6 @@ typedef union {
   FramePktArmStop arm_stop;
   FramePktArmDamping arm_damping;
   FramePktArmCtrlPos arm_ctrl_pos;
-  FramePktArmCtrlPosVel arm_ctrl_pos_vel;
   FramePktArmReset arm_reset;
   FramePktArmFeedback arm_feedback;
   FramePktLinkStatus link_status;

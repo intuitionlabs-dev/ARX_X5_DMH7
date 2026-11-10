@@ -170,16 +170,15 @@ int main(void) {
 
     Robot_rx_payload payload = {0};
     for (int i=0; i<FRAME_PKT_JOINT_NUM; ++i) {
-        payload.arm_ctrl_pos_vel.joint_angle[i] = 11+i;
-        payload.arm_ctrl_pos_vel.joint_vel[i] = 2+i;
+        payload.arm_ctrl_pos.joint_angle[i] = 11+i;
     }
-    payload.arm_ctrl_pos_vel.gripper_angle = 35;
-    CHECK(Arm_Protocol_Control(&g_arm[0], &payload, 1));
+    payload.arm_ctrl_pos.gripper_angle = 35;
+    CHECK(Arm_Protocol_Control(&g_arm[0], &payload));
     CHECK(g_arm[0].ctrl.joint_angle[0] == 11);
     for (int i=FRAME_PKT_JOINT_NUM; i<ARM_JOINT_NUM; ++i)
         CHECK(g_arm[0].ctrl.joint_angle[i] == g->arm_feedback_data.joint_angle[i]);
-    payload.arm_ctrl_pos_vel.joint_angle[0] = NAN;
-    CHECK(!Arm_Protocol_Control(&g_arm[0], &payload, 1));
+    payload.arm_ctrl_pos.joint_angle[0] = NAN;
+    CHECK(!Arm_Protocol_Control(&g_arm[0], &payload));
     struct { unsigned before; FramePktArmFeedback wire; unsigned after; } guard = {.before=123, .after=456};
     g->arm_feedback_data.motor_inited[GRIPPER] = 1;
     Arm_Protocol_Feedback(&g_arm[0], &guard.wire);

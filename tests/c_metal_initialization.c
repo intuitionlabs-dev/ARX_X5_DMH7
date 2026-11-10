@@ -15,6 +15,7 @@
 #define EXPORT __attribute__((visibility("default")))
 Arm g_arm[ARM_NUM];
 rc_t rc;
+static Edge_trigger_continuous rc_left, rc_right;
 static Gimbal gimbals[ARM_NUM];
 static monitor_item rc_monitor;
 static uint32_t clock_ms;
@@ -57,6 +58,10 @@ EXPORT void init_fixture(void) { // NOLINT(readability-identifier-naming)
     memset(&rc, 0, sizeof(rc));
     memset(&rc_monitor, 0, sizeof(rc_monitor));
     rc.monitor = &rc_monitor;
+    memset(&rc_left, 0, sizeof(rc_left));
+    memset(&rc_right, 0, sizeof(rc_right));
+    rc.trig.rx_left = &rc_left;
+    rc.trig.rx_right = &rc_right;
 }
 
 EXPORT void init_feedback(unsigned bus, const float* angles) { // NOLINT(readability-identifier-naming)
@@ -178,4 +183,21 @@ void BSP_CAN_AddFilter(uint8_t bus, uint16_t id) { (void)bus; (void)id; }
 uint8_t BSP_CAN_TxGroupMatch(uint8_t group) { return (group >> (clock_ms % 8)) & 1; }
 void BSP_CAN_Send(uint8_t bus, uint16_t id, uint8_t* data, basic_data_t len) {
     (void)bus; (void)id; (void)data; (void)len;
+}
+
+/* 验证控制帧分派、长度检查及目标更新。 */
+EXPORT unsigned control_receive(unsigned type_id, unsigned length, float target) { // NOLINT(readability-identifier-naming)
+    Arm* arm = &g_arm[0];
+    Robot_rx_payload payload = {0};
+    arm->handshake_ok = 1;
+    arm->state = robot_state_normal;
+    arm->arm_mode = arm_run;
+    arm->ctrl.valid = 0;
+    arm->ctrl.joint_angle[0] = 9;
+    arm->ctrl_frame_cnt = 0;
+    rc_monitor.count = 0;
+    payload.arm_ctrl_pos.joint_angle[0] = target;
+    HandleFrame(arm, (uint8_t)type_id, &payload, (uint8_t)length);
+    return arm->ctrl.valid | (arm->ctrl_frame_cnt << 1)
+        | ((arm->ctrl.joint_angle[0] == 9) << 2);
 }
