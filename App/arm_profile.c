@@ -18,6 +18,13 @@ int Arm_Profile_Validate(const Arm_profile* profile) {
         || !profile->motors || !profile->joints || !profile->initialize
         || profile->joint_count != ARM_JOINT_NUM || profile->motor_count != ARM_MOTOR_NUM
         || !ARM_JOINT_NUM || ARM_MOTOR_NUM > 255) return 0;
+    switch (profile->joint_post_process) {
+    case ARM_POST_PROCESS_RUCKIG:
+    case ARM_POST_PROCESS_QUINTIC:
+        break;
+    default:
+        return 0;
+    }
     /* 检查复位时长、设零超时和重力参数。 */
     if (!isfinite(profile->init.reset_time_s) || profile->init.reset_time_s <= 0
         || !isfinite(profile->init.pose_tolerance_deg) || profile->init.pose_tolerance_deg < 0
@@ -48,15 +55,17 @@ int Arm_Profile_Validate(const Arm_profile* profile) {
         /* 收集当前关节的换算与控制参数。 */
         const float values[] = {joint->direction, joint->reduction, joint->position_zero_deg,
             joint->minimum_deg, joint->maximum_deg, joint->reset_deg, joint->torque_scale,
-            joint->viscous_damping, joint->velocity_scale, joint->plan_velocity_scale,
-            joint->max_velocity_deg_s, joint->max_acceleration_deg_s2, joint->max_jerk_deg_s3};
-        /* 拒绝无效方向、比例、运动上限或复位目标。 */
+            joint->viscous_damping, joint->velocity_scale, joint->plan_velocity_scale};
         if (!finite_values(values, sizeof(values)/sizeof(values[0]))
             || fabsf(joint->direction) != 1 || joint->reduction <= 0
-            || joint->max_velocity_deg_s <= 0 || joint->max_acceleration_deg_s2 <= 0
-            || joint->max_jerk_deg_s3 <= 0
             || joint->minimum_deg > joint->maximum_deg
             || joint->reset_deg < joint->minimum_deg || joint->reset_deg > joint->maximum_deg) return 0;
+        if (profile->joint_post_process == ARM_POST_PROCESS_RUCKIG
+            && (!isfinite(joint->max_velocity_deg_s) || joint->max_velocity_deg_s <= 0
+                || !isfinite(joint->max_acceleration_deg_s2) || joint->max_acceleration_deg_s2 <= 0
+                || !isfinite(joint->max_jerk_deg_s3) || joint->max_jerk_deg_s3 <= 0)) return 0;
+        if (profile->joint_post_process == ARM_POST_PROCESS_QUINTIC
+            && (!isfinite(joint->quintic_duration_s) || joint->quintic_duration_s <= 0)) return 0;
     }
     /* 逐电机检查驱动操作和控制量程。 */
     for (size_t i = 0; i < profile->motor_count; ++i) {

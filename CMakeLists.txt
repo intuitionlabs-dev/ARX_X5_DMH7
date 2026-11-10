@@ -107,3 +107,4 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 )
 
 add_subdirectory(App/profiles)
+add_subdirectory(App/joint_post_process)

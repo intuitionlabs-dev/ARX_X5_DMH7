@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 import unittest
 
-from ruckig_test_support import ruckig_library
+from ruckig_test_support import JOINT_POST_PROCESS_SOURCES, ruckig_library
 from test_arm_framework import FLAGS, INCLUDES, ROOT
 
 
@@ -12,7 +12,8 @@ class JointRuckigTests(unittest.TestCase):
     def test_firmware_reference_transitions_and_constraints(self):
         with tempfile.TemporaryDirectory(prefix="h7-joint-ruckig-") as temp:
             executable = Path(temp) / "joint-control"
-            sources = ["tests/c_ruckig_joint_control.c", "libs/common/common.c", "libs/edge_trigger/edge_trigger_cont.c"]
+            sources = ["tests/c_ruckig_joint_control.c", *JOINT_POST_PROCESS_SOURCES, "libs/common/common.c",
+                       "libs/edge_trigger/edge_trigger_cont.c", "libs/move_plan/curves/quintic_spline.c"]
             result = subprocess.run([
                 "cc", *FLAGS, "-ffunction-sections", "-fdata-sections", "-UNDEBUG",
                 *["-I" + str(ROOT / p) for p in INCLUDES],

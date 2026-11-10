@@ -5,7 +5,7 @@
 #include "robot_def.h"
 #include "gimbal_arm.h"
 
-#include "ruckig_c.h"
+#include "joint_post_process.h"
 #include "plan_group.h"
 
 /* 保存输入关节目标和限位后的求解目标。 */
@@ -18,14 +18,6 @@ typedef struct {
 
     float joint_angle_solved[ARM_JOINT_NUM];
 } Arm_ctrl_data_src;
-
-/* 保存单关节连续位置参考；状态与单精度求解器一致，避免额外舍入触发重规划。 */
-typedef struct {
-    ruckig_c_context* planner;
-    ruckig_c_state state;
-    int status;
-    uint8_t initialized;
-} Joint_ruckig_ref;
 
 /* 保存单臂命令处理、自动规划和初始化上下文。 */
 typedef struct Gimbal_cmd_t {
@@ -50,8 +42,8 @@ typedef struct Gimbal_cmd_t {
     float plan_joint_acc[ARM_JOINT_NUM];
     uint8_t plan_running;
 
-    /* 后处理器 */
-    Joint_ruckig_ref joint_ruckig_ref[ARM_JOINT_NUM];
+    const struct Joint_post_process_ops* post_process;
+    Joint_post_process_ref joint_post_ref[ARM_JOINT_NUM];
     /* 后处理关节参考，单位 deg、deg/s、deg/s²。 */
     float post_processed_joint_angle[ARM_JOINT_NUM];
     float post_processed_joint_vel[ARM_JOINT_NUM];

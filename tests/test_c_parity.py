@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
-from ruckig_test_support import ruckig_library
+from ruckig_test_support import JOINT_POST_PROCESS_DIR, JOINT_POST_PROCESS_SOURCES, ruckig_library
 
 from arx_x5_control import ArmConfig, ArmMode, Command, CommandKind, ControlSystem
 from arx_x5_control.config import POSITION_PID
@@ -49,7 +49,7 @@ class FirmwareParityTests(unittest.TestCase):
         cls.lib.x5_dynamics_compute.argtypes = [C.c_int, fptr, fptr, fptr, fptr, C.c_int, fptr]
         cls.lib.x5_dynamics_compute.restype = C.c_int
         command_library = Path(cls.tmp.name) / "command.so"
-        command_includes = ["App/inc", "Bsp/inc", "Core/Inc", "Drivers/CMSIS/Include",
+        command_includes = ["App/inc", JOINT_POST_PROCESS_DIR, "Bsp/inc", "Core/Inc", "Drivers/CMSIS/Include",
                             "Drivers/CMSIS/Device/ST/STM32H7xx/Include", "Drivers/STM32H7xx_HAL_Driver/Inc",
                             "libs/move_plan/curves", "libs/move_plan/move_plan", "libs/gravity_compensation/c"]
         command_includes += [str(p.relative_to(ROOT)) for p in (ROOT / "libs").iterdir() if p.is_dir()]
@@ -58,7 +58,7 @@ class FirmwareParityTests(unittest.TestCase):
                         "-DSTM32H723xx", "-DUSE_HAL_DRIVER", "-DUSE_PWR_LDO_SUPPLY",
                         "-Wno-pointer-to-int-cast", "-Wno-int-to-pointer-cast",
                         *["-I" + str(ROOT / p) for p in command_includes],
-                        *[str(ROOT / p) for p in ("tests/c_command_reference.c",
+                        *[str(ROOT / p) for p in ("tests/c_command_reference.c", *JOINT_POST_PROCESS_SOURCES,
                           "libs/common/common.c", "libs/move_plan/curves/quintic_spline.c")],
                         ruckig_library(), "-lstdc++", "-Wl,--gc-sections", "-Wl,-z,defs", "-lm", "-o", str(command_library)],
                        check=True, capture_output=True, text=True)
