@@ -339,7 +339,7 @@ const Arm_profile ARM_PROFILE_ARX_X5 = {
     .version_string="Intuition-ARX-X5-2023-v0.4",
     .joint_count=sizeof(joints)/sizeof(joints[0]), .motor_count=sizeof(motors)/sizeof(motors[0]),
     .motors=motors, .joints=joints,
-    .joint_post_process=ARM_POST_PROCESS_RUCKIG,
+    .joint_post_process=ARM_POST_PROCESS_QUINTIC,
     /* 夹爪协议角与电机角同向，保持负向闭合、正向张开的恒等映射。 */
     .gripper={
         .cmd=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,

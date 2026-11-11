@@ -342,7 +342,7 @@ const Arm_profile ARM_PROFILE_METAL = {
     .version_string="Intuition-Metal-Arm-v0.5",
     .joint_count=sizeof(joints)/sizeof(joints[0]), .motor_count=sizeof(motors)/sizeof(motors[0]),
     .motors=motors, .joints=joints,
-    .joint_post_process=ARM_POST_PROCESS_RUCKIG,
+    .joint_post_process=ARM_POST_PROCESS_QUINTIC,
     /* 配置单电机夹爪的角度映射、力矩比例和限位。 */
     .gripper={
         .cmd=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,
