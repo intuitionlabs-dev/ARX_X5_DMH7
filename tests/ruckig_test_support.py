@@ -6,6 +6,12 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+JOINT_POST_PROCESS_DIR = "App/joint_post_process"
+JOINT_POST_PROCESS_SOURCES = (
+    f"{JOINT_POST_PROCESS_DIR}/joint_post_process.c",
+    f"{JOINT_POST_PROCESS_DIR}/algorithms/ruckig_post_process.c",
+    f"{JOINT_POST_PROCESS_DIR}/algorithms/quintic_post_process.c",
+)
 
 
 @lru_cache(maxsize=1)

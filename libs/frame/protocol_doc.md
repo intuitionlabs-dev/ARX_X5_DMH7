@@ -283,8 +283,8 @@ typedef struct {
 - `joint_angle[]`：单位 **deg**，与 `Arm_control_data.joint_angle` 口径一致。
 - `gripper_angle`：夹爪开合，对应 `Arm_control_data.gripper_angle`。
 
-位置命令使用 Ruckig 逐轴生成位置、速度和加速度。
-各轴运动上限由机型配置指定。
+位置命令使用机型配置指定的算法逐轴生成位置、速度和加速度。
+算法和关节参数见[机型配置](../../App/profiles/README.md#关节轨迹算法)。
 动力学前馈使用轨迹速度、轨迹加速度和关节反馈角。
 夹爪目标单位为 deg，限位范围由机型配置指定。
 

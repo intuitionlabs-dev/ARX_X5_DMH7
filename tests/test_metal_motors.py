@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from ruckig_test_support import JOINT_POST_PROCESS_DIR
 
 from metal_arm_control.can_protocol import decode_feedback
 from metal_arm_control.config import MOTOR_PMAX, MOTOR_VMAX, MOTOR_TMAX
@@ -22,7 +23,7 @@ class MetalMotorTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix='metal-h7-motors-')
         cls.addClassCleanup(cls.tmp.cleanup)
-        includes = ['App/inc','Bsp/inc','Core/Inc','Drivers/CMSIS/Include',
+        includes = ['App/inc',JOINT_POST_PROCESS_DIR,'Bsp/inc','Core/Inc','Drivers/CMSIS/Include',
                     'Drivers/CMSIS/Device/ST/STM32H7xx/Include',
                     'Drivers/STM32H7xx_HAL_Driver/Inc','libs/gravity_compensation/c',
                     'libs/move_plan/curves','libs/move_plan/move_plan']

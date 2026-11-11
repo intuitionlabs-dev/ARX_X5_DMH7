@@ -106,6 +106,19 @@ int main(void) {
         *motion_limits[i] = saved;
     }
     Arm_profile invalid = profile;
+    invalid.joint_post_process = ARM_POST_PROCESS_QUINTIC;
+    for (int i = 0; i < ARM_JOINT_NUM; ++i) joints[i].quintic_duration_s = 0.1f;
+    joints[0].max_jerk_deg_s3 = 0;
+    CHECK(Arm_Profile_Validate(&invalid));
+    for (unsigned k = 0; k < 4; ++k) {
+        joints[0].quintic_duration_s = invalid_limits[k];
+        CHECK(!Arm_Profile_Validate(&invalid));
+    }
+    joints[0].quintic_duration_s = 0.1f;
+    joints[0].max_jerk_deg_s3 = 3600;
+    invalid.joint_post_process = (Arm_post_process_algorithm)255;
+    CHECK(!Arm_Profile_Validate(&invalid));
+    invalid = profile;
     invalid.version_string = NULL;
     CHECK(!Arm_Profile_Validate(&invalid));
     invalid.version_string = "";

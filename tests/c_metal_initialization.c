@@ -39,15 +39,18 @@ EXPORT void init_fixture(void) { // NOLINT(readability-identifier-naming)
         arm->state = robot_state_wait_init;
         if (cmd) {
             Plan_group_temp temp_group = cmd->temp_group;
-            ruckig_c_context* planners[ARM_JOINT_NUM];
+            const struct Joint_post_process_ops* post_process = cmd->post_process;
+            Joint_post_process_ref refs[ARM_JOINT_NUM];
+            memcpy(refs, cmd->joint_post_ref, sizeof(refs));
             for (unsigned i=0; i<ARM_JOINT_NUM; ++i) {
-                planners[i] = cmd->joint_ruckig_ref[i].planner;
-                ruckig_c_reset(planners[i]);
+                refs[i].state = (Joint_motion_state){0};
+                refs[i].initialized = 0;
+                refs[i].status = 0;
             }
             memset(cmd, 0, sizeof(*cmd));
             cmd->temp_group = temp_group;
-            for (unsigned i=0; i<ARM_JOINT_NUM; ++i)
-                cmd->joint_ruckig_ref[i].planner = planners[i];
+            cmd->post_process = post_process;
+            memcpy(cmd->joint_post_ref, refs, sizeof(refs));
             cmd->arm = arm;
             cmd->gimbal = arm->gimbal;
 

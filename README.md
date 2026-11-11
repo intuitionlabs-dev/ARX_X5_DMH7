@@ -38,10 +38,9 @@ cmake --build --preset Debug
 | 动力学库 | `libs/gravity_compensation/` | [使用说明](libs/gravity_compensation/README.md) |
 | Ruckig C 轨迹库 | `libs/ruckig/` | [独立构建与调用](libs/ruckig/README.md) |
 
-H7 普通关节位置控制（`0x16` 和遥控位置目标）使用单精度 Ruckig，
-按各轴速度、加速度及加加速度上限生成连续参考。
-初始化／复位仍使用 MovePlan 五次样条，`0x17` 保留外部速度前馈。
-PC 本地后端的轨迹实现仍由 SDK 提供。
+H7 普通关节位置控制（`0x16` 和遥控位置目标）按机型配置使用单精度 Ruckig 或五次插值。
+各关节的轨迹参数见[机型配置](App/profiles/README.md#关节轨迹算法)。
+初始化和复位使用 MovePlan 五次样条。PC 本地后端的轨迹实现由 SDK 提供。
 H7 的 CMake 构建需要完整的 C/C++17 ARM 工具链（含 C++ 标准库）。
 五次插值、双精度及单精度 Ruckig 的对比见 [性能测试](tests/benchmarks/README.md)。
 

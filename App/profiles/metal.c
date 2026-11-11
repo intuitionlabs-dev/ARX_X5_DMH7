@@ -243,6 +243,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
         .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
         .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
+        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 2 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -256,6 +257,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
         .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
         .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
+        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 3 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -269,6 +271,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
         .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
         .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
+        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 4 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -282,6 +285,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
         .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
         .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
+        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 5 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -295,6 +299,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
         .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
         .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
+        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 6 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -308,6 +313,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
         .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
         .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
+        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
         .absolute_encoder=true},
 };
 
@@ -336,6 +342,7 @@ const Arm_profile ARM_PROFILE_METAL = {
     .version_string="Intuition-Metal-Arm-v0.5",
     .joint_count=sizeof(joints)/sizeof(joints[0]), .motor_count=sizeof(motors)/sizeof(motors[0]),
     .motors=motors, .joints=joints,
+    .joint_post_process=ARM_POST_PROCESS_RUCKIG,
     /* 配置单电机夹爪的角度映射、力矩比例和限位。 */
     .gripper={
         .cmd=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,

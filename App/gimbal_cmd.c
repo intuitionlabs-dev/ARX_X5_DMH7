@@ -1,20 +1,13 @@
 #include "gimbal_cmd.h"
 #include <stdlib.h>
 #include <string.h>
+#include "algorithm.h"
 #include "arm.h"
 #include "arm_auto.h"
 #include "common.h"
 
 #include "rc.h"
 #include "robot_state.h"
-
-#define GIMBAL_CMD_PERIOD_S ARM_CONTROL_PERIOD_S
-
-/* 调试器观测 A 臂 JOINT1 的 Ruckig 输入输出。 */
-volatile ruckig_c_input g_ruckig_input;
-volatile ruckig_c_output g_ruckig_output;
-volatile int g_ruckig_status;
-volatile uint8_t g_ruckig_active;
 
 /* 读取遥控器在线状态。 */
 static uint8_t Rc_Online(void) { return (uint8_t)(!is_Offline(rc.monitor)); } // NOLINT(readability-identifier-naming)
@@ -31,13 +24,14 @@ static void Ctrl_Post_Process(Gimbal_cmd* obj); // NOLINT(readability-identifier
 static void Arm_Ref_Set(Gimbal_cmd* obj); // NOLINT(readability-identifier-naming)
 
 static void joint_src_follow(Gimbal_cmd* obj);
-static void joint_post_process_follow(Gimbal_cmd* obj);
+static Joint_motion_state joint_feedback_reference(const Gimbal_cmd* obj, int joint);
+static void joint_store_reference(Gimbal_cmd* obj, int joint, Joint_motion_state state);
 
 /* 创建命令状态、临时规划组和关节轨迹实例。 */
 Gimbal_cmd* Gimbal_Cmd_Create(Arm* arm) {
 
     /* 机械臂或电机控制对象无效时拒绝创建。 */
-    if (arm == NULL || arm->gimbal == NULL) return NULL;
+    if (arm == NULL || arm->gimbal == NULL || arm->gimbal->profile == NULL) return NULL;
 
     Gimbal_cmd* obj = (Gimbal_cmd*)malloc(sizeof(Gimbal_cmd));
     /* 命令对象分配失败时返回空指针。 */
@@ -52,16 +46,10 @@ Gimbal_cmd* Gimbal_Cmd_Create(Arm* arm) {
         return NULL;
     }
 
-    /* 创建阶段分配全部 Ruckig 实例，周期更新复用这些实例。 */
-    for (int i = 0; i < ARM_JOINT_NUM; ++i) {
-        obj->joint_ruckig_ref[i].planner = ruckig_c_create(GIMBAL_CMD_PERIOD_S);
-        if (!obj->joint_ruckig_ref[i].planner) {
-            for (int j = 0; j < i; ++j)
-                ruckig_c_destroy(obj->joint_ruckig_ref[j].planner);
-            free((void*)obj->temp_group);
-            free(obj);
-            return NULL;
-        }
+    if (!Joint_Post_Process_Init(obj)) {
+        free((void*)obj->temp_group);
+        free(obj);
+        return NULL;
     }
 
     return obj;
@@ -176,7 +164,7 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
         //     /* 有效通道超出死区时累加关节目标。 */
         //     if (joint >= 0 && joint < ARM_JOINT_NUM && fabsf(channels[channel]) > 0.1f)
         //         obj->ctrl_src.joint_src.joint_angle[joint] += fsgn(channels[channel])
-        //             * obj->gimbal->profile->rc_speed_deg_s*GIMBAL_CMD_PERIOD_S;
+        //             * obj->gimbal->profile->rc_speed_deg_s*ARM_CONTROL_PERIOD_S;
         // }
 
         if (Etc_Get(rc.trig.rx_left))
@@ -272,76 +260,63 @@ static void Motor_Angle_Limit(Gimbal_cmd* obj) {
                 obj->gimbal->profile->gripper.maximum);
 }
 
-/* 更新关节轨迹并处理控制源衔接和故障。 */
+static Joint_motion_state joint_feedback_reference(const Gimbal_cmd* obj, int joint) {
+    return (Joint_motion_state){obj->gimbal->arm_feedback_data.joint_angle[joint], 0, 0};
+}
+
+static void joint_store_reference(Gimbal_cmd* obj, int joint, Joint_motion_state state) {
+    obj->post_processed_joint_angle[joint] = state.position;
+    obj->post_processed_joint_vel[joint] = state.velocity;
+    obj->post_processed_joint_acc[joint] = state.acceleration;
+}
+
+/* 选择参考来源、推进轨迹、校验结果并同步算法状态。 */
 static void Ctrl_Post_Process(Gimbal_cmd* obj) {
-    const uint8_t debug_arm = obj->arm->id == ARM_A;
-    if (debug_arm) g_ruckig_active = 0;
+    const struct Joint_post_process_ops* ops = obj->post_process;
     const uint8_t running = obj->mode == arm_run;
-    const uint8_t use_ruckig = running && !obj->plan_running;
-    if (!running) joint_post_process_follow(obj);
+    const uint8_t use_algorithm = running && !obj->plan_running;
 
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
-        Joint_ruckig_ref* ref = &obj->joint_ruckig_ref[i];
-        if (running && obj->plan_running) {
-            obj->post_processed_joint_angle[i] = obj->ctrl_src.joint_angle_solved[i];
-            obj->post_processed_joint_vel[i] =
-                obj->plan_joint_vel[i] * obj->gimbal->profile->joints[i].plan_velocity_scale;
-            obj->post_processed_joint_acc[i] = obj->plan_joint_acc[i];
-        } else if (use_ruckig) {
+        Joint_post_process_ref* ref = &obj->joint_post_ref[i];
+        if (use_algorithm) {
             if (!ref->initialized) {
-                ref->state = (ruckig_c_state){obj->gimbal->arm_feedback_data.joint_angle[i], 0, 0};
+                ref->state = joint_feedback_reference(obj, i);
                 ref->initialized = 1;
-                ruckig_c_reset(ref->planner);
+                ops->reset(ref);
             }
-            const Arm_joint_config* config = &obj->gimbal->profile->joints[i];
-            const ruckig_c_input input = {
-                .current = ref->state,
-                .target = {obj->ctrl_src.joint_angle_solved[i], 0, 0},
-                .max_velocity = config->max_velocity_deg_s,
-                .max_acceleration = config->max_acceleration_deg_s2,
-                .max_jerk = config->max_jerk_deg_s3,
-            };
-            ruckig_c_output output;
-            const uint8_t debug_joint = debug_arm && i == JOINT1;
-            if (debug_joint) g_ruckig_input = input;
-            ref->status = ruckig_c_update(ref->planner, &input, &output);
-            if (debug_joint) {
-                g_ruckig_status = ref->status;
-                if (ref->status >= 0) g_ruckig_output = output;
-                g_ruckig_active = 1;
-            }
+            ref->status = ops->step(ref, &obj->gimbal->profile->joints[i],
+                obj->ctrl_src.joint_angle_solved[i]);
             if (ref->status < 0) goto reference_failed;
-            ref->state = output.state;
-            obj->post_processed_joint_angle[i] = output.state.position;
-            obj->post_processed_joint_vel[i] = output.state.velocity;
-            obj->post_processed_joint_acc[i] = output.state.acceleration;
+        } else if (running) {
+            ref->state = (Joint_motion_state){obj->ctrl_src.joint_angle_solved[i],
+                obj->plan_joint_vel[i] * obj->gimbal->profile->joints[i].plan_velocity_scale,
+                obj->plan_joint_acc[i]};
+        } else {
+            ref->state = joint_feedback_reference(obj, i);
         }
 
-        if (!isfinite(obj->post_processed_joint_angle[i])
-            || !isfinite(obj->post_processed_joint_vel[i])
-            || !isfinite(obj->post_processed_joint_acc[i])) {
-            ref->status = RUCKIG_C_INVALID_INPUT;
+        if (!joint_reference_is_finite(ref->state)) {
+            ref->status = JOINT_REFERENCE_INVALID;
             goto reference_failed;
         }
-        if (!use_ruckig) {
-            /* Ruckig 接管时从当前后处理参考继续规划。 */
-            ref->state = (ruckig_c_state){obj->post_processed_joint_angle[i],
-                obj->post_processed_joint_vel[i], obj->post_processed_joint_acc[i]};
+        if (!use_algorithm) {
+            /* 使普通位置轨迹从当前发布的参考状态开始。 */
             ref->initialized = 1;
-            ruckig_c_reset(ref->planner);
+            ops->reset(ref);
         }
+        joint_store_reference(obj, i, ref->state);
     }
     return;
 
 reference_failed:
     /* 整臂回到反馈位置并进入阻尼，所有轴清零运动导数。 */
     obj->mode = arm_damping;
-    joint_post_process_follow(obj);
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
-        Joint_ruckig_ref* ref = &obj->joint_ruckig_ref[i];
-        ref->state = (ruckig_c_state){obj->post_processed_joint_angle[i], 0, 0};
+        Joint_post_process_ref* ref = &obj->joint_post_ref[i];
+        ref->state = joint_feedback_reference(obj, i);
         ref->initialized = 0;
-        ruckig_c_reset(ref->planner);
+        ops->reset(ref);
+        joint_store_reference(obj, i, ref->state);
     }
 }
 
@@ -359,12 +334,4 @@ static void joint_src_follow(Gimbal_cmd* obj) {
 
     memcpy(obj->ctrl_src.joint_src.joint_angle, obj->gimbal->arm_feedback_data.joint_angle,
         sizeof(obj->ctrl_src.joint_src.joint_angle));
-}
-
-/* 使后处理参考位置跟随反馈并清零运动导数。 */
-static void joint_post_process_follow(Gimbal_cmd* obj) {
-    memcpy(obj->post_processed_joint_angle, obj->gimbal->arm_feedback_data.joint_angle,
-        sizeof(obj->post_processed_joint_angle));
-    memset(obj->post_processed_joint_vel, 0, sizeof(obj->post_processed_joint_vel));
-    memset(obj->post_processed_joint_acc, 0, sizeof(obj->post_processed_joint_acc));
 }

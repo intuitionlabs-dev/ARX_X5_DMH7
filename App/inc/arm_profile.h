@@ -9,10 +9,18 @@ typedef struct {
     float direction, reduction, position_zero_deg;
     float minimum_deg, maximum_deg, reset_deg;
     float torque_scale, viscous_damping, velocity_scale, plan_velocity_scale;
-    /* 普通位置控制上限，单位 deg/s、deg/s²、deg/s³。 */
+    /* Ruckig 运动上限，单位 deg/s、deg/s²、deg/s³。 */
     float max_velocity_deg_s, max_acceleration_deg_s2, max_jerk_deg_s3;
+    /* 五次插值的重规划时长，单位 s。 */
+    float quintic_duration_s;
     uint8_t absolute_encoder;
 } Arm_joint_config;
+
+/* 选择普通位置命令的关节轨迹算法。 */
+typedef enum {
+    ARM_POST_PROCESS_RUCKIG = 0,
+    ARM_POST_PROCESS_QUINTIC,
+} Arm_post_process_algorithm;
 
 /* 配置单电机夹爪的双向坐标和力矩映射。 */
 typedef struct {
@@ -43,6 +51,7 @@ typedef struct Arm_profile { // NOLINT(readability-identifier-naming)
     size_t joint_count, motor_count;
     Arm_motor_config* motors; //不要使用常量指针，便于运行时修改。
     const Arm_joint_config* joints;
+    Arm_post_process_algorithm joint_post_process;
     Arm_gripper_mapping gripper;
     Arm_init_policy init;
     const Arm_dynamics_model* dynamics;

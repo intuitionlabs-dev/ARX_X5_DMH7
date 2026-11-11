@@ -56,15 +56,14 @@ cmake --build --preset Debug
 
 `Robot_State_Loop()` 处理协议和状态迁移。
 `Gimbal_Cmd_Update()` 处理输入、轨迹和软限位。
-`Ctrl_Post_Process()` 通过 [Ruckig C 接口](../../libs/ruckig/README.md) 更新各轴轨迹。
-普通位置命令和遥控位置目标使用轨迹的位置、速度和加速度。
-该命令的参考加速度为零。
-新目标从上一周期的参考状态连续重规划。
+`App/joint_post_process/` 根据 `Arm_profile.joint_post_process` 选择并初始化算法。
+`gimbal_cmd.c` 中的 `Ctrl_Post_Process()` 调用选定的算法，更新各轴参考并处理轨迹故障。
+普通位置命令和遥控位置目标都使用该轨迹的位置、速度和加速度。
 `Arm_Ref_Set()` 发布后处理阶段的完整参考。
 自动动作通过 MovePlan 临时规划组生成关节位置、速度和加速度。
 运行模式下，规划运行时的后处理参考直接使用规划输出。
 规划速度乘以机型的 `plan_velocity_scale`。
-Ruckig 状态跟随后处理参考，规划结束后从该状态继续计算。
+自动规划结束后，关节轨迹从最后发布的参考状态继续计算。
 `Arm_Reset()` 使用 `switch/case` 推进复位步骤。
 复位目标和持续时间由机型配置提供。
 `Gimbal_Update()` 处理反馈、动力学和电机参考值。
@@ -129,26 +128,31 @@ ARX-X5 的其余关节和夹爪使用 DM MIT。
 | `viscous_damping` | N·m·s/rad | 粘性摩擦补偿系数 |
 | `velocity_scale` | 比例系数 | 电机速度前馈系数 |
 | `plan_velocity_scale` | 比例系数 | 自动轨迹速度前馈系数 |
-| `max_velocity_deg_s` | deg/s，正数 | 普通位置轨迹速度上限 |
-| `max_acceleration_deg_s2` | deg/s²，正数 | 普通位置轨迹加速度上限 |
-| `max_jerk_deg_s3` | deg/s³，正数 | 普通位置轨迹加加速度上限 |
+| `max_velocity_deg_s` | deg/s，有限正数 | Ruckig 速度上限 |
+| `max_acceleration_deg_s2` | deg/s²，有限正数 | Ruckig 加速度上限 |
+| `max_jerk_deg_s3` | deg/s³，有限正数 | Ruckig 加加速度上限 |
+| `quintic_duration_s` | s，有限正数 | 五次插值的重规划时长 |
 | `absolute_encoder` | 0 / 1 | 在线时能否直接建立位置有效状态 |
 
-位置控制逐轴选择满足运动约束的最快可行轨迹。
-轨迹时长由起终状态与运动上限决定。
-复位时长由 `init.reset_time_s` 配置。
-两个内置机型的初始运动上限为 90 deg/s、360 deg/s²、3600 deg/s³，
-可在机型表中分别调整每个关节，使用前应按实际负载调试。
-自定义配置必须提供三个有限正数上限，否则 `Arm_Profile_Validate()` 拒绝创建。
+### 关节轨迹算法
 
-切换到普通位置控制时，自动规划路径提供上一周期已发布的状态；
-停止、阻尼和重力模式以反馈位置及零导数重置参考。
-Ruckig 求解失败时本周期整臂转为阻尼并清零运动导数，错误码保存在
-`Gimbal_cmd.joint_ruckig_ref[i].status`，后续有效输入可重新规划。
-各轴在命令对象创建时分配实例，周期内不分配内存。
-目标先经过关节软限位。
-Ruckig 约束轨迹的速度、加速度和加加速度。
-反向或制动时，轨迹位置可能越过目标点。
+在机型配置中设置 `joint_post_process`。各轴参数位于 `joints` 表。
+
+| `joint_post_process` | 关节参数 | 轨迹行为 |
+| --- | --- | --- |
+| `ARM_POST_PROCESS_RUCKIG` | `max_velocity_deg_s`、`max_acceleration_deg_s2`、`max_jerk_deg_s3` | 按运动上限逐轴求解最快可行轨迹 |
+| `ARM_POST_PROCESS_QUINTIC` | `quintic_duration_s` | 按指定时长插值。运动导数由起终状态和时长决定 |
+
+内置机型选择 Ruckig。选择五次插值时，将 `joint_post_process` 设为 `ARM_POST_PROCESS_QUINTIC`。
+内置关节表的五次插值时长为 0.10 s。`Arm_Profile_Validate()` 校验所选算法的逐轴参数。
+
+两种算法以 2 ms 控制周期推进。目标先经过关节软限位。终点速度和加速度为零。
+目标变化时，算法从上一周期的参考位置、速度和加速度重新规划。
+停止、阻尼和重力模式以反馈位置及零导数重置参考。自动复位时长由 `init.reset_time_s` 配置。
+
+Ruckig 实例在命令对象创建时分配。五次插值使用关节状态内的样条缓存。
+算法更新期间复用已有存储。算法失败或参考值出现非有限数时，本周期整臂进入阻尼并清零运动导数。
+检查 `Gimbal_cmd.joint_post_ref[i].status` 可查看关节结果码。负值表示错误。
 
 位置换算为：
 

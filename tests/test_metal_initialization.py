@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from ruckig_test_support import ruckig_library
+from ruckig_test_support import JOINT_POST_PROCESS_DIR, JOINT_POST_PROCESS_SOURCES, ruckig_library
 
 from sdk.board_defs import metal_arm as profile
 from sdk.board_defs import arx_x5
@@ -24,12 +24,13 @@ class MetalInitializationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix='metal-h7-init-')
         cls.addClassCleanup(cls.tmp.cleanup)
-        includes = ['App/inc','Bsp/inc','Core/Inc','Drivers/CMSIS/Include',
+        includes = ['App/inc',JOINT_POST_PROCESS_DIR,'Bsp/inc','Core/Inc','Drivers/CMSIS/Include',
                     'Drivers/CMSIS/Device/ST/STM32H7xx/Include',
                     'Drivers/STM32H7xx_HAL_Driver/Inc','libs/gravity_compensation/c',
                     'libs/move_plan/curves','libs/move_plan/move_plan']
         includes += [str(p.relative_to(ROOT)) for p in (ROOT/'libs').iterdir() if p.is_dir()]
-        sources = ['tests/c_metal_initialization.c','libs/common/common.c','libs/edge_trigger/edge_trigger_cont.c',
+        sources = ['tests/c_metal_initialization.c',*JOINT_POST_PROCESS_SOURCES,'libs/common/common.c',
+                   'libs/edge_trigger/edge_trigger_cont.c',
                    'libs/cvector/cvector.c','libs/monitor/monitor.c','libs/controller/adrc.c',
                    'libs/frame/frame.c','libs/soft_crc/soft_crc.c',
                    'libs/move_plan/move_plan/move_plan.c','libs/move_plan/move_plan/plan_group.c']
