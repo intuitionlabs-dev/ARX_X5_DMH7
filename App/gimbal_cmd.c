@@ -157,20 +157,14 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
             return;
         }
 
+        const Arm_profile* profile = obj->gimbal->profile;
         const float channels[] = {rc.rx, rc.ry, rc.lx};
-        /* 按机型映射将摇杆输入分配给关节。 */
-        // for (int channel = 0; channel < 3; ++channel) {
-        //     const int joint = obj->gimbal->profile->rc_joint[channel];
-        //     /* 有效通道超出死区时累加关节目标。 */
-        //     if (joint >= 0 && joint < ARM_JOINT_NUM && fabsf(channels[channel]) > 0.1f)
-        //         obj->ctrl_src.joint_src.joint_angle[joint] += fsgn(channels[channel])
-        //             * obj->gimbal->profile->rc_speed_deg_s*ARM_CONTROL_PERIOD_S;
-        // }
-
-        if (Etc_Get(rc.trig.rx_left))
-            obj->ctrl_src.joint_src.joint_angle[JOINT1] += 45;
-        if (Etc_Get(rc.trig.rx_right))
-            obj->ctrl_src.joint_src.joint_angle[JOINT1] -= 45;
+        const double increment = (double)profile->rc_speed_deg_s / ARM_CONTROL_FREQUENCY_HZ;
+        for (int channel = 0; channel < 3; ++channel) {
+            const int joint = profile->rc_joint[channel];
+            if (joint >= 0 && joint < ARM_JOINT_NUM && fabsf(channels[channel]) > 0.1)
+                obj->ctrl_src.joint_src.joint_angle[joint] += fsgn(channels[channel]) * increment;
+        }
         return;
     }
 

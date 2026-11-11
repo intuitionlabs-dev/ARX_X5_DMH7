@@ -58,7 +58,8 @@ class MetalInitializationTests(unittest.TestCase):
         fp, up = C.POINTER(C.c_float), C.POINTER(C.c_uint)
         for name,args in dict(init_fixture=[], init_feedback=[C.c_uint,fp],
             init_entry=[C.c_uint]*5, init_motor_lost=[C.c_uint]*2, init_tick=[C.c_uint], init_observe=[C.c_uint,up,fp],
-            init_limits=[fp,C.c_uint,fp], init_reset=[C.c_uint,C.c_float]).items():
+            init_limits=[fp,C.c_uint,fp], init_reset=[C.c_uint,C.c_float],
+            init_position_target=[C.c_float]).items():
             getattr(cls.lib,name).argtypes = args
             getattr(cls.lib,name).restype = None
         for name,args in dict(version_fixture=[C.c_uint], version_poll=[],
@@ -136,6 +137,20 @@ class MetalInitializationTests(unittest.TestCase):
             self.assertEqual(list(out[:6]),list(out[7:]))
         self.lib.init_limits(Float7(*([999]*7)),0,out)
         self.assertEqual(list(out[:7]),[999]*7)
+
+    def test_metal_position_step_uses_160_ms_quintic(self):
+        self.feedback(0, joints=(0,)*6)
+        self.lib.init_position_target(40)
+        for _ in range(40):
+            self.lib.init_tick(0)
+        _, output = self.observe(0)
+        self.assertAlmostEqual(output[0], 20, delta=0.001)
+        self.assertAlmostEqual(output[6], 468.75, delta=0.01)
+        self.assertAlmostEqual(output[12], 0, delta=0.1)
+        for _ in range(41):
+            self.lib.init_tick(0)
+        _, output = self.observe(0)
+        self.assertEqual((output[0], output[6], output[12]), (40, 0, 0))
 
     def test_two_arms_hold_distinct_grippers_and_finish_without_zeroing(self):
         for bus, grip in enumerate((35,105)):

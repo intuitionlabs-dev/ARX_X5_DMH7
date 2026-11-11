@@ -37,7 +37,8 @@ int Arm_Profile_Validate(const Arm_profile* profile) {
         profile->init.gripper_follow_error_deg, profile->init.gripper_backoff_tolerance_deg,
         profile->rc_speed_deg_s};
     /* 检查夹爪初始化和遥控速度参数。 */
-    if (!finite_values(home_parameters, sizeof(home_parameters)/sizeof(home_parameters[0]))) return 0;
+    if (!finite_values(home_parameters, sizeof(home_parameters)/sizeof(home_parameters[0]))
+        || profile->rc_speed_deg_s < 0) return 0;
     const Arm_gripper_mapping* mapping = &profile->gripper;
     /* 检查夹爪标定点、限位及双向映射回调。 */
     if (!finite_values(mapping->cmd, 2) || !finite_values(mapping->motor_deg, 2)

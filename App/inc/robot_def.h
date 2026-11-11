@@ -6,7 +6,8 @@
 #define MAYBE_UNUSED __attribute__((unused))
 #define CONSTEXPR static const
 #define ARM_NUM 2
-#define ARM_CONTROL_PERIOD_S 0.002f
+#define ARM_CONTROL_FREQUENCY_HZ 500
+#define ARM_CONTROL_PERIOD_S (1.0f / ARM_CONTROL_FREQUENCY_HZ)
 
 /* 定义板上两台机械臂的数组索引。 */
 typedef enum { ARM_A = 0, ARM_B = 1 } Arm_Index; // NOLINT(readability-identifier-naming)

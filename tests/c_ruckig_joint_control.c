@@ -50,7 +50,6 @@ void __wrap_free(void* memory) {
 }
 
 rc_t rc;
-static Edge_trigger_continuous rc_left, rc_right;
 static uint8_t rc_offline = 1;
 uint8_t is_Offline(monitor_item* item) { (void)item; return rc_offline; }
 const Robot_ctrl_cmd* Robot_State_Ctrl(const Arm* arm) { return &arm->ctrl; }
@@ -306,10 +305,19 @@ static void errors_and_rc(void) {
     constrained_step(&f);
     /* The RC position path also reaches Ruckig through the existing limits. */
     rc_offline = 0;
-    rc.trig.rx_left = &rc_left;
-    rc.trig.rx_right = &rc_right;
-    rc_left.flag = 1;
     rc.sw_a = 1; rc.rx = 1;
+    f.profile.rc_joint[1] = JOINT2;
+    f.profile.rc_joint[2] = JOINT3;
+    rc.ry = -1;
+    rc.lx = 0.05f;
+    const float initial_j1 = f.cmd->ctrl_src.joint_src.joint_angle[JOINT1];
+    const float initial_j2 = f.cmd->ctrl_src.joint_src.joint_angle[JOINT2];
+    const float initial_j3 = f.cmd->ctrl_src.joint_src.joint_angle[JOINT3];
+    Run_Mode_Update(f.cmd);
+    assert(f.cmd->ctrl_src.joint_src.joint_angle[JOINT1] == (float)(initial_j1 + 0.18));
+    assert(f.cmd->ctrl_src.joint_src.joint_angle[JOINT2] == (float)(initial_j2 - 0.18));
+    assert(f.cmd->ctrl_src.joint_src.joint_angle[JOINT3] == initial_j3);
+    rc.ry = 0;
     for (int k=0; k<300; ++k) {
         Run_Mode_Update(f.cmd);
         Ctrl_Src_Calc(f.cmd);

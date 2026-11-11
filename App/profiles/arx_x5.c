@@ -13,6 +13,7 @@
 #define ARX_X5_DM_TORQUE_MAX_NM 10.0f
 #define ARX_X5_MOTOR_POSITION_DIVISOR 65536.0f
 #define ARX_X5_MOTOR_SPEED_DIVISOR 4096.0f
+#define ARX_X5_QUINTIC_DURATION_S 0.1f
 
 /* ARX-X5 腕部关节的对称角度范围。 */
 #define ARX_X5_WRIST_LIMIT_DEG 90.0f
@@ -250,7 +251,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=400.0f,
         .max_acceleration_deg_s2=2500,
         .max_jerk_deg_s3=10000,
-        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
+        .quintic_duration_s=ARX_X5_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 2 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -264,7 +265,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=400,
         .max_acceleration_deg_s2=3500,
         .max_jerk_deg_s3=10000,
-        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
+        .quintic_duration_s=ARX_X5_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 3 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -278,7 +279,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=400,
         .max_acceleration_deg_s2=3500,
         .max_jerk_deg_s3=10000,
-        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
+        .quintic_duration_s=ARX_X5_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 4 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -292,7 +293,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=1000,
         .max_acceleration_deg_s2=3500,
         .max_jerk_deg_s3=10000.0f,
-        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
+        .quintic_duration_s=ARX_X5_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 5 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -306,7 +307,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=2000,
         .max_acceleration_deg_s2=5000,
         .max_jerk_deg_s3=40000,
-        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
+        .quintic_duration_s=ARX_X5_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 6 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -320,7 +321,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=2000,
         .max_acceleration_deg_s2=5000,
         .max_jerk_deg_s3=40000,
-        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
+        .quintic_duration_s=ARX_X5_QUINTIC_DURATION_S,
         .absolute_encoder=true},
 };
 

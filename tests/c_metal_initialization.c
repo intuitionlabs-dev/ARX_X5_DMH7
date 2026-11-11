@@ -15,7 +15,6 @@
 #define EXPORT __attribute__((visibility("default")))
 Arm g_arm[ARM_NUM];
 rc_t rc;
-static Edge_trigger_continuous rc_left, rc_right;
 static Gimbal gimbals[ARM_NUM];
 static monitor_item rc_monitor;
 static uint32_t clock_ms;
@@ -61,10 +60,6 @@ EXPORT void init_fixture(void) { // NOLINT(readability-identifier-naming)
     memset(&rc, 0, sizeof(rc));
     memset(&rc_monitor, 0, sizeof(rc_monitor));
     rc.monitor = &rc_monitor;
-    memset(&rc_left, 0, sizeof(rc_left));
-    memset(&rc_right, 0, sizeof(rc_right));
-    rc.trig.rx_left = &rc_left;
-    rc.trig.rx_right = &rc_right;
 }
 
 EXPORT void init_feedback(unsigned bus, const float* angles) { // NOLINT(readability-identifier-naming)
@@ -100,6 +95,12 @@ EXPORT void init_tick(unsigned rc_online) { // NOLINT(readability-identifier-nam
         if (arm->state == robot_state_resetting) Reset_Step(arm);
         Gimbal_Cmd_Update(arm->gimbal_cmd);
     }
+}
+
+EXPORT void init_position_target(float target) { // NOLINT(readability-identifier-naming)
+    g_arm[0].arm_mode = arm_run;
+    g_arm[0].ctrl.valid = 1;
+    g_arm[0].ctrl.joint_angle[JOINT1] = target;
 }
 
 EXPORT void init_observe(unsigned bus, unsigned* state, float* output) { // NOLINT(readability-identifier-naming)

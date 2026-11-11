@@ -2,6 +2,7 @@
 #include "arm_initialization.h"
 #include "profile_constants.h"
 #include "can_config.h"
+#include "common.h"
 #include <stdbool.h>
 #include "metal_model.h"
 
@@ -14,6 +15,7 @@
 #define METAL_MOTOR_DISTAL_TORQUE_MAX_NM 20.0f
 #define METAL_MOTOR_POSITION_DIVISOR 65535.0f
 #define METAL_MOTOR_SPEED_DIVISOR 4095.0f
+#define METAL_QUINTIC_DURATION_S 0.16f
 
 /* 按枚举顺序配置 metalarm 的六个关节和夹爪电机。 */
 static Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
@@ -46,7 +48,7 @@ static Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
             .outputMax=12.0f,
             .Irange=20.0f,
         },
-        .kp=0.0f, .kd=5.0f, .damping_kd=3.0f},
+        .kp=5, .kd=5.0f, .damping_kd=3.0f},
     /* 关节 2 电机的驱动、总线标识、编码量程和模式增益。 */
     {.driver=&ARM_DRIVER_DM, .model="DM MIT",
         .tx_id=2, .rx_id=18, .tx_group=CAN_TX_250HZ_G0,
@@ -243,7 +245,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
         .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
         .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
-        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
+        .quintic_duration_s=METAL_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 2 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -257,7 +259,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
         .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
         .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
-        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
+        .quintic_duration_s=METAL_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 3 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -271,7 +273,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
         .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
         .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
-        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
+        .quintic_duration_s=METAL_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 4 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -285,7 +287,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
         .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
         .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
-        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
+        .quintic_duration_s=METAL_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 5 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -299,7 +301,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
         .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
         .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
-        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
+        .quintic_duration_s=METAL_QUINTIC_DURATION_S,
         .absolute_encoder=true},
     /* 关节 6 的坐标换算、角度范围和轨迹参数。 */
     {.direction=ARM_PROFILE_FORWARD_DIRECTION,
@@ -313,7 +315,7 @@ static const Arm_joint_config joints[] = { // NOLINT(readability-identifier-nami
         .max_velocity_deg_s=ARM_PROFILE_MAX_VELOCITY_DEG_S,
         .max_acceleration_deg_s2=ARM_PROFILE_MAX_ACCELERATION_DEG_S2,
         .max_jerk_deg_s3=ARM_PROFILE_MAX_JERK_DEG_S3,
-        .quintic_duration_s=ARM_PROFILE_QUINTIC_DURATION_S,
+        .quintic_duration_s=METAL_QUINTIC_DURATION_S,
         .absolute_encoder=true},
 };
 
@@ -348,7 +350,7 @@ const Arm_profile ARM_PROFILE_METAL = {
         .cmd=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,
         .motor_deg=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,
         .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
-        .minimum=0.0f, .maximum=137.5098708f},
+        .minimum=0.0f, .maximum=2.4f * RAD2DEG},
     /* 配置复位时长、设零时限和夹爪初始化判据。 */
     .init={
         .reset_time_s=ARM_PROFILE_RESET_TIME_S,
