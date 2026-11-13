@@ -40,12 +40,15 @@ int Arm_Profile_Validate(const Arm_profile* profile) {
     if (!finite_values(home_parameters, sizeof(home_parameters)/sizeof(home_parameters[0]))
         || profile->rc_speed_deg_s < 0) return 0;
     const Arm_gripper_mapping* mapping = &profile->gripper;
+    if (!isfinite(profile->gripper_max_torque_nm) || profile->gripper_max_torque_nm < 0
+        || profile->gripper_max_torque_nm > profile->motors[GRIPPER].torque_max
+        || profile->motors[GRIPPER].speed_pid.outputMax < 0) return 0;
     /* 检查夹爪标定点、限位及双向映射回调。 */
     if (!finite_values(mapping->cmd, 2) || !finite_values(mapping->motor_deg, 2)
         || mapping->cmd[0] == mapping->cmd[1]
         || mapping->motor_deg[0] == mapping->motor_deg[1]
         || !isfinite(mapping->minimum) || !isfinite(mapping->maximum)
-        || mapping->minimum >= mapping->maximum || !isfinite(mapping->torque_scale)
+        || mapping->minimum >= mapping->maximum
         || !!mapping->to_motor != !!mapping->from_motor) return 0;
     /* 检查动力学模型指针和关节数量。 */
     if (profile->dynamics && (!profile->dynamics->links

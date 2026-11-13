@@ -105,7 +105,7 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(counts, [40, 20, 20, 20, 20, 20, 20])
         self.assertEqual(enables, 1)
 
-    def test_gravity_mode_keeps_gripper_gains(self):
+    def test_gravity_mode_sends_limited_gripper_torque(self):
         c = ControlSystem([ArmConfig()])
         self.normal(c)
         requests = []
@@ -116,7 +116,7 @@ class ControlTests(unittest.TestCase):
         controls = {r.motor_index: r for r in requests if r.action == A.CONTROL}
         self.assertEqual(set(controls), set(range(7)))
         self.assertTrue(all(controls[i].kp == controls[i].kd == 0 for i in range(6)))
-        self.assertEqual((controls[6].kp, controls[6].kd), (8, .1))
+        self.assertEqual((controls[6].kp, controls[6].kd), (0, 0))
         self.assertNotEqual(controls[1].torque, 0)
 
     def test_encos_requires_both_fresh_fields_and_healthy_status(self):

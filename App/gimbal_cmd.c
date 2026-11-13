@@ -111,7 +111,8 @@ void Gimbal_Cmd_Update(Gimbal_cmd* obj) {
     if (obj->initialization.home_active) {
         obj->gimbal->arm_control_data.gripper_angle = Arm_Gripper_From_Motor(
             obj->gimbal->profile, obj->initialization.home_target_deg);
-        obj->gimbal->arm_control_data.gripper_torque = obj->initialization.home_torque;
+        if (obj->initialization.home_torque > 0)
+            obj->gimbal->arm_control_data.gripper_torque_limit_nm = obj->initialization.home_torque;
     }
     obj->last_auto_mode = obj->auto_mode;
 
@@ -131,7 +132,6 @@ static void Stop_Mode_Update(Gimbal_cmd* obj) {
     /* 停止模式使夹爪目标跟随反馈并清零力矩。 */
     obj->gimbal->arm_control_data.gripper_angle =
         obj->gimbal->arm_feedback_data.gripper_angle;
-    obj->gimbal->arm_control_data.gripper_torque = 0;
 }
 
 /* 被动模式跟随反馈并清空运动前馈。 */
@@ -142,7 +142,6 @@ static void Passive_Mode_Update(Gimbal_cmd* obj) {
 
     obj->gimbal->arm_control_data.gripper_angle =
         obj->gimbal->arm_feedback_data.gripper_angle;
-    obj->gimbal->arm_control_data.gripper_torque = 0;
 }
 
 /* 运行模式选择遥控器或协议控制目标。 */
@@ -157,14 +156,11 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
             return;
         }
 
-        const Arm_profile* profile = obj->gimbal->profile;
-        const float channels[] = {rc.rx, rc.ry, rc.lx};
-        const double increment = (double)profile->rc_speed_deg_s / ARM_CONTROL_FREQUENCY_HZ;
-        for (int channel = 0; channel < 3; ++channel) {
-            const int joint = profile->rc_joint[channel];
-            if (joint >= 0 && joint < ARM_JOINT_NUM && fabsf(channels[channel]) > 0.1)
-                obj->ctrl_src.joint_src.joint_angle[joint] += fsgn(channels[channel]) * increment;
-        }
+        /* 左摇杆边沿触发夹爪阶跃测试。 */
+        if (Etc_Get(rc.trig.lx_left))
+            obj->arm->gimbal->arm_control_data.gripper_angle -= 60;
+        if (Etc_Get(rc.trig.lx_right))
+            obj->arm->gimbal->arm_control_data.gripper_angle += 60;
         return;
     }
 
@@ -178,6 +174,7 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
         obj->ctrl_src.joint_src.joint_angle[i] = cmd->joint_angle[i];
     }
     obj->gimbal->arm_control_data.gripper_angle = cmd->gripper_angle;
+    obj->gimbal->arm_control_data.gripper_torque_limit_nm = cmd->gripper_torque_limit_nm;
 }
 
 /* 按自动模式分派动作更新。 */
@@ -205,14 +202,15 @@ static void Plan_Running_Check(Gimbal_cmd* obj) {
         (obj->auto_mode != arm_auto_none && obj->temp_group[0]->status == move_plan_run);
 }
 
-/* 清空本周期速度、加速度和夹爪力矩。 */
+/* 清空运动前馈并加载夹爪的机型力矩上限。 */
 static void Set_Ctrl_Default(Gimbal_cmd* obj) {
     /* 逐轴清除运动前馈默认值。 */
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         obj->gimbal->arm_control_data.joint_vel[i] = 0;
         obj->gimbal->arm_control_data.joint_acc[i] = 0;
     }
-    obj->gimbal->arm_control_data.gripper_torque = 0;
+    obj->gimbal->arm_control_data.gripper_torque_limit_nm =
+        obj->gimbal->profile->gripper_max_torque_nm;
 }
 
 /* 将输入关节目标复制为限位前参考值。 */

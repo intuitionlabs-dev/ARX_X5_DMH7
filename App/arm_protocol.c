@@ -4,6 +4,8 @@
 
 /* 校验控制载荷并写入机械臂控制目标。 */
 int Arm_Protocol_Control(Arm* arm, const Robot_rx_payload* payload) {
+    const float limit = payload->arm_ctrl_pos.gripper_torque_limit_nm;
+    if (!isfinite(limit) || limit < 0) return 0;
     const float* position = payload->arm_ctrl_pos.joint_angle;
     const float grip = payload->arm_ctrl_pos.gripper_angle;
     /* 夹爪目标为非有限值时拒绝报文。 */
@@ -18,6 +20,7 @@ int Arm_Protocol_Control(Arm* arm, const Robot_rx_payload* payload) {
             : arm->gimbal->arm_feedback_data.joint_angle[i];
     }
     arm->ctrl.gripper_angle = grip;
+    arm->ctrl.gripper_torque_limit_nm = limit;
     arm->ctrl.valid = 1;
     return 1;
 }

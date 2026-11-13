@@ -66,7 +66,7 @@ class MetalInitializationTests(unittest.TestCase):
             version_receive=[C.c_uint,C.c_uint], version_observe=[C.c_uint,up]).items():
             getattr(cls.lib,name).argtypes = args
             getattr(cls.lib,name).restype = None
-        cls.lib.control_receive.argtypes = [C.c_uint, C.c_uint, C.c_float]
+        cls.lib.control_receive.argtypes = [C.c_uint, C.c_uint, C.c_float, C.c_float]
         cls.lib.control_receive.restype = C.c_uint
         cls.lib.version_pop.argtypes = [up]
         cls.lib.version_pop.restype = C.c_int
@@ -86,11 +86,13 @@ class MetalInitializationTests(unittest.TestCase):
         self.lib.init_entry(bus,state,mode,lost,rc)
 
     def test_control_dispatch_validates_type_length_and_finite_position(self):
-        self.assertEqual(self.lib.control_receive(0x16, 28, 12), 3)
-        for tid, length, target in ((0x17, 52, 12), (0x16, 52, 12),
-                                    (0x16, 27, 12), (0x16, 28, float("nan"))):
-            with self.subTest(tid=tid, length=length, target=target):
-                self.assertEqual(self.lib.control_receive(tid, length, target), 4)
+        for limit in (0, 0.5):
+            self.assertEqual(self.lib.control_receive(0x16, 32, 12, limit), 3)
+        for tid, length, target, limit in ((0x17, 52, 12, 0.5), (0x16, 28, 12, 0.5),
+                                           (0x16, 56, 12, 0.5), (0x16, 32, float("nan"), 0.5),
+                                           (0x16, 32, 12, -1), (0x16, 32, 12, float("inf"))):
+            with self.subTest(tid=tid, length=length, target=target, limit=limit):
+                self.assertEqual(self.lib.control_receive(tid, length, target, limit), 4)
 
     def test_version_advertisements_follow_each_arm_profile(self):
         out = (C.c_uint*3)()
@@ -164,7 +166,7 @@ class MetalInitializationTests(unittest.TestCase):
                 if tick <= 1000:
                     self.assertEqual(state[0],INITIALIZING)
                 self.assertEqual(state[5:7],[0,0])  # no zero request / state transition
-                self.assertEqual(out[19],0)  # no calibration push torque
+                self.assertEqual(out[19], 3.0)
                 if state[0] == INITIALIZING:
                     self.assertEqual(out[18],grip)
                     self.assertEqual(state[4],0)

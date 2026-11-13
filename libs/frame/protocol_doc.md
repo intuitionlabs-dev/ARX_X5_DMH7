@@ -17,10 +17,10 @@
 
 | 项 | 值 |
 | --- | --- |
-| metalarm 协议版本串 | `Intuition-Metal-Arm-v0.5` |
-| metalarm 版本码 | `0xD9D04641` |
-| ARX-X5 协议版本串 | `Intuition-ARX-X5-2023-v0.4` |
-| ARX-X5 版本码 | `0xFB1DD6EF` |
+| metalarm 协议版本串 | `Intuition-Metal-Arm-v0.6` |
+| metalarm 版本码 | `0xD6D04188` |
+| ARX-X5 协议版本串 | `Intuition-ARX-X5-2023-v0.5` |
+| ARX-X5 版本码 | `0xFA1DD55C` |
 | 版本码算法 | FNV-1a 32 |
 | 帧格式版本 | 见第 2 节（帧头带 `arm_id`） |
 
@@ -168,7 +168,7 @@ WAIT_SYNC0 --0xAA--> WAIT_SYNC1 --0x55--> HEADER --(累计 6 字节)--> 校验 c
 | `0x13` | `ARM_GRAVITY` | 下发 | 0 | 8 | 切 `arm_only_gravity_comp`（只顶重力） |
 | `0x14` | `ARM_STOP` | 下发 | 0 | 8 | 切 `arm_stop`（失能电机） |
 | `0x15` | `ARM_DAMPING` | 下发 | 0 | 8 | 切 `arm_damping`（被动阻尼） |
-| `0x16` | `ARM_CTRL_POS` | 下发 | 28 | 36 | 纯位置指令（角度 + 夹爪） |
+| `0x16` | `ARM_CTRL_POS` | 下发 | 32 | 40 | 位置目标和夹爪力矩上限 |
 | `0x18` | `ARM_RESET` | 下发 | 0 | 8 | 六轴复位，保持已有夹爪目标 |
 | `0x80` | `ARM_FEEDBACK` | 上报 | 63 | 71 | 机械臂反馈帧，握手后固定 **250 Hz** |
 | `0x81` | `LINK_STATUS` | 上报 | 84 | 92 | 链路状态帧，握手后固定 **10 Hz**，链路级只一帧 |
@@ -271,17 +271,25 @@ typedef FramePktEmpty FramePktArmInit;   /* 0 字节，线上 datalen = 0 */
 union 里的成员和码表一一对应，`payload.arm_start` 这种写法能编过。**它们没有可读字段**，
 接收时只判断 `p->type_id`。
 
-### 0x16 机械臂控制包（角度 + 夹爪，下发）
+### 0x16 位置目标和夹爪力矩上限
 
-```c
-typedef struct {
-    float joint_angle[FRAME_PKT_JOINT_NUM];  /* 24 字节，deg */
-    float gripper_angle;                          /*  4 字节      */
-} FramePktArmCtrlPos;                              /* 共 28 字节   */
-```
+载荷固定为 32 字节。字段均为小端 IEEE 754 单精度浮点数。
 
-- `joint_angle[]`：单位 **deg**，与 `Arm_control_data.joint_angle` 口径一致。
-- `gripper_angle`：夹爪开合，对应 `Arm_control_data.gripper_angle`。
+| 载荷偏移 | 字节数 | 字段 | 单位 | 取值 | 含义 |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 24 | `joint_angle[6]` | deg | 有限值 | J1 至 J6 的目标角度 |
+| 24 | 4 | `gripper_angle` | deg | 有限值 | 夹爪目标角度 |
+| 28 | 4 | `gripper_torque_limit_nm` | N·m | 有限非负值 | 夹爪电机输出轴的力矩上限 |
+
+在握手完成、状态为正常运行、模式为 RUN 且遥控器离线时发送此帧。
+板子保存 `0x16` 的夹爪力矩上限。
+板子设置速度环 PID 的 `outputMax` 时，取请求上限、固件上限和 PID 配置上限中的最小值。
+固件上限由机型的 `gripper_max_torque_nm` 配置。
+夹爪电机使用单片机级联 PID 的力矩输出。
+单片机限制速度环输出，并将夹爪 MIT 位置、速度、Kp 和 Kd 置零。
+夹爪找零搜索使用机型配置的搜索力矩上限。
+零表示请求零力矩。实际电机力矩受 CAN 量化和驱动特性影响。
+载荷长度或字段无效时，板子丢弃整帧并保留当前目标。
 
 位置命令使用机型配置指定的算法逐轴生成位置、速度和加速度。
 算法和关节参数见[机型配置](../../App/profiles/README.md#关节轨迹算法)。
@@ -446,7 +454,7 @@ union {
 if (FrameParserFeed(&parser, byte) == FRAME_OK) {
     if (parser.type_id == FRAME_TYPE_ID_ARM_CTRL_POS) {
         const FramePktArmCtrlPos *c = &parser.buf.f.payload.arm_ctrl_pos;
-        /* c->joint_angle[0] ... c->gripper_angle */
+        /* 读取关节角、夹爪角和夹爪力矩上限。 */
     }
 }
 ```
@@ -527,7 +535,7 @@ if (FrameParserFeed(&parser, byte) == FRAME_OK) {
           之后可以随时 0x13 ARM_GRAVITY 切重力补偿、0x15 ARM_DAMPING 切阻尼、
           0x14 ARM_STOP 松劲。**这些只在正常运行模式下有效**，在其他状态下发送会被丢弃。
 
-5. 控制   上位机 ──0x16 ARM_CTRL_POS(位置+夹爪)──→ 板子
+5. 控制   上位机 ──0x16 ARM_CTRL_POS(位置和夹爪力矩上限)──→ 板子
           **只在正常运行 + mode==run(1) + 遥控器离线**时接受。
           这是唯一带 payload 的下行包，也是应当按周期发送的包 —— 它就是链路保活的依据。
 

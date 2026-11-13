@@ -303,36 +303,21 @@ static void errors_and_rc(void) {
     f.cmd->ctrl_src.joint_angle_solved[2] = 2;
     f.cmd->mode = arm_run;
     constrained_step(&f);
-    /* The RC position path also reaches Ruckig through the existing limits. */
+    Edge_trigger_continuous left = {.flag = 1};
+    Edge_trigger_continuous right = {0};
     rc_offline = 0;
-    rc.sw_a = 1; rc.rx = 1;
-    f.profile.rc_joint[1] = JOINT2;
-    f.profile.rc_joint[2] = JOINT3;
-    rc.ry = -1;
-    rc.lx = 0.05f;
-    const float initial_j1 = f.cmd->ctrl_src.joint_src.joint_angle[JOINT1];
-    const float initial_j2 = f.cmd->ctrl_src.joint_src.joint_angle[JOINT2];
-    const float initial_j3 = f.cmd->ctrl_src.joint_src.joint_angle[JOINT3];
+    rc.sw_a = 1;
+    rc.trig.lx_left = &left;
+    rc.trig.lx_right = &right;
     Run_Mode_Update(f.cmd);
-    assert(f.cmd->ctrl_src.joint_src.joint_angle[JOINT1] == (float)(initial_j1 + 0.18));
-    assert(f.cmd->ctrl_src.joint_src.joint_angle[JOINT2] == (float)(initial_j2 - 0.18));
-    assert(f.cmd->ctrl_src.joint_src.joint_angle[JOINT3] == initial_j3);
-    rc.ry = 0;
-    for (int k=0; k<300; ++k) {
-        Run_Mode_Update(f.cmd);
-        Ctrl_Src_Calc(f.cmd);
-        Motor_Angle_Limit(f.cmd);
-        constrained_step(&f);
-    }
-    rc.rx = 0;
-    const float target = f.cmd->ctrl_src.joint_angle_solved[0];
-    for (int k=0; k<2000; ++k) {
-        Run_Mode_Update(f.cmd);
-        Ctrl_Src_Calc(f.cmd);
-        Motor_Angle_Limit(f.cmd);
-        constrained_step(&f);
-    }
-    assert(f.gimbal.arm_control_data.joint_angle[0] == target);
+    assert(f.gimbal.arm_control_data.gripper_angle == -60);
+    Run_Mode_Update(f.cmd);
+    assert(f.gimbal.arm_control_data.gripper_angle == -60);
+    right.flag = 1;
+    Run_Mode_Update(f.cmd);
+    assert(f.gimbal.arm_control_data.gripper_angle == 0);
+    rc.trig.lx_left = NULL;
+    rc.trig.lx_right = NULL;
     rc_offline = 1;
     destroy(&f);
 }

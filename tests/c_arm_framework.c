@@ -81,12 +81,12 @@ int main(void) {
     Arm_profile profile = {.name="test", .version_string="test-v1",
         .joint_count=ARM_JOINT_NUM, .motor_count=ARM_MOTOR_NUM,
         .motors=motors, .joints=joints, .gripper={.cmd={0,100}, .motor_deg={80,-120},
-            .torque_scale=-2, .minimum=0, .maximum=100},
+            .minimum=0, .maximum=100},
         .init={.reset_time_s=.02f, .pose_tolerance_deg=20, .zero_total_ms=1000,
             .zero_motor_ms=100, .zero_disable_timeout_ms=1500, .zero_disable_retry_ms=100, .gripper_home_torque=.5f, .gripper_speed_deg_s=100,
             .gripper_backoff_deg=1, .gripper_follow_error_deg=20, .gripper_backoff_tolerance_deg=4, .gripper_settle_ms=400, .stall_tolerance_deg=.5f, .stall_window_ms=2,
             .stall_windows=2, .seek_timeout_ms=100, .backoff_timeout_ms=100},
-        .stop_on_motor_lost=1, .initialize=Arm_Initialize_Hold,
+        .gripper_max_torque_nm=2, .stop_on_motor_lost=1, .initialize=Arm_Initialize_Hold,
         .rc_joint={-1,-1,-1}};
     CHECK(Arm_Profile_Validate(&profile));
     Arm_motor_driver missing_gate = driver;
@@ -106,6 +106,12 @@ int main(void) {
         *motion_limits[i] = saved;
     }
     Arm_profile invalid = profile;
+    const float invalid_torque_limits[] = {-1.0f, 11.0f, NAN, INFINITY};
+    for (unsigned i = 0; i < sizeof(invalid_torque_limits)/sizeof(invalid_torque_limits[0]); ++i) {
+        invalid.gripper_max_torque_nm = invalid_torque_limits[i];
+        CHECK(!Arm_Profile_Validate(&invalid));
+    }
+    invalid = profile;
     invalid.joint_post_process = ARM_POST_PROCESS_QUINTIC;
     for (int i = 0; i < ARM_JOINT_NUM; ++i) joints[i].quintic_duration_s = 0.1f;
     joints[0].max_jerk_deg_s3 = 0;
@@ -143,19 +149,20 @@ int main(void) {
         for (int i=0; i<ARM_MOTOR_NUM; ++i)
             g_arm[a].gimbal->motors[i].monitor->reset(g_arm[a].gimbal->motors[i].monitor);
     Gimbal* g = g_arm[0].gimbal;
+    CHECK(g->arm_control_data.gripper_torque_limit_nm == profile.gripper_max_torque_nm);
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
         g->motors[i].control->fdb_position = 3;
         g->arm_control_data.joint_angle[i] = 10+i;
         g->arm_control_data.joint_vel[i] = 2;
     }
     g->arm_control_data.gripper_angle = 25;
-    g->arm_control_data.gripper_torque = 3;
     g->arm_control_data.mode = arm_run;
     Gimbal_Update(g);
     CHECK(g->arm_feedback_data.mode == arm_run);
     CHECK(fabsf(g->motors[0].control->ref_position+17) < .001f);
     CHECK(fabsf(g->motors[GRIPPER].control->ref_position-30) < .001f);
-    CHECK(g->motors[GRIPPER].control->output_comp == -6);
+    CHECK(g->motors[GRIPPER].control->output_comp == 0);
+    CHECK(last_kp[GRIPPER] == 0 && last_kd[GRIPPER] == 0);
     g->arm_control_data.mode = arm_damping;
     Gimbal_Update(g);
     CHECK(last_kp[0] == 0 && last_kd[0] == 2);
@@ -186,8 +193,27 @@ int main(void) {
         payload.arm_ctrl_pos.joint_angle[i] = 11+i;
     }
     payload.arm_ctrl_pos.gripper_angle = 35;
+    payload.arm_ctrl_pos.gripper_torque_limit_nm = 0.5f;
     CHECK(Arm_Protocol_Control(&g_arm[0], &payload));
     CHECK(g_arm[0].ctrl.joint_angle[0] == 11);
+    CHECK(g_arm[0].ctrl.gripper_torque_limit_nm == 0.5f);
+    payload.arm_ctrl_pos.gripper_torque_limit_nm = 8.0f;
+    CHECK(Arm_Protocol_Control(&g_arm[0], &payload));
+    CHECK(g_arm[0].ctrl.gripper_torque_limit_nm == 8.0f);
+    motors[GRIPPER].speed_pid.outputMax = 10.0f;
+    g->arm_control_data.gripper_torque_limit_nm = g_arm[0].ctrl.gripper_torque_limit_nm;
+    Gimbal_Update(g);
+    CHECK(g->motors[GRIPPER].control->pid_speed_data.config.outputMax == profile.gripper_max_torque_nm);
+    motors[GRIPPER].speed_pid.outputMax = 1.0f;
+    Gimbal_Update(g);
+    CHECK(g->motors[GRIPPER].control->pid_speed_data.config.outputMax == 1.0f);
+    g->arm_control_data.gripper_torque_limit_nm = 0.0f;
+    Gimbal_Update(g);
+    CHECK(g->motors[GRIPPER].control->pid_speed_data.config.outputMax == 0.0f);
+    payload.arm_ctrl_pos.gripper_torque_limit_nm = -1;
+    CHECK(!Arm_Protocol_Control(&g_arm[0], &payload));
+    CHECK(g_arm[0].ctrl.gripper_torque_limit_nm == 8.0f);
+    payload.arm_ctrl_pos.gripper_torque_limit_nm = 0.5f;
     for (int i=FRAME_PKT_JOINT_NUM; i<ARM_JOINT_NUM; ++i)
         CHECK(g_arm[0].ctrl.joint_angle[i] == g->arm_feedback_data.joint_angle[i]);
     payload.arm_ctrl_pos.joint_angle[0] = NAN;
@@ -304,6 +330,7 @@ int main(void) {
         clock_ms+=2;
         Move_Plan_Update();
         Gimbal_Cmd_Update(cmd);
+        CHECK(g->arm_control_data.gripper_torque_limit_nm == profile.gripper_max_torque_nm);
         if (i == 4) {
             CHECK(cmd->plan_running);
             CHECK(fabsf(g->arm_control_data.joint_angle[0]-cmd->temp_group[0]->current_pos)<.001f);

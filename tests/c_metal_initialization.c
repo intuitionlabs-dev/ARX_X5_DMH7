@@ -115,7 +115,7 @@ EXPORT void init_observe(unsigned bus, unsigned* state, float* output) { // NOLI
     memcpy(output+6, g->arm_control_data.joint_vel, 6*sizeof(float));
     memcpy(output+12, g->arm_control_data.joint_acc, 6*sizeof(float));
     output[18] = g->arm_control_data.gripper_angle;
-    output[19] = g->arm_control_data.gripper_torque;
+    output[19] = g->arm_control_data.gripper_torque_limit_nm;
 }
 
 EXPORT void init_limits(const float* input, unsigned mask, float* out) { // NOLINT(readability-identifier-naming)
@@ -190,7 +190,7 @@ void BSP_CAN_Send(uint8_t bus, uint16_t id, uint8_t* data, basic_data_t len) {
 }
 
 /* 验证控制帧分派、长度检查及目标更新。 */
-EXPORT unsigned control_receive(unsigned type_id, unsigned length, float target) { // NOLINT(readability-identifier-naming)
+EXPORT unsigned control_receive(unsigned type_id, unsigned length, float target, float limit) { // NOLINT(readability-identifier-naming)
     Arm* arm = &g_arm[0];
     Robot_rx_payload payload = {0};
     arm->handshake_ok = 1;
@@ -201,6 +201,7 @@ EXPORT unsigned control_receive(unsigned type_id, unsigned length, float target)
     arm->ctrl_frame_cnt = 0;
     rc_monitor.count = 0;
     payload.arm_ctrl_pos.joint_angle[0] = target;
+    payload.arm_ctrl_pos.gripper_torque_limit_nm = limit;
     HandleFrame(arm, (uint8_t)type_id, &payload, (uint8_t)length);
     return arm->ctrl.valid | (arm->ctrl_frame_cnt << 1)
         | ((arm->ctrl.joint_angle[0] == 9) << 2);

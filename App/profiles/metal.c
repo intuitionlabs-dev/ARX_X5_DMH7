@@ -213,22 +213,14 @@ static Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
         .cmd_multiturn=false,
         /* 配置该电机的位置环和速度环 PID。 */
         .position_pid={
-            .KP=0.0f,
-            .KI=0.0f,
-            .KD=0.0f,
-            .error_max=0.0f,
-            .outputMax=0.0f,
-            .Irange=0.0f,
+            .KP=17.45f,
+            .outputMax=2000.0f,
         },
         .speed_pid={
-            .KP=0.0f,
-            .KI=0.0f,
-            .KD=0.0f,
-            .error_max=0.0f,
-            .outputMax=0.0f,
-            .Irange=0.0f,
+            .KP=0.02f,
+            .outputMax=3.0f,
         },
-        .kp=20.0f, .kd=0.1f, .damping_kd=0.1f},
+        .kp=0.0f, .kd=0.0f, .damping_kd=0.0f},
 };
 
 /* 配置 metalarm 的关节方向、限位、复位角和跟踪参数。 */
@@ -341,15 +333,15 @@ static const Arm_dynamics_model dynamics = { // NOLINT(readability-identifier-na
 /* 汇总 metalarm 机型参数和初始化操作。 */
 const Arm_profile ARM_PROFILE_METAL = {
     .name="metalarm",
-    .version_string="Intuition-Metal-Arm-v0.5",
+    .version_string="Intuition-Metal-Arm-v0.6",
     .joint_count=sizeof(joints)/sizeof(joints[0]), .motor_count=sizeof(motors)/sizeof(motors[0]),
     .motors=motors, .joints=joints,
+    .gripper_max_torque_nm=3,
     .joint_post_process=ARM_POST_PROCESS_QUINTIC,
-    /* 配置单电机夹爪的角度映射、力矩比例和限位。 */
+    /* 配置单电机夹爪的角度映射和限位。 */
     .gripper={
         .cmd=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,
         .motor_deg=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,
-        .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .minimum=0.0f, .maximum=2.4f * RAD2DEG},
     /* 配置复位时长、设零时限和夹爪初始化判据。 */
     .init={

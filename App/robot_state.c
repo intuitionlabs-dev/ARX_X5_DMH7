@@ -551,11 +551,7 @@ static void Init_Step(Arm* arm) { // NOLINT(readability-identifier-naming)
     if (result != 0) {
         arm->gimbal_cmd->initialization.home_active = 0;
         arm->init_step = 0;
-        /* 初始化失败时累计中止次数并清零夹爪力矩。 */
-        if (result < 0) {
-            arm->init_abort_cnt++;
-            arm->gimbal->arm_control_data.gripper_torque = 0;
-        }
+        if (result < 0) arm->init_abort_cnt++;
         Robot_State_Enter(arm, result > 0 ? robot_state_normal : arm->init_entry);
     }
 }

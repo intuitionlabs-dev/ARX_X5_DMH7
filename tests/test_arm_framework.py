@@ -36,6 +36,7 @@ class FrameworkTests(unittest.TestCase):
                    'libs/cvector/cvector.c','libs/move_plan/curves/quintic_spline.c',
                    'libs/move_plan/curves/linear_spline.c','libs/move_plan/curves/cubic_spline.c',
                    'libs/move_plan/move_plan/move_plan.c','libs/move_plan/move_plan/plan_group.c']
+        sources += [str(path.relative_to(ROOT)) for path in (ROOT / 'libs/controller').glob('*.c')]
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp)
             self.write_axis_header(folder,6)

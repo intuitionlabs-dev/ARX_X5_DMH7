@@ -97,16 +97,17 @@ class SDKLinkTests(unittest.TestCase):
         self.assertEqual((a.mode, b.mode), (M.DAMPING, M.DAMPING))
         self.assertEqual(a.feedback.motor_inited_mask, 0x7f)
         with self.assertRaises(sdk.GateRejected):
-            a.send_ctrl_pos((0,) * 6, gripper_raw_deg=0)
+            a.send_ctrl_pos((0,) * 6, gripper_raw_deg=0, gripper_torque_limit_nm=1)
         a.start()
         self.advance(link, 8004)
         angles = (0.2, 0.3, 0.4, -0.1, 0.15, -0.2)
-        self.assertEqual(a.send_ctrl_pos(angles, gripper_raw_deg=-25), 36)
+        self.assertEqual(a.send_ctrl_pos(angles, gripper_raw_deg=-25, gripper_torque_limit_nm=1), 40)
         self.advance(link, 8008)
         accepted = link.controller.arms[0].control
         for actual, want in zip(accepted.joint_angle, map(degrees, angles)):
             self.assertAlmostEqual(actual, want, places=5)
         self.assertEqual(accepted.gripper_angle, -25)
+        self.assertEqual(accepted.gripper_torque_limit_nm, 1)
         self.assertIsNone(link.controller.arms[1].control)
         self.assertEqual(b.mode, M.DAMPING)
         self.advance(link, 8250)
@@ -117,7 +118,7 @@ class SDKLinkTests(unittest.TestCase):
             store = sdk.GripperCalibStore(Path(tmp) / "calibration.json")
             store.put(0, sdk.GripperCalibration.from_points(0.08, -100, 100))
             calibrated = sdk.Arm(0, link, calib_store=store)
-            calibrated.send_ctrl_pos(angles, gripper_m=0.02)
+            calibrated.send_ctrl_pos(angles, gripper_m=0.02, gripper_torque_limit_nm=1)
             self.advance(link, 8254)
             self.assertAlmostEqual(link.controller.arms[0].control.gripper_angle, -50)
             self.assertIsNotNone(calibrated.snapshot().gripper_opening)
@@ -135,7 +136,7 @@ class SDKLinkTests(unittest.TestCase):
         a.start()
         b.start()
         self.advance(link, 11004)
-        a.send_ctrl_pos(a.joint_angles, gripper_raw_deg=0)
+        a.send_ctrl_pos(a.joint_angles, gripper_raw_deg=0, gripper_torque_limit_nm=1)
         self.advance(link, 11008)
         self.advance(link, 14000, keepalive=False)
         b.keepalive()
@@ -180,8 +181,10 @@ class SDKLinkTests(unittest.TestCase):
         a, = self.connect_manual(link)
         invalid = [(P.TID_VERSION, struct.pack("<I", 0)), (P.TID_VERSION, b""),
                    (P.TID_ARM_START, b"x"), (P.TID_ARM_CTRL_POS, b""),
-                   (P.TID_ARM_CTRL_POS, struct.pack("<7f", float("nan"), *([0] * 6))),
-                   (P.TID_ARM_CTRL_POS, struct.pack("<7f", *([float("inf")] * 7))),
+                   (P.TID_ARM_CTRL_POS, struct.pack("<7f", *([0] * 7))),
+                   (P.TID_ARM_CTRL_POS, struct.pack("<8f", float("nan"), *([0] * 7))),
+                   (P.TID_ARM_CTRL_POS, struct.pack("<8f", *([0] * 7), -1)),
+                   (P.TID_ARM_CTRL_POS, struct.pack("<8f", *([0] * 7), float("inf"))),
                    (P.TID_ARM_FEEDBACK, b""), (0x17, bytes(52)), (255, b"")]
         before = link.n_tx
         for tid, payload in invalid:

@@ -24,7 +24,7 @@ typedef uint8_t FrameTypeId;
 #define FRAME_TYPE_ID_ARM_GRAVITY 0x13U        /* 机械臂重力补偿包 · 下发 */
 #define FRAME_TYPE_ID_ARM_STOP 0x14U           /* 机械臂停止包 · 下发 */
 #define FRAME_TYPE_ID_ARM_DAMPING 0x15U        /* 机械臂阻尼包 · 下发 */
-#define FRAME_TYPE_ID_ARM_CTRL_POS 0x16U       /* 机械臂控制包(角度+夹爪) · 下发 */
+#define FRAME_TYPE_ID_ARM_CTRL_POS 0x16U       /* 位置目标及夹爪力矩软限位 · 下发 */
 #define FRAME_TYPE_ID_ARM_RESET 0x18U          /* 一键复位命令包 · 下发 */
 #define FRAME_TYPE_ID_ARM_FEEDBACK 0x80U       /* 机械臂反馈帧 · 上报 */
 #define FRAME_TYPE_ID_LINK_STATUS 0x81U        /* 链路状态包 · 上报 */
@@ -76,10 +76,11 @@ typedef FramePktEmpty FramePktArmStop;
 /* 空载荷请求：进入阻尼模式。 */
 typedef FramePktEmpty FramePktArmDamping;
 
-/* 位置载荷共 28 字节，关节及夹爪角单位为 deg。 */
+/* 位置载荷共 32 字节，角度单位为 deg，夹爪力矩上限单位为 N·m。 */
 typedef struct {
   float joint_angle[FRAME_PKT_JOINT_NUM];
   float gripper_angle;
+  float gripper_torque_limit_nm;
 } FramePktArmCtrlPos;
 
 /* 空载荷关节复位请求；应用层检查入口条件并执行机型配置的复位动作。 */

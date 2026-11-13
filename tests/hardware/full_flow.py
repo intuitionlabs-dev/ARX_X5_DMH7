@@ -121,7 +121,9 @@ class FullFlow:
         target = origin.copy()
         target[0] += 2.0
         gripper = arm.raw_gripper_angle_deg
-        command = lambda values: arm.send_ctrl_pos(tuple(map(math.radians, values)), gripper_raw_deg=gripper)
+        command = lambda values: arm.send_ctrl_pos(
+            tuple(map(math.radians, values)), gripper_raw_deg=gripper,
+            gripper_torque_limit_nm=arm.board_defs.GRIPPER_TORQUE_MAX_NM)
         self.hold(1.5, lambda: command(target))
         actual = arm.snapshot().joint_angles_deg
         error = max(abs(a-b) for a, b in zip(actual, target))

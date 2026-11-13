@@ -2,6 +2,8 @@
 #include "arm.h"
 #include "can_config.h"
 #include "common.h"
+#include "DM_motor.h"
+#include "ENCOS_motor.h"
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
@@ -9,6 +11,39 @@
 /* 调试器观测控制器数据。 */
 float g_fdb_pos, g_fdb_speed, g_ref_pos, g_ref_speed;
 float g_speed_comp, g_output, g_speed_output, g_ouput_comp;
+float g_fdb_torque;
+
+/* 按 CAN 发送周期计算夹爪级联 PID，限幅后只发送力矩。 */
+static float gripper_pid_torque(controller* control) {
+    controller_calc(control);
+    const float torque = control->pid_speed_data.output;
+    if (!isfinite(torque)) return 0;
+    return torque;
+}
+
+static void gripper_dm_control(DM_motor* dm) {
+    dm->ref_position = 0;
+    dm->ref_speed = 0;
+    dm->ref_torque = gripper_pid_torque(dm->motor_controller);
+}
+
+static void gripper_encos_control(ENCOS_motor* encos) {
+    encos->ref_position = encos->config.position_offset;
+    encos->ref_speed = 0;
+    encos->ref_torque = gripper_pid_torque(encos->motor_controller);
+}
+
+/* 以机型配置和当前请求设置夹爪速度环输出上限。 */
+static void gripper_set_pid_limit(Gimbal* obj) {
+    Arm_motor* gripper = &obj->motors[GRIPPER];
+    const float limit = obj->arm_control_data.gripper_torque_limit_nm;
+    float output_max = 0;
+    if (isfinite(limit) && limit >= 0) {
+        output_max = fminf(gripper->config->speed_pid.outputMax,
+            fminf(limit, obj->profile->gripper_max_torque_nm));
+    }
+    gripper->control->pid_speed_data.config.outputMax = output_max;
+}
 
 /* 根据机型配置创建单臂电机和控制工作区。 */
 Gimbal* Gimbal_Create_Profile(const Arm_profile* profile, uint8_t can_index) {
@@ -19,6 +54,7 @@ Gimbal* Gimbal_Create_Profile(const Arm_profile* profile, uint8_t can_index) {
     if (!obj) return NULL;
     obj->profile = profile;
     obj->can_index = can_index;
+    obj->arm_control_data.gripper_torque_limit_nm = profile->gripper_max_torque_nm;
     /* 逐电机创建驱动并设置初始模式。 */
     for (int i = 0; i < ARM_MOTOR_NUM; ++i) {
         Arm_motor* motor = &obj->motors[i];
@@ -35,6 +71,20 @@ Gimbal* Gimbal_Create_Profile(const Arm_profile* profile, uint8_t can_index) {
         /* 任一电机创建失败时终止控制对象创建。 */
         if (!created) return NULL;
     }
+    /* 注册夹爪力矩回调，并在失能状态下清零电机侧增益。 */
+    Arm_motor* gripper = &obj->motors[GRIPPER];
+    const Arm_motor_driver* driver = gripper->config->driver;
+    const uint32_t interrupt_mask = Arm_Motors_Lock();
+    if (driver == &ARM_DRIVER_DM) {
+        DM_motor* dm = gripper->context;
+        dm->control_calc = gripper_dm_control;
+    } else if (driver == &ARM_DRIVER_ENCOS) {
+        ENCOS_motor* encos = gripper->context;
+        encos->control_calc = gripper_encos_control;
+    }
+    gripper_set_pid_limit(obj);
+    driver->mode(gripper, 0, 0, 0);
+    Arm_Motors_Unlock(interrupt_mask);
     /* 加载各关节电机零点偏移，单位 deg。 */
     for (int i = 0; i < ARM_JOINT_NUM; ++i)
         obj->motor_pos_init[i] = profile->joints[i].position_zero_deg;
@@ -61,13 +111,23 @@ static void apply_motor_mode(Gimbal* obj, Arm_mode mode) {
     for (int i = 0; i < ARM_MOTOR_NUM; ++i) {
         Arm_motor* motor = &obj->motors[i];
         const Arm_motor_config* config = motor->config;
+        const uint8_t gripper = i == GRIPPER;
         const uint8_t passive = mode == arm_damping
-            || (mode == arm_only_gravity_comp && i != GRIPPER);
+            || (mode == arm_only_gravity_comp && !gripper);
         motor->control->pid_pos_data.config = passive ? zero : config->position_pid;
-        motor->control->pid_speed_data.config = passive ? zero : config->speed_pid;
-        const float kp = passive ? 0 : config->kp;
-        const float kd = mode == arm_damping ? config->damping_kd
-            : passive ? 0 : config->kd;
+        motor->control->pid_speed_data.config = config->speed_pid;
+        if (passive && !gripper) motor->control->pid_speed_data.config = zero;
+        if (gripper) gripper_set_pid_limit(obj);
+        float kp = 0;
+        float kd = 0;
+        if (!gripper) {
+            if (mode == arm_damping) {
+                kd = config->damping_kd;
+            } else if (!passive) {
+                kp = config->kp;
+                kd = config->kd;
+            }
+        }
         config->driver->mode(motor, mode != arm_stop
             && !Arm_Zero_Motor_Busy(obj, i), kp, kd);
     }
@@ -137,7 +197,8 @@ static void set_references(Gimbal* obj) {
     /* 先使所有电机参考位置跟随反馈并清空前馈。 */
     for (int i = 0; i < ARM_MOTOR_NUM; ++i) {
         controller* control = obj->motors[i].control;
-        control->ref_position = isfinite(control->fdb_position) ? control->fdb_position : 0;
+        control->ref_position = 0;
+        if (isfinite(control->fdb_position)) control->ref_position = control->fdb_position;
         control->speed_comp = 0;
         control->output_comp = 0;
     }
@@ -159,11 +220,10 @@ static void set_references(Gimbal* obj) {
         control->output_comp = (obj->tau_comp[i]+obj->damp_comp[i])
             * joint->direction*joint->torque_scale;
     }
-    /* 运行模式发布夹爪位置和力矩目标。 */
+    /* 运行模式发布夹爪位置目标。 */
     if (obj->arm_mode == arm_run) {
         controller* grip = obj->motors[GRIPPER].control;
         grip->ref_position = Arm_Gripper_To_Motor(obj->profile, obj->arm_control_data.gripper_angle);
-        grip->output_comp = obj->arm_control_data.gripper_torque*obj->profile->gripper.torque_scale;
     }
 }
 
@@ -209,5 +269,10 @@ void Gimbal_Update(Gimbal* obj) {
         g_output = control->output;
         g_ouput_comp = control->output_comp;
         g_speed_output = control->pid_speed_data.output;
+        const Arm_motor* gripper = &obj->motors[GRIPPER];
+        if (gripper->config->driver == &ARM_DRIVER_DM) {
+            const DM_motor* dm = gripper->context;
+            g_fdb_torque = dm->fdb_torque;
+        }
     }
 }

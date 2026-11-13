@@ -170,7 +170,8 @@ joint_deg = (motor_deg - position_zero_deg) × direction / reduction
 自定义映射必须成对提供。
 `context` 指向映射参数。
 `minimum` 和 `maximum` 限制协议角。
-`torque_scale` 换算夹爪力矩。
+`gripper_max_torque_nm` 设置固件允许的夹爪力矩上限，单位为 N·m。
+单片机设置速度环 PID 的 `outputMax` 时，取固件上限、请求上限和 PID 配置上限中的最小值。
 
 两个内置机型使用角度恒等映射。
 metalarm 的夹爪范围为 0～2.4 rad。

@@ -20,7 +20,9 @@ _Static_assert(FRAME_ARM_ID_OFFSET < FRAME_HEADER_LEN,
 
 /* 各包的线上长度。这几个数写进注释里给上位机看了，编译器再核一遍。 */
 _Static_assert(sizeof(FramePktMotorSetZeroAck) == 12U, "电机设置零点回复包不是 12 字节");
-_Static_assert(sizeof(FramePktArmCtrlPos) == 28U, "控制包(角度+夹爪)不是 28 字节");
+_Static_assert(sizeof(FramePktArmCtrlPos) == 32U, "位置控制帧载荷必须为 32 字节");
+_Static_assert(offsetof(FramePktArmCtrlPos, gripper_torque_limit_nm) == 28U,
+               "夹爪力矩上限的偏移必须为 28");
 /* 反馈帧是 250 Hz 常流里最长的一包，63 是协议承诺给上位机的数（两端按这个预留
  * 缓冲），改结构体就得同步改协议文档，不能让它在编译期悄悄漂移。 */
 _Static_assert(sizeof(FramePktArmFeedback) == 63U, "机械臂反馈帧不是 63 字节");

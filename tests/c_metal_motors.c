@@ -187,6 +187,37 @@ EXPORT void x5_motor_config(unsigned i, float* out) { // NOLINT(readability-iden
         cfg->torque_max,cfg->kp,cfg->kd,cfg->driver==&ARM_DRIVER_ENCOS};
     memcpy(out,values,sizeof(values));
 }
+
+EXPORT void gripper_encode_limited(unsigned arx, unsigned mode, float target_rad, float limit, uint8_t* out) {
+    if (arx && !x5) x5 = Gimbal_Create_Profile(&ARM_PROFILE_ARX_X5, 2);
+    Gimbal* g = arx ? x5 : g_arm[0].gimbal;
+    if (!g) abort();
+    const uint8_t bus = g->can_index;
+    const unsigned indices[] = {GRIPPER, JOINT4};
+    g->arm_control_data.gripper_torque_limit_nm = limit;
+    apply_motor_mode(g, mode);
+    for (unsigned i = 0; i < 2; ++i) {
+        Arm_motor* motor = &g->motors[indices[i]];
+        const uint8_t id = motor->config->tx_id;
+        uint8_t feedback[8] = {0x10 | id, 0x7f, 0xff, 0x7f, 0xf7, 0xff, 25, 25};
+        receivers[bus](bus, motor->config->rx_id, feedback, 8);
+        motor->control->ref_position = target_rad * RAD2DEG;
+        motor->control->speed_comp = mode == arm_damping ? 10 * RAD2DEG : 0;
+        motor->control->output_comp = indices[i] == GRIPPER ? -100 : 0;
+    }
+    for (unsigned tick = 0; tick < 12; ++tick, ++clock_ms) {
+        Arm_Motors_Send_Begin();
+        while (Arm_Motors_Send_Step(bus)) {}
+    }
+    for (unsigned i = 0; i < 2; ++i) {
+        const unsigned index = indices[i];
+        const uint16_t id = g->motors[index].config->tx_id;
+        memcpy(out + i * 8, arx ? x5_last[id] : frames[bus][index], 8);
+    }
+    g->arm_control_data.gripper_torque_limit_nm = g->profile->gripper_max_torque_nm;
+    apply_motor_mode(g, arm_run);
+}
+
 EXPORT void x5_passive_enable(float* out) { // NOLINT(readability-identifier-naming)
     Arm_motor* motor = &x5->motors[0];
     motor->control->pid_pos_data.config.KP=0;

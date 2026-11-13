@@ -24,14 +24,13 @@ int Arm_Initialize_Hold(Gimbal_cmd* cmd, uint8_t start) {
     return 1;
 }
 
-/* 发布夹爪电机坐标目标和搜索力矩。 */
+/* 发布夹爪电机坐标目标和搜索力矩上限。 */
 static void home_reference(Gimbal_cmd* cmd, float motor_target, float torque) {
     cmd->initialization.home_active = 1;
     cmd->initialization.home_target_deg = motor_target;
     cmd->initialization.home_torque = torque;
     cmd->gimbal->arm_control_data.gripper_angle =
         Arm_Gripper_From_Motor(cmd->gimbal->profile, motor_target);
-    cmd->gimbal->arm_control_data.gripper_torque = torque;
 }
 
 /* 执行关节复位、夹爪寻限位和设零。 */
@@ -129,7 +128,6 @@ void Arm_Initialization_Cancel(Gimbal_cmd* cmd) {
     cmd->initialization.home_active = 0;
     cmd->auto_mode = arm_auto_none;
     cmd->auto_step = 0;
-    cmd->gimbal->arm_control_data.gripper_torque = 0;
     cmd->gimbal->arm_control_data.gripper_angle =
         cmd->gimbal->arm_feedback_data.gripper_angle;
 }

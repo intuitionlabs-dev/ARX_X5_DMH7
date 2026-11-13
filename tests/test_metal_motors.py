@@ -55,7 +55,8 @@ class MetalMotorTests(unittest.TestCase):
         for name,args in dict(metal_config=[C.c_uint,C.c_uint,fp],
             metal_feedback=[C.c_uint,C.c_uint,bp], metal_position_speed=[C.c_uint,C.c_uint,fp],
             metal_encode=[C.c_uint,C.c_uint,fp,C.c_int,bp], metal_rates=[C.c_uint,up],
-            metal_mode=[C.c_uint,C.c_uint,fp], metal_zero=[C.c_uint,C.c_uint,up]).items():
+            metal_mode=[C.c_uint,C.c_uint,fp], metal_zero=[C.c_uint,C.c_uint,up],
+            gripper_encode_limited=[C.c_uint,C.c_uint,C.c_float,C.c_float,bp]).items():
             getattr(cls.lib,name).argtypes = args
         cls.lib.metal_fixture_init()
 
@@ -105,6 +106,35 @@ class MetalMotorTests(unittest.TestCase):
                         positions.append(bytes(actual[:2]))
                     self.assertEqual(positions[0],positions[1])
                     self.assertEqual(positions[1],positions[2])
+
+    def test_gripper_torque_limit_does_not_change_joint_gains(self):
+        def gains(frame):
+            return ((frame[3] & 0x0f) << 8 | frame[4], frame[5] << 4 | frame[6] >> 4)
+
+        def torque(frame, scale):
+            raw = (frame[6] & 0x0f) << 8 | frame[7]
+            return raw * 2 * scale / 4095 - scale
+
+        for arx, scale in ((0, MOTOR_TMAX[6]), (1, 10)):
+            for target, limit in ((1, 0.5), (-1, 0.5), (1, 0)):
+                with self.subTest(arx=arx, target=target, limit=limit):
+                    frames = (C.c_uint8 * 16)()
+                    self.lib.gripper_encode_limited(arx, 1, target, limit, frames)
+                    gripper, joint = frames[:8], frames[8:]
+                    self.assertAlmostEqual(torque(gripper, scale), target * limit, delta=2 * scale / 4095)
+                    self.assertEqual(gains(gripper), (0, 0))
+                    self.assertEqual((gripper[0] << 8 | gripper[1], gripper[2] << 4 | gripper[3] >> 4),
+                                     (32767, 2047))
+                    self.assertTrue(all(gains(joint)))
+            for mode in (2, 3):
+                with self.subTest(arx=arx, mode=mode):
+                    frames = (C.c_uint8 * 16)()
+                    self.lib.gripper_encode_limited(arx, mode, 1, 0.5, frames)
+                    gripper, joint = frames[:8], frames[8:]
+                    self.assertEqual(gains(gripper), (0, 0))
+                    self.assertAlmostEqual(torque(gripper, scale), 0.5, delta=2 * scale / 4095)
+                    self.assertEqual(gains(joint)[0], 0)
+                    self.assertEqual(gains(joint)[1] > 0, mode == 2)
 
     def test_requested_rates_with_periodic_enable_and_frame_budget(self):
         counts = (C.c_uint*30)(); self.lib.metal_rates(1000,counts)

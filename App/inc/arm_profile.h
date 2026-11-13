@@ -22,11 +22,10 @@ typedef enum {
     ARM_POST_PROCESS_QUINTIC,
 } Arm_post_process_algorithm;
 
-/* 配置单电机夹爪的双向坐标和力矩映射。 */
+/* 配置单电机夹爪的双向角度映射。 */
 typedef struct {
     /* 映射点使用协议夹爪角和电机角，单位 deg。 */
     float cmd[2], motor_deg[2];
-    float torque_scale;
     float minimum, maximum;
     float (*to_motor)(float cmd, const void* context);
     float (*from_motor)(float motor_deg, const void* context);
@@ -53,6 +52,7 @@ typedef struct Arm_profile { // NOLINT(readability-identifier-naming)
     const Arm_joint_config* joints;
     Arm_post_process_algorithm joint_post_process;
     Arm_gripper_mapping gripper;
+    float gripper_max_torque_nm;  /* 固件允许的夹爪电机最大力矩，N·m。 */
     Arm_init_policy init;
     const Arm_dynamics_model* dynamics;
     float gravity[3];

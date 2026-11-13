@@ -154,6 +154,7 @@ static void UartLoopbackTest_Build(uint32_t seq) {
                 (float)((int32_t)(seq % 200U) - 100) + (float)i * 0.25f;
         }
         s_tx_payload.arm_ctrl_pos.gripper_angle = (float)(seq % 90U) * 0.5f;
+        s_tx_payload.arm_ctrl_pos.gripper_torque_limit_nm = (float)(seq % 20U) * 0.125f;
         len = (uint8_t)sizeof(FramePktArmCtrlPos);
         id = FRAME_TYPE_ID_ARM_CTRL_POS;
         break;
@@ -249,7 +250,8 @@ static int UartLoopbackTest_Match(const FrameParser *p) {
                 return 0;
             }
         }
-        return (got->gripper_angle == exp->gripper_angle);
+        return got->gripper_angle == exp->gripper_angle
+            && got->gripper_torque_limit_nm == exp->gripper_torque_limit_nm;
     }
 
     /* 空包和边界帧使用前述字节比较结果。 */

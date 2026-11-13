@@ -219,22 +219,22 @@ static Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
         .cmd_multiturn=true,
         /* 配置该电机的位置环和速度环 PID。 */
         .position_pid={
-            .KP=6.0f,
-            .KI=0.08f,
-            .KD=50.0f,
-            .error_max=200.0f,
-            .outputMax=1000.0f,
+            .KP=25,
+            .KI=0,
+            .KD=5,
+            .error_max=0,
             .Irange=0.0f,
+            .outputMax=2000,
         },
         .speed_pid={
-            .KP=0.0f,
-            .KI=0.0f,
-            .KD=0.0f,
-            .error_max=0.0f,
-            .outputMax=10.0f,
-            .Irange=0.0f,
+          .KP=0.002,
+          .KI=0.0003,
+          .KD=0,
+          .error_max=2000,
+          .Irange=50,
+          .outputMax=3.0f,
         },
-        .kp=8.0f, .kd=0.1f, .damping_kd=0.1f},
+        .kp=0.0f, .kd=0.0f, .damping_kd=0.0f},
 };
 
 /* 配置 ARX-X5 的关节方向、限位、复位角和跟踪参数。 */
@@ -337,15 +337,15 @@ static const Arm_dynamics_model dynamics = { // NOLINT(readability-identifier-na
 /* 汇总 ARX-X5 机型参数和初始化操作。 */
 const Arm_profile ARM_PROFILE_ARX_X5 = {
     .name="ARX-X5",
-    .version_string="Intuition-ARX-X5-2023-v0.4",
+    .version_string="Intuition-ARX-X5-2023-v0.5",
     .joint_count=sizeof(joints)/sizeof(joints[0]), .motor_count=sizeof(motors)/sizeof(motors[0]),
     .motors=motors, .joints=joints,
+    .gripper_max_torque_nm=1,
     .joint_post_process=ARM_POST_PROCESS_QUINTIC,
     /* 夹爪协议角与电机角同向，保持负向闭合、正向张开的恒等映射。 */
     .gripper={
         .cmd=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,
         .motor_deg=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,
-        .torque_scale=ARM_PROFILE_DEFAULT_TORQUE_SCALE,
         .minimum=ARX_X5_GRIPPER_MIN_DEG, .maximum=ARX_X5_GRIPPER_MAX_DEG},
     /* 配置复位时长、设零时限和夹爪初始化判据。 */
     .init={

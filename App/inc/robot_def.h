@@ -47,7 +47,7 @@ typedef struct {
     float joint_vel[ARM_JOINT_NUM];  // deg/s
     float joint_acc[ARM_JOINT_NUM];  // deg/s²
     float gripper_angle;  // 协议夹爪角，deg
-    float gripper_torque;  // 夹爪力矩，N·m
+    float gripper_torque_limit_nm;
 } Arm_control_data;
 
 /* 保存电机状态及关节、夹爪反馈。 */
