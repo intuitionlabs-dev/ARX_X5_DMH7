@@ -213,11 +213,15 @@ static Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
         .cmd_multiturn=false,
         /* 配置该电机的位置环和速度环 PID。 */
         .position_pid={
-            .KP=17.45f,
+            .KP=25,
+            .KI=0.0f,
+            .KD=5.0f,
             .outputMax=2000.0f,
         },
         .speed_pid={
-            .KP=0.02f,
+            .KP=0.008f,
+            .KI=0.0f,
+            .KD=0.0f,
             .outputMax=3.0f,
         },
         .kp=0.0f, .kd=0.0f, .damping_kd=0.0f},
