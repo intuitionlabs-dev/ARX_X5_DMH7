@@ -115,7 +115,7 @@ DM_motor* DMmotor_Create(DM_motor_config* config , control_dm_func func)
     obj->control_calc = func;
     BSP_CAN_AddFilter(obj->config.bsp_can_index, obj->config.can_rx_id);
     /* 监控计数以 Monitor_Loop 周期为单位，100 Hz 下计数 2 对应 20 ms。 */
-    obj->monitor = Monitor_Register(obj->config.lost_callback_, 2, obj);
+    obj->monitor = Monitor_Register(obj->config.lost_callback_, 10, obj);
     obj->check_motor_inplace = DMMotor_Check_InPlace;
     /* 相位掩码为 0 时使用 CAN_TX_GROUP_ALL。 */
     if (obj->config.tx_group == 0) {
