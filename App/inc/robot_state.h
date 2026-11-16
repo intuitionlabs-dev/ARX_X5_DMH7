@@ -43,16 +43,18 @@ typedef enum {
     ROBOT_STATE_NUM, // NOLINT(readability-identifier-naming)
 } Robot_state;
 
-/* 保存已校验的位置目标及夹爪力矩上限。 */
+/* 保存已校验的轨迹目标及夹爪力矩上限。 */
 typedef struct {
     uint8_t valid;
     float joint_angle[ARM_JOINT_NUM];
+    float joint_vel[ARM_JOINT_NUM];
+    float joint_acc[ARM_JOINT_NUM];
     float gripper_angle;
     float gripper_torque_limit_nm;
 } Robot_ctrl_cmd;
 
 /* 配置每臂收包环的载荷容量和槽位数。 */
-#define ROBOT_RX_DATA_LEN 64U
+#define ROBOT_RX_DATA_LEN 80U
 #define ROBOT_RX_SLOT_NUM 8U
 
 /* 以原始字节或具体报文结构访问收包载荷。 */

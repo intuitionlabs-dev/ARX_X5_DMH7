@@ -337,7 +337,7 @@ static const Arm_dynamics_model dynamics = { // NOLINT(readability-identifier-na
 /* 汇总 metalarm 机型参数和初始化操作。 */
 const Arm_profile ARM_PROFILE_METAL = {
     .name="metalarm",
-    .version_string="Intuition-Metal-Arm-v0.6",
+    .version_string="Intuition-Metal-Arm-v0.7",
     .joint_count=sizeof(joints)/sizeof(joints[0]), .motor_count=sizeof(motors)/sizeof(motors[0]),
     .motors=motors, .joints=joints,
     .gripper_max_torque_nm=3,

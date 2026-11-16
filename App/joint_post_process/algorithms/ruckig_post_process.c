@@ -17,10 +17,10 @@ static void joint_ruckig_reset(Joint_post_process_ref* ref) {
     ruckig_c_reset(ref->trajectory.ruckig);
 }
 
-static int joint_ruckig_step(Joint_post_process_ref* ref, const Arm_joint_config* config, float target) {
+static int joint_ruckig_step(Joint_post_process_ref* ref, const Arm_joint_config* config, Joint_motion_state target) {
     const ruckig_c_input input = {
         .current = {ref->state.position, ref->state.velocity, ref->state.acceleration},
-        .target = {target, 0, 0},
+        .target = {target.position, target.velocity, target.acceleration},
         .max_velocity = config->max_velocity_deg_s,
         .max_acceleration = config->max_acceleration_deg_s2,
         .max_jerk = config->max_jerk_deg_s3,

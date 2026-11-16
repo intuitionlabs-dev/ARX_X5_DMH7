@@ -4,20 +4,19 @@
 
 /* 校验控制载荷并写入机械臂控制目标。 */
 int Arm_Protocol_Control(Arm* arm, const Robot_rx_payload* payload) {
-    const float limit = payload->arm_ctrl_pos.gripper_torque_limit_nm;
-    if (!isfinite(limit) || limit < 0) return 0;
-    const float* position = payload->arm_ctrl_pos.joint_angle;
-    const float grip = payload->arm_ctrl_pos.gripper_angle;
-    /* 夹爪目标为非有限值时拒绝报文。 */
-    if (!isfinite(grip)) return 0;
-    /* 校验协议槽位内的关节位置。 */
-    for (int i = 0; i < ARM_JOINT_NUM && i < FRAME_PKT_JOINT_NUM; ++i)
-        /* 关节目标无效时拒绝整条控制命令。 */
-        if (!isfinite(position[i])) return 0;
-    /* 按关节索引复制位置目标。 */
+    const FramePktArmCtrlPos* target = &payload->arm_ctrl_pos;
+    const float limit = target->gripper_torque_limit_nm;
+    const float grip = target->gripper_angle;
+    if (!isfinite(limit) || limit < 0 || !isfinite(grip)) return 0;
+    /* 校验所有字段后再更新目标。 */
+    for (int i = 0; i < FRAME_PKT_JOINT_NUM; ++i) {
+        if (!isfinite(target->joint_angle[i]) || !isfinite(target->joint_vel[i])
+            || !isfinite(target->joint_acc[i])) return 0;
+    }
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
-        arm->ctrl.joint_angle[i] = i < FRAME_PKT_JOINT_NUM ? position[i]
-            : arm->gimbal->arm_feedback_data.joint_angle[i];
+        arm->ctrl.joint_angle[i] = target->joint_angle[i];
+        arm->ctrl.joint_vel[i] = target->joint_vel[i];
+        arm->ctrl.joint_acc[i] = target->joint_acc[i];
     }
     arm->ctrl.gripper_angle = grip;
     arm->ctrl.gripper_torque_limit_nm = limit;

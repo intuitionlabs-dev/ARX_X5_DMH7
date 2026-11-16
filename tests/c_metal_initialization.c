@@ -37,6 +37,8 @@ EXPORT void init_fixture(void) { // NOLINT(readability-identifier-naming)
         arm->gimbal->profile = &ARM_PROFILE_METAL;
         arm->state = robot_state_wait_init;
         if (cmd) {
+            cmd->auto_mode = arm_auto_none;
+            Plan_Running_Check(cmd);
             Plan_group_temp temp_group = cmd->temp_group;
             const struct Joint_post_process_ops* post_process = cmd->post_process;
             Joint_post_process_ref refs[ARM_JOINT_NUM];
@@ -121,12 +123,19 @@ EXPORT void init_observe(unsigned bus, unsigned* state, float* output) { // NOLI
 EXPORT void init_limits(const float* input, unsigned mask, float* out) { // NOLINT(readability-identifier-naming)
     Gimbal_cmd* cmd = g_arm[0].gimbal_cmd;
     for (unsigned i=0; i<7; ++i) cmd->gimbal->arm_feedback_data.motor_inited[i] = (mask >> i)&1;
-    memcpy(cmd->ctrl_src.joint_angle_solved, input, 6*sizeof(float));
+    struct Joint_ctrl_data_solved_t* solved = &cmd->ctrl_src.joint_solved;
+    memcpy(solved->joint_angle, input, sizeof(solved->joint_angle));
+    for (int i = 0; i < ARM_JOINT_NUM; ++i) {
+        solved->joint_vel[i] = i + 1;
+        solved->joint_acc[i] = -i - 1;
+    }
     cmd->gimbal->arm_control_data.gripper_angle = input[6];
     Motor_Angle_Limit(cmd);
-    memcpy(out, cmd->ctrl_src.joint_angle_solved, 6*sizeof(float));
+    memcpy(out, solved->joint_angle, sizeof(solved->joint_angle));
     out[6] = cmd->gimbal->arm_control_data.gripper_angle;
-    memcpy(out+7, cmd->ctrl_src.joint_src.joint_angle, 6*sizeof(float));
+    memcpy(out+7, cmd->ctrl_src.joint_src.joint_angle, sizeof(solved->joint_angle));
+    memcpy(out+13, solved->joint_vel, sizeof(solved->joint_vel));
+    memcpy(out+19, solved->joint_acc, sizeof(solved->joint_acc));
 }
 
 EXPORT void init_reset(unsigned bus, float gripper) { // NOLINT(readability-identifier-naming)
@@ -190,7 +199,8 @@ void BSP_CAN_Send(uint8_t bus, uint16_t id, uint8_t* data, basic_data_t len) {
 }
 
 /* 验证控制帧分派、长度检查及目标更新。 */
-EXPORT unsigned control_receive(unsigned type_id, unsigned length, float target, float limit) { // NOLINT(readability-identifier-naming)
+EXPORT unsigned control_receive(unsigned type_id, unsigned length, float target, float limit,
+                                float velocity, float acceleration) { // NOLINT(readability-identifier-naming)
     Arm* arm = &g_arm[0];
     Robot_rx_payload payload = {0};
     arm->handshake_ok = 1;
@@ -201,8 +211,28 @@ EXPORT unsigned control_receive(unsigned type_id, unsigned length, float target,
     arm->ctrl_frame_cnt = 0;
     rc_monitor.count = 0;
     payload.arm_ctrl_pos.joint_angle[0] = target;
+    payload.arm_ctrl_pos.joint_vel[0] = velocity;
+    payload.arm_ctrl_pos.joint_acc[0] = acceleration;
     payload.arm_ctrl_pos.gripper_torque_limit_nm = limit;
     HandleFrame(arm, (uint8_t)type_id, &payload, (uint8_t)length);
     return arm->ctrl.valid | (arm->ctrl_frame_cnt << 1)
         | ((arm->ctrl.joint_angle[0] == 9) << 2);
+}
+
+/* 分两段接收完整轨迹控制帧。 */
+EXPORT unsigned control_receive_wire(const uint8_t* bytes, unsigned len) {
+    Arm* arm = &g_arm[0];
+    arm->handshake_ok = 1;
+    arm->state = robot_state_normal;
+    arm->arm_mode = arm_run;
+    arm->ctrl_frame_cnt = 0;
+    rc_monitor.count = 0;
+    const uint16_t first_len = 64;
+    if (len <= first_len || len > FRAME_MAX_LEN) return 0;
+    Robot_State_OnRx(ROBOT_LINK_PORT, bytes, first_len);
+    DrainRx(arm);
+    if (arm->ctrl_frame_cnt != 0) return 0;
+    Robot_State_OnRx(ROBOT_LINK_PORT, bytes + first_len, (uint16_t)(len - first_len));
+    DrainRx(arm);
+    return arm->ctrl_frame_cnt;
 }

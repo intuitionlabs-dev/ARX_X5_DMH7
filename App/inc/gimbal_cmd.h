@@ -10,13 +10,19 @@
 
 /* 保存输入关节目标和限位后的求解目标。 */
 typedef struct {
-    /* 保存控制来源提供的关节位置，单位 deg。 */
+    /* 保存关节目标，单位 deg、deg/s、deg/s²。 */
     struct Joint_ctrl_data_src_t {
 
         float joint_angle[ARM_JOINT_NUM];
+        float joint_vel[ARM_JOINT_NUM];
+        float joint_acc[ARM_JOINT_NUM];
     } joint_src;
 
-    float joint_angle_solved[ARM_JOINT_NUM];
+    struct Joint_ctrl_data_solved_t {
+        float joint_angle[ARM_JOINT_NUM];
+        float joint_vel[ARM_JOINT_NUM];
+        float joint_acc[ARM_JOINT_NUM];
+    } joint_solved;
 } Arm_ctrl_data_src;
 
 /* 保存单臂命令处理、自动规划和初始化上下文。 */
@@ -34,12 +40,9 @@ typedef struct Gimbal_cmd_t {
     Arm_auto_mode last_auto_mode;
     uint8_t auto_step;
 
-    /* 保存自动规划句柄、时间基准及运动导数。 */
+    /* 保存自动规划组及其状态。 */
     Plan_group_temp temp_group;
-    uint32_t reset_start_ms;
     uint8_t auto_failed;
-    float plan_joint_vel[ARM_JOINT_NUM];
-    float plan_joint_acc[ARM_JOINT_NUM];
     uint8_t plan_running;
 
     const struct Joint_post_process_ops* post_process;

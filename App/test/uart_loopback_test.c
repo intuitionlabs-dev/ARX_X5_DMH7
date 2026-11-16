@@ -146,12 +146,14 @@ static void UartLoopbackTest_Build(uint32_t seq) {
         id = FRAME_TYPE_ID_MOTOR_SET_ZERO_ACK;
         break;
 
-    /* 生成关节位置和夹爪目标报文。 */
+    /* 生成关节轨迹和夹爪目标报文。 */
     case 3:
-        /* 逐关节填充位置目标。 */
+        /* 填充各关节的轨迹目标。 */
         for (i = 0U; i < FRAME_PKT_JOINT_NUM; i++) {
             s_tx_payload.arm_ctrl_pos.joint_angle[i] =
                 (float)((int32_t)(seq % 200U) - 100) + (float)i * 0.25f;
+            s_tx_payload.arm_ctrl_pos.joint_vel[i] = (float)i * -0.5f;
+            s_tx_payload.arm_ctrl_pos.joint_acc[i] = (float)i * 0.75f;
         }
         s_tx_payload.arm_ctrl_pos.gripper_angle = (float)(seq % 90U) * 0.5f;
         s_tx_payload.arm_ctrl_pos.gripper_torque_limit_nm = (float)(seq % 20U) * 0.125f;
@@ -239,14 +241,16 @@ static int UartLoopbackTest_Match(const FrameParser *p) {
         return 1;
     }
 
-    /* 核对关节位置与夹爪目标。 */
+    /* 核对关节轨迹和夹爪目标。 */
     case FRAME_TYPE_ID_ARM_CTRL_POS: {
         const FramePktArmCtrlPos *got = &p->buf.f.payload.arm_ctrl_pos;
         const FramePktArmCtrlPos *exp = &s_tx_payload.arm_ctrl_pos;
-        /* 逐关节比较位置字段。 */
+        /* 比较各关节的轨迹目标。 */
         for (i = 0U; i < FRAME_PKT_JOINT_NUM; i++) {
-            /* 关节位置不匹配时报告失败。 */
-            if (got->joint_angle[i] != exp->joint_angle[i]) {
+            /* 关节目标不匹配时报告失败。 */
+            if (got->joint_angle[i] != exp->joint_angle[i]
+                || got->joint_vel[i] != exp->joint_vel[i]
+                || got->joint_acc[i] != exp->joint_acc[i]) {
                 return 0;
             }
         }

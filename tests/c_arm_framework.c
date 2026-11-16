@@ -325,6 +325,7 @@ int main(void) {
     Gimbal_cmd* cmd = g_arm[0].gimbal_cmd;
     g_arm[0].ctrl.valid = 0;
     g_arm[0].arm_mode = arm_run;
+    const uint8_t available_plans = get_Rest_Temp_Plan_cnt();
     CHECK(Arm_Initialize_Hold(cmd, 1) == 0);
     for (int i=0; i<30; ++i) {
         clock_ms+=2;
@@ -333,12 +334,19 @@ int main(void) {
         CHECK(g->arm_control_data.gripper_torque_limit_nm == profile.gripper_max_torque_nm);
         if (i == 4) {
             CHECK(cmd->plan_running);
-            CHECK(fabsf(g->arm_control_data.joint_angle[0]-cmd->temp_group[0]->current_pos)<.001f);
-            CHECK(fabsf(g->arm_control_data.joint_vel[0]-cmd->temp_group[0]->current_vel)<.001f);
-            CHECK(fabsf(g->arm_control_data.joint_acc[0]-cmd->temp_group[0]->current_acc)<.001f);
+            CHECK(fabsf(g->arm_control_data.joint_angle[0]-cmd->temp_group[0]->output.pos)<.001f);
+            CHECK(fabsf(g->arm_control_data.joint_vel[0]-cmd->temp_group[0]->output.vel)<.001f);
+            CHECK(fabsf(g->arm_control_data.joint_acc[0]-cmd->temp_group[0]->output.acc)<.001f);
+        }
+        if (i == 10) {
+            const Move_plan* plan = cmd->temp_group[0];
+            CHECK(cmd->plan_running && plan->status == move_plan_reset);
+            CHECK(plan->output.pos == joints[0].reset_deg && plan->output.vel == 0 && plan->output.acc == 0);
+            CHECK(get_Rest_Temp_Plan_cnt() == available_plans - ARM_JOINT_NUM);
         }
     }
     CHECK(Arm_Initialize_Hold(cmd, 0) == 1);
+    CHECK(get_Rest_Temp_Plan_cnt() == available_plans);
     for (int i=0; i<ARM_JOINT_NUM; ++i)
         CHECK(fabsf(g->arm_control_data.joint_angle[i]-joints[i].reset_deg)<.001f);
 
@@ -369,5 +377,18 @@ int main(void) {
     CHECK(Arm_Initialize_Hold(cmd, 0) < 0);
     CHECK(cmd->auto_failed && !cmd->plan_running);
     CHECK(!g->arm_feedback_data.motor_inited[GRIPPER]);
+
+    g_arm[0].arm_mode = arm_damping;
+    Gimbal_Cmd_Update(cmd);
+    payload.arm_ctrl_pos.joint_angle[0] = 11;
+    payload.arm_ctrl_pos.joint_vel[0] = 5;
+    payload.arm_ctrl_pos.joint_acc[0] = -10;
+    CHECK(Arm_Protocol_Control(&g_arm[0], &payload));
+    g_arm[0].arm_mode = arm_run;
+    for (int i=0; i<1000; ++i) Gimbal_Cmd_Update(g_arm[0].gimbal_cmd);
+    CHECK(g->arm_control_data.mode == arm_run);
+    CHECK(g->arm_control_data.joint_angle[0] == 11);
+    CHECK(g->arm_control_data.joint_vel[0] == 5);
+    CHECK(g->arm_control_data.joint_acc[0] == -10);
     return 0;
 }

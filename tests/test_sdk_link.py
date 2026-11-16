@@ -101,11 +101,17 @@ class SDKLinkTests(unittest.TestCase):
         a.start()
         self.advance(link, 8004)
         angles = (0.2, 0.3, 0.4, -0.1, 0.15, -0.2)
-        self.assertEqual(a.send_ctrl_pos(angles, gripper_raw_deg=-25, gripper_torque_limit_nm=1), 40)
+        velocity = (0.12, -0.17, 0.24, 0.11, -0.15, 0.18)
+        acceleration = (-0.3, 0.2, 0.4, -0.1, 0.12, 0.25)
+        self.assertEqual(a.send_ctrl_pos(angles, gripper_raw_deg=-25, gripper_torque_limit_nm=1,
+                                         joint_vel_rad_s=velocity, joint_acc_rad_s2=acceleration), 88)
         self.advance(link, 8008)
         accepted = link.controller.arms[0].control
         for actual, want in zip(accepted.joint_angle, map(degrees, angles)):
             self.assertAlmostEqual(actual, want, places=5)
+        for actuals, values in ((accepted.joint_vel, velocity), (accepted.joint_acc, acceleration)):
+            for actual, want in zip(actuals, map(degrees, values)):
+                self.assertAlmostEqual(actual, want, places=5)
         self.assertEqual(accepted.gripper_angle, -25)
         self.assertEqual(accepted.gripper_torque_limit_nm, 1)
         self.assertIsNone(link.controller.arms[1].control)
@@ -182,9 +188,13 @@ class SDKLinkTests(unittest.TestCase):
         invalid = [(P.TID_VERSION, struct.pack("<I", 0)), (P.TID_VERSION, b""),
                    (P.TID_ARM_START, b"x"), (P.TID_ARM_CTRL_POS, b""),
                    (P.TID_ARM_CTRL_POS, struct.pack("<7f", *([0] * 7))),
-                   (P.TID_ARM_CTRL_POS, struct.pack("<8f", float("nan"), *([0] * 7))),
-                   (P.TID_ARM_CTRL_POS, struct.pack("<8f", *([0] * 7), -1)),
-                   (P.TID_ARM_CTRL_POS, struct.pack("<8f", *([0] * 7), float("inf"))),
+                   (P.TID_ARM_CTRL_POS, bytes(32))]
+        for index, value in ((0, float("nan")), (7, -1), (7, float("inf")),
+                             (8, float("nan")), (14, float("inf"))):
+            fields = [0] * 20
+            fields[index] = value
+            invalid.append((P.TID_ARM_CTRL_POS, struct.pack("<20f", *fields)))
+        invalid += [
                    (P.TID_ARM_FEEDBACK, b""), (0x17, bytes(52)), (255, b"")]
         before = link.n_tx
         for tid, payload in invalid:

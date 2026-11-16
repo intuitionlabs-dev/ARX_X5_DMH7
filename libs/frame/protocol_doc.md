@@ -17,10 +17,10 @@
 
 | 项 | 值 |
 | --- | --- |
-| metalarm 协议版本串 | `Intuition-Metal-Arm-v0.6` |
-| metalarm 版本码 | `0xD6D04188` |
-| ARX-X5 协议版本串 | `Intuition-ARX-X5-2023-v0.5` |
-| ARX-X5 版本码 | `0xFA1DD55C` |
+| metalarm 协议版本串 | `Intuition-Metal-Arm-v0.7` |
+| metalarm 版本码 | `0xD7D0431B` |
+| ARX-X5 协议版本串 | `Intuition-ARX-X5-2023-v0.6` |
+| ARX-X5 版本码 | `0xFD1DDA15` |
 | 版本码算法 | FNV-1a 32 |
 | 帧格式版本 | 见第 2 节（帧头带 `arm_id`） |
 
@@ -168,7 +168,7 @@ WAIT_SYNC0 --0xAA--> WAIT_SYNC1 --0x55--> HEADER --(累计 6 字节)--> 校验 c
 | `0x13` | `ARM_GRAVITY` | 下发 | 0 | 8 | 切 `arm_only_gravity_comp`（只顶重力） |
 | `0x14` | `ARM_STOP` | 下发 | 0 | 8 | 切 `arm_stop`（失能电机） |
 | `0x15` | `ARM_DAMPING` | 下发 | 0 | 8 | 切 `arm_damping`（被动阻尼） |
-| `0x16` | `ARM_CTRL_POS` | 下发 | 32 | 40 | 位置目标和夹爪力矩上限 |
+| `0x16` | `ARM_CTRL_POS` | 下发 | 80 | 88 | 关节轨迹目标、夹爪角度和力矩上限 |
 | `0x18` | `ARM_RESET` | 下发 | 0 | 8 | 六轴复位，保持已有夹爪目标 |
 | `0x80` | `ARM_FEEDBACK` | 上报 | 63 | 71 | 机械臂反馈帧，握手后固定 **250 Hz** |
 | `0x81` | `LINK_STATUS` | 上报 | 84 | 92 | 链路状态帧，握手后固定 **10 Hz**，链路级只一帧 |
@@ -271,15 +271,17 @@ typedef FramePktEmpty FramePktArmInit;   /* 0 字节，线上 datalen = 0 */
 union 里的成员和码表一一对应，`payload.arm_start` 这种写法能编过。**它们没有可读字段**，
 接收时只判断 `p->type_id`。
 
-### 0x16 位置目标和夹爪力矩上限
+### 0x16 关节轨迹目标和夹爪控制
 
-载荷固定为 32 字节。字段均为小端 IEEE 754 单精度浮点数。
+载荷固定为 80 字节。字段均为小端 IEEE 754 单精度浮点数。
 
 | 载荷偏移 | 字节数 | 字段 | 单位 | 取值 | 含义 |
 | --- | --- | --- | --- | --- | --- |
 | 0 | 24 | `joint_angle[6]` | deg | 有限值 | J1 至 J6 的目标角度 |
 | 24 | 4 | `gripper_angle` | deg | 有限值 | 夹爪目标角度 |
 | 28 | 4 | `gripper_torque_limit_nm` | N·m | 有限非负值 | 夹爪电机输出轴的力矩上限 |
+| 32 | 24 | `joint_vel[6]` | deg/s | 有限值 | J1 至 J6 的目标角速度 |
+| 56 | 24 | `joint_acc[6]` | deg/s² | 有限值 | J1 至 J6 的目标角加速度 |
 
 在握手完成、状态为正常运行、模式为 RUN 且遥控器离线时发送此帧。
 板子保存 `0x16` 的夹爪力矩上限。
@@ -291,7 +293,9 @@ union 里的成员和码表一一对应，`payload.arm_start` 这种写法能编
 零表示请求零力矩。实际电机力矩受 CAN 量化和驱动特性影响。
 载荷长度或字段无效时，板子丢弃整帧并保留当前目标。
 
-位置命令使用机型配置指定的算法逐轴生成位置、速度和加速度。
+关节后处理以目标角度、速度和加速度为轨迹终点。
+若关节角度触发软限位，板子将该轴终点速度和加速度置零。
+Ruckig 的终点条件须满足机型的运动约束。求解失败时，板子进入阻尼。
 算法和关节参数见[机型配置](../../App/profiles/README.md#关节轨迹算法)。
 动力学前馈使用轨迹速度、轨迹加速度和关节反馈角。
 夹爪目标单位为 deg，限位范围由机型配置指定。
@@ -454,7 +458,7 @@ union {
 if (FrameParserFeed(&parser, byte) == FRAME_OK) {
     if (parser.type_id == FRAME_TYPE_ID_ARM_CTRL_POS) {
         const FramePktArmCtrlPos *c = &parser.buf.f.payload.arm_ctrl_pos;
-        /* 读取关节角、夹爪角和夹爪力矩上限。 */
+        /* 读取关节轨迹目标、夹爪角和力矩上限。 */
     }
 }
 ```
@@ -535,7 +539,7 @@ if (FrameParserFeed(&parser, byte) == FRAME_OK) {
           之后可以随时 0x13 ARM_GRAVITY 切重力补偿、0x15 ARM_DAMPING 切阻尼、
           0x14 ARM_STOP 松劲。**这些只在正常运行模式下有效**，在其他状态下发送会被丢弃。
 
-5. 控制   上位机 ──0x16 ARM_CTRL_POS(位置和夹爪力矩上限)──→ 板子
+5. 控制   上位机 ──0x16 ARM_CTRL_POS(关节轨迹和夹爪目标)──→ 板子
           **只在正常运行 + mode==run(1) + 遥控器离线**时接受。
           这是唯一带 payload 的下行包，也是应当按周期发送的包 —— 它就是链路保活的依据。
 

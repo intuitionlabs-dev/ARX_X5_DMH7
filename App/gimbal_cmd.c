@@ -24,6 +24,7 @@ static void Ctrl_Post_Process(Gimbal_cmd* obj); // NOLINT(readability-identifier
 static void Arm_Ref_Set(Gimbal_cmd* obj); // NOLINT(readability-identifier-naming)
 
 static void joint_src_follow(Gimbal_cmd* obj);
+static void joint_src_clear_derivatives(Gimbal_cmd* obj);
 static Joint_motion_state joint_feedback_reference(const Gimbal_cmd* obj, int joint);
 static void joint_store_reference(Gimbal_cmd* obj, int joint, Joint_motion_state state);
 
@@ -150,6 +151,7 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
 
     /* 遥控器在线时使用摇杆增量控制。 */
     if (Rc_Online()) {
+        joint_src_clear_derivatives(obj);
 
         /* 开关处于保持位置时维持当前目标。 */
         if (rc.sw_a == 0) {
@@ -169,9 +171,11 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
     /* 协议目标尚未有效时保持控制源。 */
     if (cmd == NULL || !cmd->valid) return;
 
-    /* 逐轴加载协议位置目标。 */
+    /* 逐轴加载协议轨迹目标。 */
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         obj->ctrl_src.joint_src.joint_angle[i] = cmd->joint_angle[i];
+        obj->ctrl_src.joint_src.joint_vel[i] = cmd->joint_vel[i];
+        obj->ctrl_src.joint_src.joint_acc[i] = cmd->joint_acc[i];
     }
     obj->gimbal->arm_control_data.gripper_angle = cmd->gripper_angle;
     obj->gimbal->arm_control_data.gripper_torque_limit_nm = cmd->gripper_torque_limit_nm;
@@ -197,9 +201,15 @@ static void Auto_Mode_Update(Gimbal_cmd* obj) {
 
 /* 根据自动动作步骤更新规划运行标志。 */
 static void Plan_Running_Check(Gimbal_cmd* obj) {
-    // 检查是否为一键模式以及tempgoup是否正在运行
-    obj->plan_running =
-        (obj->auto_mode != arm_auto_none && obj->temp_group[0]->status == move_plan_run);
+    if (obj->auto_mode != arm_auto_none) {
+        obj->plan_running = 1;
+    } else if (obj->plan_running) {
+        for (int i = 0; i < ARM_JOINT_NUM; ++i) {
+            obj->temp_group[i]->retain_output = 0;
+            obj->temp_group[i] = NULL;
+        }
+        obj->plan_running = 0;
+    }
 }
 
 /* 清空运动前馈并加载夹爪的机型力矩上限。 */
@@ -213,37 +223,50 @@ static void Set_Ctrl_Default(Gimbal_cmd* obj) {
         obj->gimbal->profile->gripper_max_torque_nm;
 }
 
-/* 将输入关节目标复制为限位前参考值。 */
+/* 生成限位前的关节位置、速度和加速度。 */
 static void Ctrl_Src_Calc(Gimbal_cmd* obj) {
-
-    memcpy(obj->ctrl_src.joint_angle_solved, obj->ctrl_src.joint_src.joint_angle,
-        sizeof(obj->ctrl_src.joint_angle_solved));
-
-    /* 被动和停止模式使用当前反馈角。 */
-    if (obj->mode != arm_run) {
-        /* 逐轴使求解目标跟随反馈位置。 */
-        for (int i = 0; i < ARM_JOINT_NUM; i++) {
-            obj->ctrl_src.joint_angle_solved[i] =
-                obj->gimbal->arm_feedback_data.joint_angle[i];
+    const struct Joint_ctrl_data_src_t* source = &obj->ctrl_src.joint_src;
+    struct Joint_ctrl_data_solved_t* solved = &obj->ctrl_src.joint_solved;
+    for (int i = 0; i < ARM_JOINT_NUM; ++i) {
+        if (obj->mode != arm_run) {
+            solved->joint_angle[i] = obj->gimbal->arm_feedback_data.joint_angle[i];
+            solved->joint_vel[i] = 0;
+            solved->joint_acc[i] = 0;
+        } else if (obj->plan_running) {
+            const Move_plan_output output = obj->temp_group[i]->output;
+            solved->joint_angle[i] = output.pos;
+            solved->joint_vel[i] = output.vel * obj->gimbal->profile->joints[i].plan_velocity_scale;
+            solved->joint_acc[i] = output.acc;
+        } else {
+            solved->joint_angle[i] = source->joint_angle[i];
+            solved->joint_vel[i] = source->joint_vel[i];
+            solved->joint_acc[i] = source->joint_acc[i];
         }
     }
 }
 
 /* 对位置有效的关节和夹爪执行软限位。 */
 static void Motor_Angle_Limit(Gimbal_cmd* obj) {
-
+    struct Joint_ctrl_data_solved_t* solved = &obj->ctrl_src.joint_solved;
     /* 逐轴限制求解目标到机型允许范围。 */
     for (int i = 0; i < ARM_JOINT_NUM; i++) {
         /* 位置尚未有效的关节保持当前求解目标。 */
         if (!obj->gimbal->arm_feedback_data.motor_inited[i]) continue;
-        obj->ctrl_src.joint_angle_solved[i] = fclip(obj->ctrl_src.joint_angle_solved[i],
-            obj->gimbal->profile->joints[i].minimum_deg, obj->gimbal->profile->joints[i].maximum_deg);
+        const float position = solved->joint_angle[i];
+        const float limited = fclip(position, obj->gimbal->profile->joints[i].minimum_deg,
+            obj->gimbal->profile->joints[i].maximum_deg);
+        solved->joint_angle[i] = limited;
+        if (position != limited) {
+            solved->joint_vel[i] = 0;
+            solved->joint_acc[i] = 0;
+            obj->ctrl_src.joint_src.joint_vel[i] = 0;
+            obj->ctrl_src.joint_src.joint_acc[i] = 0;
+        }
     }
 
     /* 将限位结果同步回输入目标。 */
-    for (int i = 0; i < ARM_JOINT_NUM; i++) {
-        obj->ctrl_src.joint_src.joint_angle[i] = obj->ctrl_src.joint_angle_solved[i];
-    }
+    if (obj->plan_running) joint_src_clear_derivatives(obj);
+    memcpy(obj->ctrl_src.joint_src.joint_angle, solved->joint_angle, sizeof(solved->joint_angle));
 
     /* 夹爪初始化完成后限制协议目标范围。 */
     if (obj->gimbal->arm_feedback_data.motor_inited[GRIPPER])
@@ -265,24 +288,24 @@ static void joint_store_reference(Gimbal_cmd* obj, int joint, Joint_motion_state
 /* 选择参考来源、推进轨迹、校验结果并同步算法状态。 */
 static void Ctrl_Post_Process(Gimbal_cmd* obj) {
     const struct Joint_post_process_ops* ops = obj->post_process;
+    const struct Joint_ctrl_data_solved_t* solved = &obj->ctrl_src.joint_solved;
     const uint8_t running = obj->mode == arm_run;
     const uint8_t use_algorithm = running && !obj->plan_running;
 
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
         Joint_post_process_ref* ref = &obj->joint_post_ref[i];
+        const Joint_motion_state target = {
+            solved->joint_angle[i], solved->joint_vel[i], solved->joint_acc[i]};
         if (use_algorithm) {
             if (!ref->initialized) {
                 ref->state = joint_feedback_reference(obj, i);
                 ref->initialized = 1;
                 ops->reset(ref);
             }
-            ref->status = ops->step(ref, &obj->gimbal->profile->joints[i],
-                obj->ctrl_src.joint_angle_solved[i]);
+            ref->status = ops->step(ref, &obj->gimbal->profile->joints[i], target);
             if (ref->status < 0) goto reference_failed;
         } else if (running) {
-            ref->state = (Joint_motion_state){obj->ctrl_src.joint_angle_solved[i],
-                obj->plan_joint_vel[i] * obj->gimbal->profile->joints[i].plan_velocity_scale,
-                obj->plan_joint_acc[i]};
+            ref->state = target;
         } else {
             ref->state = joint_feedback_reference(obj, i);
         }
@@ -326,4 +349,10 @@ static void joint_src_follow(Gimbal_cmd* obj) {
 
     memcpy(obj->ctrl_src.joint_src.joint_angle, obj->gimbal->arm_feedback_data.joint_angle,
         sizeof(obj->ctrl_src.joint_src.joint_angle));
+    joint_src_clear_derivatives(obj);
+}
+
+static void joint_src_clear_derivatives(Gimbal_cmd* obj) {
+    memset(obj->ctrl_src.joint_src.joint_vel, 0, sizeof(obj->ctrl_src.joint_src.joint_vel));
+    memset(obj->ctrl_src.joint_src.joint_acc, 0, sizeof(obj->ctrl_src.joint_src.joint_acc));
 }

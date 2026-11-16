@@ -10,6 +10,8 @@ static Gimbal gimbal;
 static Gimbal_cmd gimbal_cmd;
 static Arm_profile profile;
 static Arm_joint_config joints[ARM_JOINT_NUM];
+static Move_plan plans[ARM_JOINT_NUM];
+static Move_plan* plan_group[ARM_JOINT_NUM];
 
 uint8_t is_Offline(monitor_item* item) {
     (void)item;
@@ -30,6 +32,7 @@ void reference_command_init(const float* feedback) { // NOLINT(readability-ident
     memset(&cmd, 0, sizeof(cmd));
     gimbal_cmd.gimbal = &gimbal;
     gimbal_cmd.arm = &arm;
+    gimbal_cmd.temp_group = plan_group;
     gimbal.profile = &profile;
     profile.joints = joints;
     for (int i=0; i<ARM_JOINT_NUM; ++i) {
@@ -50,10 +53,11 @@ void reference_command_step(int mode, int planning, // NOLINT(readability-identi
     gimbal_cmd.mode = mode;
     gimbal_cmd.plan_running = planning;
     for (int i = 0; i < 6; ++i) {
-        gimbal_cmd.ctrl_src.joint_angle_solved[i] = target[i];
-        gimbal_cmd.plan_joint_vel[i] = velocity[i];
-        gimbal_cmd.plan_joint_acc[i] = acc[i];
+        gimbal_cmd.ctrl_src.joint_src.joint_angle[i] = target[i];
+        plans[i].output = (Move_plan_output){target[i], velocity[i], acc[i]};
+        plan_group[i] = &plans[i];
     }
+    Ctrl_Src_Calc(&gimbal_cmd);
     Ctrl_Post_Process(&gimbal_cmd);
     Arm_Ref_Set(&gimbal_cmd);
     for (int i = 0; i < 6; ++i) {

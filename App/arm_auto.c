@@ -1,5 +1,4 @@
 #include "arm_auto.h"
-#include "main.h" // IWYU pragma: keep
 
 /* 按步骤启动并跟踪关节复位轨迹。 */
 void Arm_Reset(Gimbal_cmd* obj) {
@@ -27,38 +26,24 @@ void Arm_Reset(Gimbal_cmd* obj) {
         /* 由 MovePlan 同时启动各轴五次规划。 */
         Plan_Group_Temp_Calc_And_Run(obj->temp_group, ARM_JOINT_NUM, start, end,
             duration, quintic_spline);
-        /* 检查各轴规划并发布初始参考值。 */
         for (int i = 0; i < ARM_JOINT_NUM; ++i) {
-            /* 任一轴创建失败时退出自动动作。 */
             if (obj->temp_group[i] == NULL) {
                 obj->auto_failed = 1;
                 obj->auto_mode = arm_auto_none;
                 return;
             }
-            obj->ctrl_src.joint_src.joint_angle[i] = start[i];
-            obj->plan_joint_vel[i] = 0;
-            obj->plan_joint_acc[i] = 0;
         }
-        /* 记录复位起始时刻并进入轨迹跟踪步骤。 */
-        obj->reset_start_ms = HAL_GetTick();
+        for (int i = 0; i < ARM_JOINT_NUM; ++i)
+            obj->temp_group[i]->retain_output = 1;
         obj->auto_step = 1;
         break;
     }
-    /* 读取规划位置、速度和加速度。 */
-    case 1: {
-        const uint8_t complete = HAL_GetTick()-obj->reset_start_ms >= duration*1000.0f;
-        /* 逐轴发布轨迹采样值，到时锁定终点。 */
-        for (int i = 0; i < ARM_JOINT_NUM; ++i) {
-            const Move_plan* plan = obj->temp_group[i];
-            obj->ctrl_src.joint_src.joint_angle[i] =
-                complete ? obj->gimbal->profile->joints[i].reset_deg : plan->current_pos;
-            obj->plan_joint_vel[i] = complete ? 0 : plan->current_vel;
-            obj->plan_joint_acc[i] = complete ? 0 : plan->current_acc;
-        }
-        /* 持续时间结束后进入收尾步骤。 */
-        if (complete) obj->auto_step = 2;
+    /* 等待所有轴发布终点。 */
+    case 1:
+        for (int i = 0; i < ARM_JOINT_NUM; ++i)
+            if (obj->temp_group[i]->status == move_plan_run) return;
+        obj->auto_step = 2;
         break;
-    }
     /* 清除自动模式并复位步骤索引。 */
     default:
         obj->auto_mode = arm_auto_none;

@@ -62,6 +62,7 @@ typedef struct {
     Gimbal gimbal;
     Arm_profile profile;
     Arm_joint_config joints[ARM_JOINT_NUM];
+    Move_plan plans[ARM_JOINT_NUM];
     Gimbal_cmd* cmd;
 } Fixture;
 
@@ -85,8 +86,11 @@ static void init_profile(Fixture* f, Arm_post_process_algorithm algorithm, float
     f->cmd = Gimbal_Cmd_Create(&f->arm);
     assert(f->cmd);
     f->cmd->mode = arm_run;
-    for (int i=0; i<ARM_JOINT_NUM; ++i)
-        f->cmd->ctrl_src.joint_angle_solved[i] = i;
+    for (int i=0; i<ARM_JOINT_NUM; ++i) {
+        f->cmd->ctrl_src.joint_src.joint_angle[i] = i;
+        f->cmd->temp_group[i] = &f->plans[i];
+        f->plans[i].output.pos = i;
+    }
 }
 
 static void init(Fixture* f) {
@@ -104,6 +108,7 @@ static void destroy(Fixture* f) {
 
 static void reference_step(Fixture* f) {
     updating = 1;
+    Ctrl_Src_Calc(f->cmd);
     Ctrl_Post_Process(f->cmd);
     Arm_Ref_Set(f->cmd);
     updating = 0;
@@ -142,16 +147,16 @@ static void constrained_step(Fixture* f) {
 static void position_replan_isolation(void) {
     Fixture a, b;
     init(&a); init(&b);
-    a.cmd->ctrl_src.joint_angle_solved[0] = 60;
-    a.cmd->ctrl_src.joint_angle_solved[1] = -40;
-    b.cmd->ctrl_src.joint_angle_solved[0] = -30;
+    a.cmd->ctrl_src.joint_src.joint_angle[0] = 60;
+    a.cmd->ctrl_src.joint_src.joint_angle[1] = -40;
+    b.cmd->ctrl_src.joint_src.joint_angle[0] = -30;
     a.joints[1].max_velocity_deg_s = 20;
     for (int k=0; k<100; ++k) {
         constrained_step(&a); constrained_step(&b);
     }
     assert(a.gimbal.arm_control_data.joint_vel[0] > 0);
     assert(b.gimbal.arm_control_data.joint_vel[0] < 0);
-    a.cmd->ctrl_src.joint_angle_solved[0] = -10;
+    a.cmd->ctrl_src.joint_src.joint_angle[0] = -10;
     for (int k=0; k<2500; ++k) {
         constrained_step(&a); constrained_step(&b);
     }
@@ -165,7 +170,7 @@ static void position_replan_isolation(void) {
     }
     /* Other axes keep independent trajectories while a target streams in. */
     for (int k=0; k<1000; ++k) {
-        a.cmd->ctrl_src.joint_angle_solved[0] = 25*sinf(k*.01f);
+        a.cmd->ctrl_src.joint_src.joint_angle[0] = 25*sinf(k*.01f);
         constrained_step(&a);
         assert(a.gimbal.arm_control_data.joint_angle[1] == -40);
     }
@@ -174,7 +179,7 @@ static void position_replan_isolation(void) {
 
 static void short_position_move(void) {
     Fixture f; init(&f);
-    f.cmd->ctrl_src.joint_angle_solved[0] = .01f;
+    f.cmd->ctrl_src.joint_src.joint_angle[0] = .01f;
     unsigned steps = 0;
     do {
         constrained_step(&f);
@@ -196,9 +201,7 @@ static void source_transitions(void) {
     const unsigned calls_before_plan = update_calls;
     for (int k=0; k<5; ++k) {
         for (int i=0; i<ARM_JOINT_NUM; ++i) {
-            f.cmd->ctrl_src.joint_angle_solved[i] = 10 + k*.02f + i;
-            f.cmd->plan_joint_vel[i] = 5 + k;
-            f.cmd->plan_joint_acc[i] = -30 + k;
+            f.plans[i].output = (Move_plan_output){10 + k*.02f + i, 5 + k, -30 + k};
             f.joints[i].plan_velocity_scale = 2;
         }
         reference_step(&f);
@@ -206,9 +209,11 @@ static void source_transitions(void) {
         assert(update_calls == calls_before_plan);
         for (int i=0; i<ARM_JOINT_NUM; ++i) {
             const Joint_motion_state state = f.cmd->joint_post_ref[i].state;
-            assert(f.cmd->post_processed_joint_angle[i] == f.cmd->ctrl_src.joint_angle_solved[i]);
-            assert(f.cmd->post_processed_joint_vel[i] == f.cmd->plan_joint_vel[i]*2);
-            assert(f.cmd->post_processed_joint_acc[i] == f.cmd->plan_joint_acc[i]);
+            assert(f.cmd->ctrl_src.joint_solved.joint_angle[i] == f.plans[i].output.pos);
+            assert(f.cmd->ctrl_src.joint_solved.joint_vel[i] == f.plans[i].output.vel*2);
+            assert(f.cmd->ctrl_src.joint_solved.joint_acc[i] == f.plans[i].output.acc);
+            assert(f.cmd->post_processed_joint_vel[i] == f.plans[i].output.vel*2);
+            assert(f.cmd->post_processed_joint_acc[i] == f.plans[i].output.acc);
             assert(state.position == f.gimbal.arm_control_data.joint_angle[i]);
             assert(state.velocity == f.gimbal.arm_control_data.joint_vel[i]);
             assert(state.acceleration == f.gimbal.arm_control_data.joint_acc[i]);
@@ -238,9 +243,10 @@ static void source_transitions(void) {
 
 static void post_process_and_publication(void) {
     Fixture f; init(&f);
-    f.cmd->ctrl_src.joint_angle_solved[0] = 30;
+    f.cmd->ctrl_src.joint_src.joint_angle[0] = 30;
     const unsigned before = update_calls;
     updating = 1;
+    Ctrl_Src_Calc(f.cmd);
     Ctrl_Post_Process(f.cmd);
     assert(f.cmd->mode == arm_run);
     assert(update_calls == before+ARM_JOINT_NUM);
@@ -268,7 +274,7 @@ static void invalid_source_references(void) {
     Fixture f; init(&f);
     f.cmd->mode = arm_run;
     f.cmd->plan_running = 1;
-    f.cmd->plan_joint_acc[ARM_JOINT_NUM-1] = INFINITY;
+    f.plans[ARM_JOINT_NUM-1].output.acc = INFINITY;
     reference_step(&f);
     assert(f.cmd->mode == arm_damping);
     for (int i=0; i<ARM_JOINT_NUM; ++i) {
@@ -281,7 +287,7 @@ static void invalid_source_references(void) {
 
 static void errors_and_rc(void) {
     Fixture f; init(&f);
-    f.cmd->ctrl_src.joint_angle_solved[0] = 50;
+    f.cmd->ctrl_src.joint_src.joint_angle[0] = 50;
     for (int k=0; k<50; ++k) constrained_step(&f);
     /* Failure on the last axis must also clear already-computed earlier axes. */
     f.joints[ARM_JOINT_NUM-1].max_jerk_deg_s3 = 0;
@@ -297,10 +303,10 @@ static void errors_and_rc(void) {
     f.joints[ARM_JOINT_NUM-1].max_jerk_deg_s3 = 3600;
     f.cmd->mode = arm_run;
     constrained_step(&f);
-    f.cmd->ctrl_src.joint_angle_solved[2] = NAN;
+    f.cmd->ctrl_src.joint_src.joint_angle[2] = NAN;
     reference_step(&f);
     assert(f.cmd->mode == arm_damping);
-    f.cmd->ctrl_src.joint_angle_solved[2] = 2;
+    f.cmd->ctrl_src.joint_src.joint_angle[2] = 2;
     f.cmd->mode = arm_run;
     constrained_step(&f);
     Edge_trigger_continuous left = {.flag = 1};
@@ -338,9 +344,9 @@ static void quintic_replanning_and_handoff(void) {
     init(&b);
 
     a.joints[1].quintic_duration_s = 0.2f;
-    a.cmd->ctrl_src.joint_angle_solved[0] = 10;
-    a.cmd->ctrl_src.joint_angle_solved[1] = 11;
-    b.cmd->ctrl_src.joint_angle_solved[0] = -5;
+    a.cmd->ctrl_src.joint_src.joint_angle[0] = 10;
+    a.cmd->ctrl_src.joint_src.joint_angle[1] = 11;
+    b.cmd->ctrl_src.joint_src.joint_angle[0] = -5;
     const unsigned calls_before = update_calls;
     for (int k = 0; k < 25; ++k) {
         reference_step(&a);
@@ -355,7 +361,7 @@ static void quintic_replanning_and_handoff(void) {
     assert(fabsf(a.gimbal.arm_control_data.joint_angle[1] - 2.03515625f) < 1e-4f);
 
     const Joint_motion_state last = a.cmd->joint_post_ref[0].state;
-    a.cmd->ctrl_src.joint_angle_solved[0] = -3;
+    a.cmd->ctrl_src.joint_src.joint_angle[0] = -3;
     reference_step(&a);
     check_quintic_boundary(&a, last);
     for (int k = 0; k < 51; ++k) reference_step(&a);
@@ -365,9 +371,8 @@ static void quintic_replanning_and_handoff(void) {
 
     a.cmd->plan_running = 1;
     a.joints[0].plan_velocity_scale = 2;
-    a.cmd->ctrl_src.joint_angle_solved[0] = 12;
-    a.cmd->plan_joint_vel[0] = 3;
-    a.cmd->plan_joint_acc[0] = 5;
+    a.cmd->ctrl_src.joint_src.joint_angle[0] = 12;
+    a.plans[0].output = (Move_plan_output){12, 3, 5};
     reference_step(&a);
     assert(a.gimbal.arm_control_data.joint_angle[0] == 12);
     assert(a.gimbal.arm_control_data.joint_vel[0] == 6);
@@ -376,7 +381,7 @@ static void quintic_replanning_and_handoff(void) {
     reference_step(&a);
     check_quintic_boundary(&a, (Joint_motion_state){12, 6, 5});
 
-    a.cmd->ctrl_src.joint_angle_solved[ARM_JOINT_NUM - 1] = NAN;
+    a.cmd->ctrl_src.joint_src.joint_angle[ARM_JOINT_NUM - 1] = NAN;
     reference_step(&a);
     assert(a.gimbal.arm_control_data.mode == arm_damping);
     for (int i = 0; i < ARM_JOINT_NUM; ++i) {
@@ -386,7 +391,7 @@ static void quintic_replanning_and_handoff(void) {
         assert(!a.cmd->joint_post_ref[i].initialized);
     }
     a.cmd->mode = arm_run;
-    a.cmd->ctrl_src.joint_angle_solved[ARM_JOINT_NUM - 1] = ARM_JOINT_NUM - 1;
+    a.cmd->ctrl_src.joint_src.joint_angle[ARM_JOINT_NUM - 1] = ARM_JOINT_NUM - 1;
     reference_step(&a);
     check_quintic_boundary(&a, (Joint_motion_state){0, 0, 0});
     destroy(&a);

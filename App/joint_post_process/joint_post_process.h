@@ -19,7 +19,8 @@ typedef struct {
         struct ruckig_c_context* ruckig;
         struct {
             Quintic_spline curve;
-            float target, elapsed;
+            Joint_motion_state target;
+            float elapsed;
             uint8_t active;
         } quintic;
     } trajectory;

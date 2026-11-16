@@ -8,11 +8,12 @@ import tempfile
 import unittest
 from ruckig_test_support import JOINT_POST_PROCESS_DIR, JOINT_POST_PROCESS_SOURCES, ruckig_library
 
+from sdk import protocol
 from sdk.board_defs import metal_arm as profile
 from sdk.board_defs import arx_x5
 
 ROOT = Path(__file__).resolve().parents[1]
-Float7, Float13, Float20 = (C.c_float*n for n in (7,13,20))
+Float7, Float20, Float25 = (C.c_float*n for n in (7,20,25))
 UInt10 = C.c_uint*10
 WAIT_INIT, INITIALIZING, NORMAL, RESETTING = 2, 3, 4, 7
 STOP, RUN, DAMPING = 0, 1, 2
@@ -66,8 +67,10 @@ class MetalInitializationTests(unittest.TestCase):
             version_receive=[C.c_uint,C.c_uint], version_observe=[C.c_uint,up]).items():
             getattr(cls.lib,name).argtypes = args
             getattr(cls.lib,name).restype = None
-        cls.lib.control_receive.argtypes = [C.c_uint, C.c_uint, C.c_float, C.c_float]
+        cls.lib.control_receive.argtypes = [C.c_uint, C.c_uint] + [C.c_float] * 4
         cls.lib.control_receive.restype = C.c_uint
+        cls.lib.control_receive_wire.argtypes = [C.c_char_p, C.c_uint]
+        cls.lib.control_receive_wire.restype = C.c_uint
         cls.lib.version_pop.argtypes = [up]
         cls.lib.version_pop.restype = C.c_int
 
@@ -85,14 +88,31 @@ class MetalInitializationTests(unittest.TestCase):
     def start(self, bus=0, state=WAIT_INIT, mode=STOP, lost=0, rc=0):
         self.lib.init_entry(bus,state,mode,lost,rc)
 
-    def test_control_dispatch_validates_type_length_and_finite_position(self):
+    def test_control_dispatch_validates_type_length_and_finite_target(self):
         for limit in (0, 0.5):
-            self.assertEqual(self.lib.control_receive(0x16, 32, 12, limit), 3)
-        for tid, length, target, limit in ((0x17, 52, 12, 0.5), (0x16, 28, 12, 0.5),
-                                           (0x16, 56, 12, 0.5), (0x16, 32, float("nan"), 0.5),
-                                           (0x16, 32, 12, -1), (0x16, 32, 12, float("inf"))):
-            with self.subTest(tid=tid, length=length, target=target, limit=limit):
-                self.assertEqual(self.lib.control_receive(tid, length, target, limit), 4)
+            self.assertEqual(self.lib.control_receive(0x16, 80, 12, limit, 5, -10), 3)
+        invalid = [(0x17, 80, 12, 0.5, 0, 0), (0x16, 32, 12, 0.5, 0, 0),
+                   (0x16, 79, 12, 0.5, 0, 0), (0x16, 81, 12, 0.5, 0, 0),
+                   (0x16, 80, float("nan"), 0.5, 0, 0), (0x16, 80, 12, -1, 0, 0),
+                   (0x16, 80, 12, float("inf"), 0, 0),
+                   (0x16, 80, 12, 0.5, float("nan"), 0),
+                   (0x16, 80, 12, 0.5, 0, float("inf"))]
+        for frame in invalid:
+            with self.subTest(frame=frame):
+                self.assertEqual(self.lib.control_receive(*frame), 4)
+
+    def test_quintic_replans_when_only_target_derivatives_change(self):
+        self.feedback(0, joints=(0,) * 6)
+        for velocity, acceleration in ((5, -10), (-3, 7)):
+            payload = protocol.encode_ctrl_pos((12, 0, 0, 0, 0, 0, 0), 0.5,
+                                               joint_vel_deg_s=(velocity, 0, 0, 0, 0, 0),
+                                               joint_acc_deg_s2=(acceleration, 0, 0, 0, 0, 0))
+            wire = protocol.encode(protocol.TID_ARM_CTRL_POS, payload)
+            self.assertEqual(self.lib.control_receive_wire(wire, len(wire)), 1)
+            for _ in range(51):
+                self.lib.init_tick(0)
+            _, output = self.observe(0)
+            self.assertEqual((output[0], output[6], output[12]), (12, velocity, acceleration))
 
     def test_version_advertisements_follow_each_arm_profile(self):
         out = (C.c_uint*3)()
@@ -129,27 +149,32 @@ class MetalInitializationTests(unittest.TestCase):
         inputs += [tuple(rng.uniform(-400,400) for _ in range(7)) for _ in range(200)]
         for values in inputs:
             values = Float7(*values)
-            out = Float13()
+            out = Float25()
             self.lib.init_limits(values,0x7f,out)
             for i in range(7):
                 # H7 J2 upper limit is calibrated to 4.8 deg; other axes use SDK limits.
                 upper = 4.8 if i == 1 else profile.AXIS_MAX[i]
-                expected = max(profile.AXIS_MIN[i], min(upper, values[i]))
+                lower, upper = C.c_float(profile.AXIS_MIN[i]).value, C.c_float(upper).value
+                expected = max(lower, min(upper, values[i]))
                 self.assertAlmostEqual(out[i],expected,delta=2e-5)
-            self.assertEqual(list(out[:6]),list(out[7:]))
+                if i < 6:
+                    velocity = 0 if expected != values[i] else i + 1
+                    self.assertEqual((out[13+i], out[19+i]), (velocity, -velocity))
+            self.assertEqual(list(out[:6]), list(out[7:13]))
         self.lib.init_limits(Float7(*([999]*7)),0,out)
         self.assertEqual(list(out[:7]),[999]*7)
+        self.assertEqual(list(out[13:]), [1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5, -6])
 
-    def test_metal_position_step_uses_160_ms_quintic(self):
+    def test_metal_position_step_uses_100_ms_quintic(self):
         self.feedback(0, joints=(0,)*6)
         self.lib.init_position_target(40)
-        for _ in range(40):
+        for _ in range(25):
             self.lib.init_tick(0)
         _, output = self.observe(0)
         self.assertAlmostEqual(output[0], 20, delta=0.001)
-        self.assertAlmostEqual(output[6], 468.75, delta=0.01)
+        self.assertAlmostEqual(output[6], 750, delta=0.01)
         self.assertAlmostEqual(output[12], 0, delta=0.1)
-        for _ in range(41):
+        for _ in range(26):
             self.lib.init_tick(0)
         _, output = self.observe(0)
         self.assertEqual((output[0], output[6], output[12]), (40, 0, 0))

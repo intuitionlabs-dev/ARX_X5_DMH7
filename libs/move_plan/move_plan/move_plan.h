@@ -57,6 +57,13 @@ typedef struct {
     float time_in_total;
 } Move_plan_config;
 
+/* 单轴轨迹采样。 */
+typedef struct {
+    float pos;
+    float vel;
+    float acc;
+} Move_plan_output;
+
 /* 运动规划结构体 */
 typedef struct {
     Move_plan_status status;
@@ -65,9 +72,8 @@ typedef struct {
     uint32_t start_time;           // ms
     uint32_t now_line_start_time;  /* 当前线段开始时间 */
     uint32_t now_line_delta_time;  /* 当前线段内的时间 */
-    float current_pos;
-    float current_vel;
-    float current_acc;
+    Move_plan_output output;
+    uint8_t retain_output;  /* 保留临时规划的终点，直到读取方释放。 */
 } Move_plan;
 
 /* 初始化函数 */

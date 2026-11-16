@@ -90,8 +90,6 @@ Move_plan *Move_Plan_Create(Move_plan_config *config) {
 
     plan->status = move_plan_reset;
     plan->config = config;
-    plan->current_pos = 0.0f;
-    plan->current_vel = 0.0f;
     plan->start_time = 0;
     plan->now_line_id = 0;
     plan->now_line_delta_time = 0;
@@ -131,13 +129,12 @@ void Run_Move_Plan(Move_plan *plan) {
         return;
     }
 
-    plan->status = move_plan_run;
-    plan->current_pos = ((Via_point *)cvector_val_at(plan->config->via_points, 0))->pos;
-    plan->current_vel = 0;                      /* 起始点速度默认为0 */
-    plan->current_acc = 0;                      /* 起始点加速度默认为0 */
+    const Via_point *start = cvector_val_at(plan->config->via_points, 0);
+    plan->output = (Move_plan_output){start->pos, start->vel, start->acc};
     plan->now_line_id = 1;
-    plan->now_line_start_time = HAL_GetTick();  /* 记录当前线段开始时间 */
     plan->start_time = HAL_GetTick();
+    plan->now_line_start_time = plan->start_time;
+    plan->status = move_plan_run;
 }
 
 void Move_Plan_Update(void) {
@@ -157,14 +154,13 @@ void Move_Plan_Update(void) {
         for (size_t i = 0; i < now_list->cv_len; i++) {
             Move_plan *plan = *(Move_plan **)cvector_val_at(now_list, i);
             if (plan->status != move_plan_run) continue;  /* 只处理运行中的规划 */
-            if (current_time - plan->start_time
-                > (uint32_t)(plan->config->time_in_total * 1000)) {  /* 如果超时，重置规划 */
-                if (plan->config->type == move_plan_normal) {
-                    Reset_Move_Plan(plan);
-                } else if (plan->config->type == move_plan_temp) {  /* 如果是临时规划,重置config */
-                    plan->config->type = move_plan_none;
-                    Reset_Move_Plan(plan);
-                }
+            if (current_time - plan->start_time >= plan->config->time_in_total * 1000.0f
+                || plan->now_line_id > plan->config->lines_in_total) {
+                const Via_point *end = cvector_val_at(plan->config->via_points,
+                    plan->config->lines_in_total);
+                plan->output = (Move_plan_output){end->pos, end->vel, end->acc};
+                if (plan->config->type == move_plan_temp) plan->config->type = move_plan_none;
+                Reset_Move_Plan(plan);
                 continue;
             }
 
@@ -180,48 +176,34 @@ void Move_Plan_Update(void) {
                 plan->now_line_delta_time =
                     current_time - plan->now_line_start_time;
             }
-            if (plan->now_line_id
-                > plan->config->lines_in_total) {  /* 如果当前线段ID超过总线段数，重置规划 */
-                if (plan->config->type == move_plan_normal) {
-                    Reset_Move_Plan(plan);
-                } else if (plan->config->type == move_plan_temp) {  /* 如果是临时规划,重置config */
-                    plan->config->type = move_plan_none;
-                    Reset_Move_Plan(plan);
-                }
-                continue;  /* 继续处理下一规划 */
-            }
-
             float t_s = (plan->now_line_delta_time / 1000.0f);  /* 当前线段内的时间，单位为秒 */
             /* 计算当前位置、速度、加速度 */
             switch (plan->config->line_type) {
             case linear_spline:  /* 计算一次样条 */
                 {
-                    plan->current_pos =
-                        Linear_Spline_Calc_y(line->line_data.linear_spline, t_s);
-                    plan->current_vel =
-                        Linear_Spline_Calc_dy(line->line_data.linear_spline, t_s);
-                    plan->current_acc =
-                        Linear_Spline_Calc_ddy(line->line_data.linear_spline, t_s);
+                    plan->output = (Move_plan_output){
+                        Linear_Spline_Calc_y(line->line_data.linear_spline, t_s),
+                        Linear_Spline_Calc_dy(line->line_data.linear_spline, t_s),
+                        Linear_Spline_Calc_ddy(line->line_data.linear_spline, t_s),
+                    };
                 }
                 break;
             case cubic_spline:  /* 计算三次样条 */
                 {
-                    plan->current_pos =
-                        Cubic_Spline_Calc_y(line->line_data.cubic_spline, t_s);
-                    plan->current_vel =
-                        Cubic_Spline_Calc_dy(line->line_data.cubic_spline, t_s);
-                    plan->current_acc =
-                        Cubic_Spline_Calc_ddy(line->line_data.cubic_spline, t_s);
+                    plan->output = (Move_plan_output){
+                        Cubic_Spline_Calc_y(line->line_data.cubic_spline, t_s),
+                        Cubic_Spline_Calc_dy(line->line_data.cubic_spline, t_s),
+                        Cubic_Spline_Calc_ddy(line->line_data.cubic_spline, t_s),
+                    };
                 }
                 break;
             case quintic_spline:  /* 计算五次样条 */
                 {
-                    plan->current_pos =
-                        Quintic_Spline_Calc_y(line->line_data.quintic_spline, t_s);
-                    plan->current_vel =
-                        Quintic_Spline_Calc_dy(line->line_data.quintic_spline, t_s);
-                    plan->current_acc =
-                        Quintic_Spline_Calc_ddy(line->line_data.quintic_spline, t_s);
+                    plan->output = (Move_plan_output){
+                        Quintic_Spline_Calc_y(line->line_data.quintic_spline, t_s),
+                        Quintic_Spline_Calc_dy(line->line_data.quintic_spline, t_s),
+                        Quintic_Spline_Calc_ddy(line->line_data.quintic_spline, t_s),
+                    };
                 }
                 break;
                 /* 不使用default，以便自动检查是否覆盖了所有线段类型 */
@@ -242,7 +224,7 @@ Move_plan *Move_Plan_Temp_Create(float start_pos, float start_vel, float start_a
     /* 查找临时规划列表中是否存在空的规划 */
     for (size_t i = 0; i < move_plan_temp_list->cv_len; i++) {
         Move_plan *plan = *(Move_plan **)cvector_val_at(move_plan_temp_list, i);
-        if (plan->config->type == move_plan_none) {  /* 找到一个空的临时规划，重用它 */
+        if (plan->config->type == move_plan_none && !plan->retain_output) {  /* 找到一个空的临时规划，重用它 */
             plan->config->type = move_plan_temp;
             /* 修改原有配置 */
             Via_line *line = (Via_line *)cvector_val_at(plan->config->via_lines, 0);
@@ -310,7 +292,7 @@ uint8_t get_Rest_Temp_Plan_cnt(void) {
     uint8_t rest_temp_plan_cnt = 0;
     for (uint8_t i = 0; i < move_plan_temp_list->cv_len; i++) {
         Move_plan *plan = *(Move_plan **)cvector_val_at(move_plan_temp_list, i);
-        if (plan->config->type == move_plan_none) {
+        if (plan->config->type == move_plan_none && !plan->retain_output) {
             rest_temp_plan_cnt++;
         }
     }
