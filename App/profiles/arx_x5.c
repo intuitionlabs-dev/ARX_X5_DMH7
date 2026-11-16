@@ -227,9 +227,9 @@ static Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
             .outputMax=2000,
         },
         .speed_pid={
-          .KP=0.002,
-          .KI=0.0003,
-          .KD=0,
+          .KP=0.0015,
+          .KI=0.00015,
+          .KD=0.001,
           .error_max=2000,
           .Irange=50,
           .outputMax=3.0f,
