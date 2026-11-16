@@ -15,7 +15,7 @@
 #define METAL_MOTOR_DISTAL_TORQUE_MAX_NM 20.0f
 #define METAL_MOTOR_POSITION_DIVISOR 65535.0f
 #define METAL_MOTOR_SPEED_DIVISOR 4095.0f
-#define METAL_QUINTIC_DURATION_S 0.16f
+#define METAL_QUINTIC_DURATION_S 0.1
 
 /* 按枚举顺序配置 metalarm 的六个关节和夹爪电机。 */
 static Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
