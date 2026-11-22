@@ -219,9 +219,9 @@ static Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
         .cmd_multiturn=true,
         /* 配置该电机的位置环和速度环 PID。 */
         .position_pid={
-            .KP=25,
+            .KP=60,
             .KI=0,
-            .KD=5,
+            .KD=8,
             .error_max=0,
             .Irange=0.0f,
             .outputMax=2000,

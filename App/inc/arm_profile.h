@@ -20,6 +20,7 @@ typedef struct {
 typedef enum {
     ARM_POST_PROCESS_RUCKIG = 0,
     ARM_POST_PROCESS_QUINTIC,
+    ARM_POST_PROCESS_DIRECT,
 } Arm_post_process_algorithm;
 
 /* 配置单电机夹爪的双向角度映射。 */

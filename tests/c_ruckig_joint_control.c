@@ -398,6 +398,60 @@ static void quintic_replanning_and_handoff(void) {
     destroy(&b);
 }
 
+static void direct_processing(void) {
+    Fixture f;
+    allocation_budget = 2;
+    init_profile(&f, ARM_POST_PROCESS_DIRECT, 0);
+    assert(allocation_budget == 0);
+    allocation_budget = -1;
+    const unsigned calls_before = update_calls;
+    for (int k = 0; k < 3; ++k) {
+        for (int i = 0; i < ARM_JOINT_NUM; ++i) {
+            f.cmd->ctrl_src.joint_src.joint_angle[i] = -20 + i + k * 0.5f;
+            f.cmd->ctrl_src.joint_src.joint_vel[i] = 150 + i - k;
+            f.cmd->ctrl_src.joint_src.joint_acc[i] = -500 - i + k;
+        }
+        reference_step(&f);
+        for (int i = 0; i < ARM_JOINT_NUM; ++i) {
+            assert(f.cmd->joint_post_ref[i].status == JOINT_REFERENCE_FINISHED);
+            assert(f.gimbal.arm_control_data.joint_angle[i] == f.cmd->ctrl_src.joint_solved.joint_angle[i]);
+            assert(f.gimbal.arm_control_data.joint_vel[i] == f.cmd->ctrl_src.joint_solved.joint_vel[i]);
+            assert(f.gimbal.arm_control_data.joint_acc[i] == f.cmd->ctrl_src.joint_solved.joint_acc[i]);
+        }
+    }
+    f.cmd->mode = arm_damping;
+    reference_step(&f);
+    for (int i = 0; i < ARM_JOINT_NUM; ++i) {
+        assert(f.gimbal.arm_control_data.joint_angle[i] == i);
+        assert(f.gimbal.arm_control_data.joint_vel[i] == 0);
+        assert(f.gimbal.arm_control_data.joint_acc[i] == 0);
+    }
+    f.cmd->mode = arm_run;
+    reference_step(&f);
+    assert(f.gimbal.arm_control_data.joint_vel[0] == 148);
+
+    float* invalid_fields[] = {
+        &f.cmd->ctrl_src.joint_src.joint_angle[ARM_JOINT_NUM - 1],
+        &f.cmd->ctrl_src.joint_src.joint_vel[ARM_JOINT_NUM - 1],
+        &f.cmd->ctrl_src.joint_src.joint_acc[ARM_JOINT_NUM - 1],
+    };
+    for (unsigned k = 0; k < 3; ++k) {
+        const float saved = *invalid_fields[k];
+        *invalid_fields[k] = NAN;
+        reference_step(&f);
+        assert(f.gimbal.arm_control_data.mode == arm_damping);
+        for (int i = 0; i < ARM_JOINT_NUM; ++i) {
+            assert(f.gimbal.arm_control_data.joint_angle[i] == i);
+            assert(f.gimbal.arm_control_data.joint_vel[i] == 0);
+            assert(f.gimbal.arm_control_data.joint_acc[i] == 0);
+        }
+        *invalid_fields[k] = saved;
+        f.cmd->mode = arm_run;
+    }
+    assert(update_calls == calls_before);
+    destroy(&f);
+}
+
 int main(void) {
     Fixture failed = {0};
     failed.arm.gimbal = &failed.gimbal;
@@ -416,7 +470,8 @@ int main(void) {
     invalid_source_references();
     errors_and_rc();
     quintic_replanning_and_handoff();
+    direct_processing();
     assert(live_allocations == 0);
-    puts("Joint Ruckig and quintic control checks passed");
+    puts("关节后处理算法检查通过");
     return 0;
 }

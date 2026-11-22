@@ -8,6 +8,7 @@ static const struct Joint_post_process_ops* select_joint_post_process(Arm_post_p
     switch (algorithm) {
     case ARM_POST_PROCESS_RUCKIG: return &joint_ruckig_ops;
     case ARM_POST_PROCESS_QUINTIC: return &joint_quintic_ops;
+    case ARM_POST_PROCESS_DIRECT: return &joint_direct_ops;
     default: return NULL;
     }
 }

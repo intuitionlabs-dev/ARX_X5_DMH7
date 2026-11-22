@@ -11,6 +11,7 @@ JOINT_POST_PROCESS_SOURCES = (
     f"{JOINT_POST_PROCESS_DIR}/joint_post_process.c",
     f"{JOINT_POST_PROCESS_DIR}/algorithms/ruckig_post_process.c",
     f"{JOINT_POST_PROCESS_DIR}/algorithms/quintic_post_process.c",
+    f"{JOINT_POST_PROCESS_DIR}/algorithms/direct_post_process.c",
 )
 
 

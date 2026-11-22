@@ -23,3 +23,4 @@ static inline uint8_t joint_reference_is_finite(Joint_motion_state state) {
 
 extern const struct Joint_post_process_ops joint_ruckig_ops;
 extern const struct Joint_post_process_ops joint_quintic_ops;
+extern const struct Joint_post_process_ops joint_direct_ops;

@@ -21,6 +21,7 @@ int Arm_Profile_Validate(const Arm_profile* profile) {
     switch (profile->joint_post_process) {
     case ARM_POST_PROCESS_RUCKIG:
     case ARM_POST_PROCESS_QUINTIC:
+    case ARM_POST_PROCESS_DIRECT:
         break;
     default:
         return 0;

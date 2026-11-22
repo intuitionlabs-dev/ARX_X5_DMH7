@@ -142,12 +142,15 @@ ARX-X5 的其余关节和夹爪使用 DM MIT。
 | --- | --- | --- |
 | `ARM_POST_PROCESS_RUCKIG` | `max_velocity_deg_s`、`max_acceleration_deg_s2`、`max_jerk_deg_s3` | 按运动上限逐轴求解最快可行轨迹 |
 | `ARM_POST_PROCESS_QUINTIC` | `quintic_duration_s` | 按指定时长插值。运动导数由起终状态和时长决定 |
+| `ARM_POST_PROCESS_DIRECT` | 无 | 原样输出输入的位置、速度和加速度 |
 
 MetalArm 选择五次插值，六轴时长均为 0.16 s。
 `Arm_Profile_Validate()` 校验所选算法的逐轴参数。
 
-两种算法以 2 ms 控制周期推进。目标先经过关节软限位。终点速度和加速度为零。
-目标变化时，算法从上一周期的参考位置、速度和加速度重新规划。
+算法以 2 ms 控制周期更新。目标先经过关节软限位。
+Ruckig 和五次插值使用输入的终点速度和加速度。
+目标变化时，插值算法从上一周期的参考状态重新规划。
+直接处理在当前周期输出输入的三项运动状态。
 停止、阻尼和重力模式以反馈位置及零导数重置参考。自动复位时长由 `init.reset_time_s` 配置。
 
 Ruckig 实例在命令对象创建时分配。五次插值使用关节状态内的样条缓存。
