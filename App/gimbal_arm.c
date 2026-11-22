@@ -260,7 +260,7 @@ void Gimbal_Update(Gimbal* obj) {
 
     /* 采样 A 臂 的反馈、参考值及控制输出。 */
     if (obj == g_arm[ARM_A].gimbal) {
-        const controller* control = obj->motors[JOINT1].control;
+        const controller* control = obj->motors[GRIPPER].control;
         g_fdb_pos = control->fdb_position;
         g_fdb_speed = control->fdb_speed;
         g_ref_pos = control->ref_position;

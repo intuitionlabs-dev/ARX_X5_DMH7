@@ -8,7 +8,7 @@
 /* ARX-X5 电机的编码量程和反馈换算分母。 */
 #define ARX_X5_MOTOR_POSITION_MAX_RAD 12.5f
 #define ARX_X5_ENCOS_SPEED_MAX_RAD_S 18.0f
-#define ARX_X5_DM_SPEED_MAX_RAD_S 45.0f
+#define ARX_X5_DM_SPEED_MAX_RAD_S 30
 #define ARX_X5_ENCOS_TORQUE_MAX_NM 30.0f
 #define ARX_X5_DM_TORQUE_MAX_NM 10.0f
 #define ARX_X5_MOTOR_POSITION_DIVISOR 65536.0f
@@ -219,12 +219,12 @@ static Arm_motor_config motors[] = { // NOLINT(readability-identifier-naming)
         .cmd_multiturn=true,
         /* 配置该电机的位置环和速度环 PID。 */
         .position_pid={
-            .KP=60,
+            .KP=20,
             .KI=0,
             .KD=8,
             .error_max=0,
             .Irange=0.0f,
-            .outputMax=2000,
+            .outputMax=1500,
         },
         .speed_pid={
           .KP=0.0015,
@@ -341,7 +341,7 @@ const Arm_profile ARM_PROFILE_ARX_X5 = {
     .joint_count=sizeof(joints)/sizeof(joints[0]), .motor_count=sizeof(motors)/sizeof(motors[0]),
     .motors=motors, .joints=joints,
     .gripper_max_torque_nm=1,
-    .joint_post_process=ARM_POST_PROCESS_QUINTIC,
+    .joint_post_process=ARM_POST_PROCESS_DIRECT,
     /* 夹爪协议角与电机角同向，保持负向闭合、正向张开的恒等映射。 */
     .gripper={
         .cmd=ARM_PROFILE_GRIPPER_IDENTITY_POINTS,

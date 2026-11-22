@@ -158,12 +158,26 @@ static void Run_Mode_Update(Gimbal_cmd* obj) {
             return;
         }
 
+        if (obj != g_arm[ARM_A].gimbal_cmd) return;
+
         /* 左摇杆边沿触发夹爪阶跃测试。 */
         if (Etc_Get(rc.trig.lx_left))
             obj->arm->gimbal->arm_control_data.gripper_angle -= 60;
         if (Etc_Get(rc.trig.lx_right))
             obj->arm->gimbal->arm_control_data.gripper_angle += 60;
-        return;
+        /* 夹爪持续阶跃 */
+        // static uint8_t dir = 0;
+        // static uint32_t last_ms = 0;
+        // if (HAL_GetTick() - last_ms < 1500) return;
+        // last_ms = HAL_GetTick();
+        // if (dir == 0) {
+        //     obj->arm->gimbal->arm_control_data.gripper_angle = ARM_PROFILE_ARX_X5.gripper.minimum;
+        //     dir = 1;
+        // } else {
+        //     obj->arm->gimbal->arm_control_data.gripper_angle = ARM_PROFILE_ARX_X5.gripper.maximum;
+        //     dir = 0;
+        // }
+        // return;
     }
 
     /* 读取当前机械臂的协议控制目标。 */
