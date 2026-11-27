@@ -50,6 +50,7 @@ void __wrap_free(void* memory) {
 }
 
 rc_t rc;
+Arm g_arm[ARM_NUM];
 static uint8_t rc_offline = 1;
 uint8_t is_Offline(monitor_item* item) { (void)item; return rc_offline; }
 const Robot_ctrl_cmd* Robot_State_Ctrl(const Arm* arm) { return &arm->ctrl; }
@@ -98,7 +99,7 @@ static void init(Fixture* f) {
 }
 
 static void destroy(Fixture* f) {
-    if (f->profile.joint_post_process == ARM_POST_PROCESS_RUCKIG) {
+    if (f->cmd->post_process_algorithm == ARM_POST_PROCESS_RUCKIG) {
         for (int i=0; i<ARM_JOINT_NUM; ++i)
             ruckig_c_destroy(f->cmd->joint_post_ref[i].trajectory.ruckig);
     }
@@ -312,6 +313,7 @@ static void errors_and_rc(void) {
     Edge_trigger_continuous left = {.flag = 1};
     Edge_trigger_continuous right = {0};
     rc_offline = 0;
+    g_arm[ARM_A].gimbal_cmd = f.cmd;
     rc.sw_a = 1;
     rc.trig.lx_left = &left;
     rc.trig.lx_right = &right;
@@ -452,10 +454,56 @@ static void direct_processing(void) {
     destroy(&f);
 }
 
+static void runtime_algorithm_switching(void) {
+    Fixture f;
+    init_profile(&f, ARM_POST_PROCESS_QUINTIC, 0.1f);
+    f.cmd->ctrl_src.joint_src.joint_angle[0] = 20;
+    reference_step(&f);
+    const Joint_motion_state saved = f.cmd->joint_post_ref[0].state;
+    const int allocations = live_allocations;
+    for (int i = 0; i < ARM_JOINT_NUM; ++i) {
+        allocation_budget = i;
+        assert(!Joint_Post_Process_Set(f.cmd, ARM_POST_PROCESS_RUCKIG));
+        assert(live_allocations == allocations);
+        assert(f.cmd->post_process_algorithm == ARM_POST_PROCESS_QUINTIC);
+        assert(memcmp(&saved, &f.cmd->joint_post_ref[0].state, sizeof(saved)) == 0);
+    }
+    allocation_budget = -1;
+    assert(!Joint_Post_Process_Set(f.cmd, UINT32_MAX));
+    f.joints[0].max_jerk_deg_s3 = 0;
+    assert(!Joint_Post_Process_Set(f.cmd, ARM_POST_PROCESS_RUCKIG));
+    f.joints[0].max_jerk_deg_s3 = 3600;
+    for (int k = 0; k < 10; ++k) {
+        assert(Joint_Post_Process_Set(f.cmd, ARM_POST_PROCESS_RUCKIG));
+        assert(live_allocations == allocations + ARM_JOINT_NUM);
+        assert(!f.cmd->joint_post_ref[0].initialized);
+        constrained_step(&f);
+        const int current_allocations = live_allocations;
+        allocation_budget = 0;
+        assert(Joint_Post_Process_Set(f.cmd, ARM_POST_PROCESS_RUCKIG));
+        assert(live_allocations == current_allocations);
+        allocation_budget = -1;
+        assert(Joint_Post_Process_Set(f.cmd, ARM_POST_PROCESS_DIRECT));
+        assert(live_allocations == allocations);
+        reference_step(&f);
+        assert(f.gimbal.arm_control_data.joint_angle[0] == 20);
+        f.joints[0].quintic_duration_s = 0;
+        assert(!Joint_Post_Process_Set(f.cmd, ARM_POST_PROCESS_QUINTIC));
+        assert(f.cmd->post_process_algorithm == ARM_POST_PROCESS_DIRECT);
+        f.joints[0].quintic_duration_s = 0.1f;
+        assert(Joint_Post_Process_Set(f.cmd, ARM_POST_PROCESS_QUINTIC));
+    }
+    destroy(&f);
+}
+
 int main(void) {
     Fixture failed = {0};
     failed.arm.gimbal = &failed.gimbal;
     failed.gimbal.profile = &failed.profile;
+    failed.profile.joints = failed.joints;
+    for (int i = 0; i < ARM_JOINT_NUM; ++i)
+        failed.joints[i] = (Arm_joint_config){.max_velocity_deg_s=90,
+            .max_acceleration_deg_s2=360, .max_jerk_deg_s3=3600};
     /* Object, temporary group, then six independent Ruckig instances. */
     for (int i=0; i<2+ARM_JOINT_NUM; ++i) {
         allocation_budget = i;
@@ -471,6 +519,7 @@ int main(void) {
     errors_and_rc();
     quintic_replanning_and_handoff();
     direct_processing();
+    runtime_algorithm_switching();
     assert(live_allocations == 0);
     puts("关节后处理算法检查通过");
     return 0;

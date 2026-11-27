@@ -46,6 +46,7 @@ typedef struct Gimbal_cmd_t {
     uint8_t plan_running;
 
     const struct Joint_post_process_ops* post_process;
+    Arm_post_process_algorithm post_process_algorithm;
     Joint_post_process_ref joint_post_ref[ARM_JOINT_NUM];
     /* 后处理关节参考，单位 deg、deg/s、deg/s²。 */
     float post_processed_joint_angle[ARM_JOINT_NUM];

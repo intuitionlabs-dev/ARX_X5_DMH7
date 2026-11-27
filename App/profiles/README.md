@@ -136,7 +136,10 @@ ARX-X5 的其余关节和夹爪使用 DM MIT。
 
 ### 关节轨迹算法
 
-在机型配置中设置 `joint_post_process`。各轴参数位于 `joints` 表。
+机型配置的 `joint_post_process` 提供上电默认算法。
+各轴参数位于 `joints` 表。
+运行时可通过[参数设置帧](../../libs/frame/protocol_doc.md#0x19-参数设置与-0x82-参数反馈)切换算法。
+当前算法位于 `Gimbal_cmd.post_process_algorithm`。
 
 | `joint_post_process` | 关节参数 | 轨迹行为 |
 | --- | --- | --- |
@@ -144,7 +147,6 @@ ARX-X5 的其余关节和夹爪使用 DM MIT。
 | `ARM_POST_PROCESS_QUINTIC` | `quintic_duration_s` | 按指定时长插值。运动导数由起终状态和时长决定 |
 | `ARM_POST_PROCESS_DIRECT` | 无 | 原样输出输入的位置、速度和加速度 |
 
-MetalArm 选择五次插值，六轴时长均为 0.16 s。
 `Arm_Profile_Validate()` 校验所选算法的逐轴参数。
 
 算法以 2 ms 控制周期更新。目标先经过关节软限位。
@@ -153,7 +155,9 @@ Ruckig 和五次插值使用输入的终点速度和加速度。
 直接处理在当前周期输出输入的三项运动状态。
 停止、阻尼和重力模式以反馈位置及零导数重置参考。自动复位时长由 `init.reset_time_s` 配置。
 
-Ruckig 实例在命令对象创建时分配。五次插值使用关节状态内的样条缓存。
+选择 Ruckig 时分配实例，切换离开时释放实例。
+五次插值使用关节状态内的样条缓存。
+切换失败时保留当前算法及其状态。
 算法更新期间复用已有存储。算法失败或参考值出现非有限数时，本周期整臂进入阻尼并清零运动导数。
 检查 `Gimbal_cmd.joint_post_ref[i].status` 可查看关节结果码。负值表示错误。
 

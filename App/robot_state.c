@@ -444,6 +444,34 @@ static void HandleCtrl(Arm* arm, const Robot_rx_payload* pl, uint8_t len) { // N
     arm->ctrl_frame_cnt++;
 }
 
+/* 参数逐项设置后反馈全部当前值；空载荷仅查询。 */
+static void HandleParameter(Arm* arm, const Robot_rx_payload* pl, uint8_t len) {
+    Gimbal_cmd* cmd = arm->gimbal_cmd;
+    if (cmd == NULL) return;
+    if (arm->state == robot_state_normal
+        && (arm->arm_mode == arm_stop || arm->arm_mode == arm_damping)
+        && !(Rc_Online() && HAL_GetTick() > 1000 && rc.sw_a == 1)
+        && len % sizeof(FrameParameterItem) == 0) {
+        for (size_t offset = 0; offset < len; offset += sizeof(FrameParameterItem)) {
+            FrameParameterItem item;
+            memcpy(&item, pl->raw + offset, sizeof(item));
+            switch (item.id) {
+            case FRAME_PARAM_JOINT_POST_PROCESS:
+                Joint_Post_Process_Set(cmd, item.value);
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    const FramePktParameterFeedback current = {
+        .param = {
+            [FRAME_PARAM_ID_JOINT_POST_PROCESS] = cmd->post_process_algorithm,
+        },
+    };
+    SendFrame(arm, FRAME_TYPE_ID_PARAMETER_FEEDBACK, (const uint8_t*)&current, sizeof(current));
+}
+
 /* 检查握手门控并按报文类型分派业务处理。 */
 static void HandleFrame(Arm* arm, uint8_t type_id, const Robot_rx_payload* pl, uint8_t len) { // NOLINT(readability-identifier-naming)
 
@@ -491,6 +519,9 @@ static void HandleFrame(Arm* arm, uint8_t type_id, const Robot_rx_payload* pl, u
     /* 处理机械臂复位请求。 */
     case FRAME_TYPE_ID_ARM_RESET:
         HandleArmReset(arm);
+        break;
+    case FRAME_TYPE_ID_PARAMETER_SET:
+        HandleParameter(arm, pl, len);
         break;
     /* 其余报文结束本次业务处理。 */
     default:

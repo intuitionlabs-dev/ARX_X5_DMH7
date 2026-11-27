@@ -33,6 +33,14 @@ _Static_assert(sizeof(FramePktLinkStatus) == 84U, "链路状态包不是 84 字�
 _Static_assert(sizeof(FramePktEmpty) == 0U, "空包结构体不是 0 字节");
 
 _Static_assert(sizeof(FramePktVersion) == 4U, "版本匹配包不是 4 字节");
+_Static_assert(sizeof(FrameParameterItem) == 6U, "u32 参数项必须为 6 字节");
+_Static_assert(offsetof(FrameParameterItem, value) == 2U, "参数值偏移必须为 2");
+_Static_assert(FRAME_PARAM_ID_NUM > 0, "可变参数枚举不能为空");
+_Static_assert(FRAME_PARAM_ID_NUM - 1 <= UINT16_MAX, "参数编号必须可由 u16 表示");
+_Static_assert(sizeof(FramePktParameterFeedback) == FRAME_PARAM_ID_NUM * sizeof(uint32_t),
+               "参数反馈字段数必须与可变参数枚举数量一致");
+_Static_assert(sizeof(FramePktParameterFeedback) <= FRAME_MAX_DATA,
+               "全部参数反馈必须容纳于一帧");
 
 /* 校验各载荷类型的字节对齐，允许从偏移 6 读取多字节字段。 */
 _Static_assert(_Alignof(FramePktEmpty) == 1U, "空包结构体不是 1 字节对齐");

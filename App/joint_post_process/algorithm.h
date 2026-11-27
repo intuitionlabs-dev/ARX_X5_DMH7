@@ -7,6 +7,7 @@
 /* 后处理模板调用的算法操作。 */
 struct Joint_post_process_ops {
     int (*init)(Joint_post_process_ref* refs);
+    void (*deinit)(Joint_post_process_ref* refs);
     void (*reset)(Joint_post_process_ref* ref);
     int (*step)(Joint_post_process_ref* ref, const Arm_joint_config* config, Joint_motion_state target);
 };

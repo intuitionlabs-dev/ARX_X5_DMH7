@@ -26,8 +26,18 @@ typedef uint8_t FrameTypeId;
 #define FRAME_TYPE_ID_ARM_DAMPING 0x15U        /* 机械臂阻尼包 · 下发 */
 #define FRAME_TYPE_ID_ARM_CTRL_POS 0x16U       /* 关节轨迹与夹爪控制目标 · 下发 */
 #define FRAME_TYPE_ID_ARM_RESET 0x18U          /* 一键复位命令包 · 下发 */
+#define FRAME_TYPE_ID_PARAMETER_SET 0x19U      /* 参数设置或查询 · 下发 */
 #define FRAME_TYPE_ID_ARM_FEEDBACK 0x80U       /* 机械臂反馈帧 · 上报 */
 #define FRAME_TYPE_ID_LINK_STATUS 0x81U        /* 链路状态包 · 上报 */
+#define FRAME_TYPE_ID_PARAMETER_FEEDBACK 0x82U /* 当前参数值 · 上报 */
+
+/* 参数编号连续分配，计数项始终位于末尾。 */
+typedef enum {
+  FRAME_PARAM_ID_JOINT_POST_PROCESS=0,
+  FRAME_PARAM_ID_NUM,
+} Frame_parameter_id;
+
+#define FRAME_PARAM_JOINT_POST_PROCESS ((uint16_t)FRAME_PARAM_ID_JOINT_POST_PROCESS)
 
 /* rx_by_tid 按此表顺序统计，最后一槽累计表外类型；两端须采用相同顺序。 */
 #define FRAME_TID_DOWN_LIST                                                    \
@@ -87,6 +97,17 @@ typedef struct {
 
 /* 空载荷关节复位请求；应用层检查入口条件并执行机型配置的复位动作。 */
 typedef FramePktEmpty FramePktArmReset;
+
+/* 参数项包含 u16 编号和 u32 参数值，共 6 字节。 */
+typedef struct {
+  uint16_t id;
+  uint32_t value;
+} FrameParameterItem;
+
+/* 按参数编号顺序保存全部可变参数，每项为 u32。 */
+typedef struct {
+    uint32_t param[FRAME_PARAM_ID_NUM];
+} FramePktParameterFeedback;
 
 /* 反馈载荷共 63 字节：模式、状态、电机掩码、角度 deg、速度 deg/s 和温度 ℃；bit 6 为夹爪。 */
 typedef struct {

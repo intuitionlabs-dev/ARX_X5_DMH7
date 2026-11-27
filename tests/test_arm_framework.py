@@ -47,6 +47,27 @@ class FrameworkTests(unittest.TestCase):
             result = subprocess.run([str(executable)])
             self.assertEqual(result.returncode,0,f'C 检查行号余数 {result.returncode}')
 
+    def test_parameter_feedback_covers_parameter_enum(self):
+        with tempfile.TemporaryDirectory(prefix="h7-parameter-enum-") as temp:
+            folder = Path(temp)
+            for name in ("frame.c", "frame.h"):
+                shutil.copy(ROOT / "libs/frame" / name, folder / name)
+            header = (ROOT / "libs/frame/type_id.h").read_text()
+            extended = header.replace("  FRAME_PARAM_ID_NUM,",
+                                      "  FRAME_PARAM_ID_TEST,\n  FRAME_PARAM_ID_NUM,")
+            header_path = folder / "type_id.h"
+            command = ["cc", "-std=c11", "-fsyntax-only", "-I" + temp,
+                       "-I" + str(ROOT / "libs/soft_crc"), str(folder / "frame.c")]
+            header_path.write_text(extended)
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            incomplete = extended.replace("param[FRAME_PARAM_ID_NUM]",
+                                          "param[FRAME_PARAM_ID_NUM - 1]")
+            header_path.write_text(incomplete)
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("sizeof(FramePktParameterFeedback)", result.stderr)
+
     def test_non_six_axis_configurations_fail_to_compile(self):
         for count in (0,1,4,5,7,12):
             with self.subTest(joints=count), tempfile.TemporaryDirectory() as temp:

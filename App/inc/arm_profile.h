@@ -19,8 +19,8 @@ typedef struct {
 /* 选择普通位置命令的关节轨迹算法。 */
 typedef enum {
     ARM_POST_PROCESS_RUCKIG = 0,
-    ARM_POST_PROCESS_QUINTIC,
-    ARM_POST_PROCESS_DIRECT,
+    ARM_POST_PROCESS_QUINTIC = 1,
+    ARM_POST_PROCESS_DIRECT = 2,
 } Arm_post_process_algorithm;
 
 /* 配置单电机夹爪的双向角度映射。 */

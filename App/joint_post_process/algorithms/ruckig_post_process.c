@@ -17,6 +17,11 @@ static void joint_ruckig_reset(Joint_post_process_ref* ref) {
     ruckig_c_reset(ref->trajectory.ruckig);
 }
 
+static void joint_ruckig_deinit(Joint_post_process_ref* refs) {
+    for (int i = 0; i < ARM_JOINT_NUM; ++i)
+        ruckig_c_destroy(refs[i].trajectory.ruckig);
+}
+
 static int joint_ruckig_step(Joint_post_process_ref* ref, const Arm_joint_config* config, Joint_motion_state target) {
     const ruckig_c_input input = {
         .current = {ref->state.position, ref->state.velocity, ref->state.acceleration},
@@ -36,6 +41,7 @@ static int joint_ruckig_step(Joint_post_process_ref* ref, const Arm_joint_config
 
 const struct Joint_post_process_ops joint_ruckig_ops = {
     .init = joint_ruckig_init,
+    .deinit = joint_ruckig_deinit,
     .reset = joint_ruckig_reset,
     .step = joint_ruckig_step,
 };

@@ -3,6 +3,7 @@ import ctypes as C
 from pathlib import Path
 import random
 import shutil
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -73,6 +74,8 @@ class MetalInitializationTests(unittest.TestCase):
         cls.lib.control_receive_wire.restype = C.c_uint
         cls.lib.version_pop.argtypes = [up]
         cls.lib.version_pop.restype = C.c_int
+        cls.lib.parameter_exchange.argtypes = [C.c_uint] * 5 + [C.c_char_p, C.c_uint, up]
+        cls.lib.parameter_exchange.restype = C.c_int
 
     def setUp(self):
         self.lib.init_fixture()
@@ -87,6 +90,60 @@ class MetalInitializationTests(unittest.TestCase):
 
     def start(self, bus=0, state=WAIT_INIT, mode=STOP, lost=0, rc=0):
         self.lib.init_entry(bus,state,mode,lost,rc)
+
+    def parameter(self, value=None, *, bus=0, state=NORMAL, mode=STOP, handshake=1, rc=0, payload=None):
+        if payload is None:
+            payload = b"" if value is None else struct.pack("<HI", 0, value)
+        out = (C.c_uint * 6)()
+        result = self.lib.parameter_exchange(bus, state, mode, handshake, rc, payload, len(payload), out)
+        return result, list(out)
+
+    def test_parameter_frames_switch_and_report_per_arm(self):
+        for bus in (0, 1):
+            for mode in (STOP, DAMPING):
+                for algorithm in (0, 2, 1):
+                    result, out = self.parameter(algorithm, bus=bus, mode=mode)
+                    self.assertEqual(result, 1)
+                    self.assertEqual(out, [algorithm, 1, bus, 0x82, 4, algorithm])
+            self.assertEqual(self.parameter(bus=bus, state=WAIT_INIT, mode=RUN),
+                             (1, [1, 1, bus, 0x82, 4, 1]))
+
+    def test_parameter_frames_reject_unsafe_or_invalid_changes(self):
+        self.assertEqual(self.parameter(2)[0], 1)
+        for state in range(8):
+            for mode in range(4):
+                if state == NORMAL and mode in (STOP, DAMPING):
+                    continue
+                with self.subTest(state=state, mode=mode):
+                    result, out = self.parameter(0, state=state, mode=mode)
+                    self.assertEqual((result, out[0], out[5]), (1, 2, 2))
+        self.assertEqual(self.parameter(0, handshake=0), (0, [2, 1, 0, 0, 0, 0]))
+        result, out = self.parameter(0, rc=1)
+        self.assertEqual((result, out[0], out[5]), (1, 2, 2))
+        for payload in (b"x", bytes(5), bytes(7), bytes(9),
+                        struct.pack("<HI", 0, 3), struct.pack("<HI", 0, 0xffffffff)):
+            with self.subTest(payload=payload):
+                result, out = self.parameter(payload=payload)
+                self.assertEqual((result, out[0], out[5]), (1, 2, 2))
+
+    def test_parameter_frames_accept_multiple_records_and_skip_unknown(self):
+        unknown = struct.pack("<HI", 0x7fff, 0x12345678)
+        direct = struct.pack("<HI", 0, 2)
+        quintic = struct.pack("<HI", 0, 1)
+        result, out = self.parameter(payload=direct + unknown + quintic)
+        self.assertEqual((result, out), (1, [1, 1, 0, 0x82, 4, 1]))
+        result, out = self.parameter(payload=quintic + unknown + direct)
+        self.assertEqual((result, out), (1, [2, 1, 0, 0x82, 4, 2]))
+        for payload in (quintic + b"x", quintic + bytes(5), quintic * 42 + b"abc"):
+            with self.subTest(payload=payload):
+                result, out = self.parameter(payload=payload)
+                self.assertEqual((result, out[0], out[5]), (1, 2, 2))
+        result, out = self.parameter(payload=direct * 42)
+        self.assertEqual((result, out), (1, [2, 1, 0, 0x82, 4, 2]))
+        result, out = self.parameter(payload=direct * 41 + unknown)
+        self.assertEqual((result, out), (1, [2, 1, 0, 0x82, 4, 2]))
+        result, out = self.parameter(payload=quintic * 42, mode=RUN)
+        self.assertEqual((result, out[0], out[5]), (1, 2, 2))
 
     def test_control_dispatch_validates_type_length_and_finite_target(self):
         for limit in (0, 0.5):

@@ -41,6 +41,7 @@ EXPORT void init_fixture(void) { // NOLINT(readability-identifier-naming)
             Plan_Running_Check(cmd);
             Plan_group_temp temp_group = cmd->temp_group;
             const struct Joint_post_process_ops* post_process = cmd->post_process;
+            const Arm_post_process_algorithm algorithm = cmd->post_process_algorithm;
             Joint_post_process_ref refs[ARM_JOINT_NUM];
             memcpy(refs, cmd->joint_post_ref, sizeof(refs));
             for (unsigned i=0; i<ARM_JOINT_NUM; ++i) {
@@ -51,12 +52,14 @@ EXPORT void init_fixture(void) { // NOLINT(readability-identifier-naming)
             memset(cmd, 0, sizeof(*cmd));
             cmd->temp_group = temp_group;
             cmd->post_process = post_process;
+            cmd->post_process_algorithm = algorithm;
             memcpy(cmd->joint_post_ref, refs, sizeof(refs));
             cmd->arm = arm;
             cmd->gimbal = arm->gimbal;
 
         } else cmd = Gimbal_Cmd_Create(arm);
         arm->gimbal_cmd = cmd;
+        Joint_Post_Process_Set(cmd, ARM_PROFILE_METAL.joint_post_process);
         memset(arm->gimbal->arm_feedback_data.motor_inited, 1, ARM_JOINT_NUM);
     }
     memset(&rc, 0, sizeof(rc));
@@ -235,4 +238,39 @@ EXPORT unsigned control_receive_wire(const uint8_t* bytes, unsigned len) {
     Robot_State_OnRx(ROBOT_LINK_PORT, bytes + first_len, (uint16_t)(len - first_len));
     DrainRx(arm);
     return arm->ctrl_frame_cnt;
+}
+
+/* 通过串口解析和收发队列验证参数帧。 */
+EXPORT int parameter_exchange(unsigned bus, unsigned state, unsigned mode, unsigned handshake,
+    unsigned rc_running, const uint8_t* payload, unsigned length, unsigned* out) {
+    Arm* arm = &g_arm[bus];
+    arm->state = state;
+    arm->arm_mode = mode;
+    arm->handshake_ok = handshake;
+    clock_ms = 2000;
+    rc_monitor.count = rc_running;
+    rc.sw_a = 1;
+    s_tx_head = s_tx_tail = 0;
+    uint8_t wire[FRAME_MAX_LEN];
+    const int32_t size = FrameEncode(wire, sizeof(wire), FRAME_TYPE_ID_PARAMETER_SET,
+        bus, payload, length);
+    if (size < 0) return -1;
+    FrameParserReset(&s_parser);
+    Robot_State_OnRx(ROBOT_LINK_PORT, wire, size);
+    DrainRx(arm);
+    out[0] = arm->gimbal_cmd->post_process_algorithm;
+    out[1] = g_arm[1U-bus].gimbal_cmd->post_process_algorithm;
+    if (s_tx_head == s_tx_tail) return 0;
+    FrameParser parser = {0};
+    FrameStatus result = FRAME_INCOMPLETE;
+    const Robot_tx_slot* slot = &s_tx_q[s_tx_tail];
+    for (unsigned i = 0; i < slot->len; ++i)
+        result = FrameParserFeed(&parser, slot->buf[i]);
+    if (result != FRAME_OK || parser.type_id != FRAME_TYPE_ID_PARAMETER_FEEDBACK
+        || parser.data_len != sizeof(FramePktParameterFeedback)) return -1;
+    out[2] = parser.arm_id;
+    out[3] = parser.type_id;
+    out[4] = parser.data_len;
+    out[5] = parser.buf.f.payload.parameter_feedback.param[FRAME_PARAM_ID_JOINT_POST_PROCESS];
+    return 1;
 }

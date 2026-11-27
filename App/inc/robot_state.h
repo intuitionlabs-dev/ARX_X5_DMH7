@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "robot_def.h"
-#include "type_id.h"
+#include "frame.h"
 
 /* 定义上位机链路类型和板级选择。 */
 #define ROBOT_LINK_UART 0
@@ -54,7 +54,7 @@ typedef struct {
 } Robot_ctrl_cmd;
 
 /* 配置每臂收包环的载荷容量和槽位数。 */
-#define ROBOT_RX_DATA_LEN 80U
+#define ROBOT_RX_DATA_LEN FRAME_MAX_DATA
 #define ROBOT_RX_SLOT_NUM 8U
 
 /* 以原始字节或具体报文结构访问收包载荷。 */

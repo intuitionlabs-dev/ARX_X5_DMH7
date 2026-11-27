@@ -30,3 +30,6 @@ struct Joint_post_process_ops;
 
 /* 从机型配置初始化轨迹算法，成功时返回 1。 */
 int Joint_Post_Process_Init(struct Gimbal_cmd_t* obj);
+
+/* 切换运行时算法；失败时保留当前算法及其状态。 */
+int Joint_Post_Process_Set(struct Gimbal_cmd_t* obj, uint32_t algorithm);
